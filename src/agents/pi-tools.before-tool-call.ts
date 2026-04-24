@@ -411,7 +411,30 @@ export function wrapToolWithBeforeToolCallHook(
       }
       const normalizedToolName = normalizeToolName(toolName || "tool");
       try {
-        const result = await execute(toolCallId, outcome.params, signal, onUpdate);
+        let result = await execute(toolCallId, outcome.params, signal, onUpdate);
+        const hookRunner = getGlobalHookRunner();
+        if (hookRunner?.hasHooks("tool_result_transform")) {
+          const transformed = await hookRunner.runToolResultTransform(
+            {
+              toolName: normalizedToolName,
+              params: isPlainObject(outcome.params) ? outcome.params : {},
+              ...(ctx?.runId && { runId: ctx.runId }),
+              ...(toolCallId && { toolCallId }),
+              result,
+            },
+            {
+              toolName: normalizedToolName,
+              ...(ctx?.agentId && { agentId: ctx.agentId }),
+              ...(ctx?.sessionKey && { sessionKey: ctx.sessionKey }),
+              ...(ctx?.sessionId && { sessionId: ctx.sessionId }),
+              ...(ctx?.runId && { runId: ctx.runId }),
+              ...(toolCallId && { toolCallId }),
+            },
+          );
+          if (transformed?.result !== undefined) {
+            result = transformed.result;
+          }
+        }
         await recordLoopOutcome({
           ctx,
           toolName: normalizedToolName,

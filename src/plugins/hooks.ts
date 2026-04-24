@@ -57,6 +57,8 @@ import type {
   PluginHookSubagentEndedEvent,
   PluginHookSubagentSpawnedEvent,
   PluginHookToolContext,
+  PluginHookToolResultTransformEvent,
+  PluginHookToolResultTransformResult,
   PluginHookToolResultPersistContext,
   PluginHookToolResultPersistEvent,
   PluginHookToolResultPersistResult,
@@ -101,6 +103,8 @@ export type {
   PluginHookToolContext,
   PluginHookBeforeToolCallEvent,
   PluginHookBeforeToolCallResult,
+  PluginHookToolResultTransformEvent,
+  PluginHookToolResultTransformResult,
   PluginHookAfterToolCallEvent,
   PluginHookToolResultPersistContext,
   PluginHookToolResultPersistEvent,
@@ -811,6 +815,28 @@ export function createHookRunner(
   }
 
   /**
+   * Run tool_result_transform hook.
+   * Allows plugins to asynchronously rewrite live tool results before they are
+   * returned to the agent loop and persisted to transcripts.
+   * Runs sequentially.
+   */
+  async function runToolResultTransform(
+    event: PluginHookToolResultTransformEvent,
+    ctx: PluginHookToolContext,
+  ): Promise<PluginHookToolResultTransformResult | undefined> {
+    return runModifyingHook<"tool_result_transform", PluginHookToolResultTransformResult>(
+      "tool_result_transform",
+      event,
+      ctx,
+      {
+        mergeResults: (acc, next) => ({
+          result: lastDefined(acc?.result, next.result),
+        }),
+      },
+    );
+  }
+
+  /**
    * Run after_tool_call hook.
    * Runs in parallel (fire-and-forget).
    */
@@ -1129,6 +1155,7 @@ export function createHookRunner(
     runMessageSent,
     // Tool hooks
     runBeforeToolCall,
+    runToolResultTransform,
     runAfterToolCall,
     runToolResultPersist,
     // Message write hooks

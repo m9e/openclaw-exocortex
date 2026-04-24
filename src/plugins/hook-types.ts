@@ -1,4 +1,4 @@
-import type { AgentMessage } from "@mariozechner/pi-agent-core";
+import type { AgentMessage, AgentToolResult } from "@mariozechner/pi-agent-core";
 import type { ReplyPayload } from "../auto-reply/reply-payload.js";
 import type {
   ReplyDispatchKind,
@@ -68,6 +68,7 @@ export type PluginHookName =
   | "message_sending"
   | "message_sent"
   | "before_tool_call"
+  | "tool_result_transform"
   | "after_tool_call"
   | "tool_result_persist"
   | "before_message_write"
@@ -99,6 +100,7 @@ export const PLUGIN_HOOK_NAMES = [
   "message_sending",
   "message_sent",
   "before_tool_call",
+  "tool_result_transform",
   "after_tool_call",
   "tool_result_persist",
   "before_message_write",
@@ -329,6 +331,19 @@ export type PluginHookAfterToolCallEvent = {
   result?: unknown;
   error?: string;
   durationMs?: number;
+};
+
+export type PluginHookToolResultTransformEvent = {
+  toolName: string;
+  params: Record<string, unknown>;
+  runId?: string;
+  toolCallId?: string;
+  result: AgentToolResult<unknown>;
+  durationMs?: number;
+};
+
+export type PluginHookToolResultTransformResult = {
+  result?: AgentToolResult<unknown>;
 };
 
 export type PluginHookToolResultPersistContext = {
@@ -631,6 +646,13 @@ export type PluginHookHandlerMap = {
     event: PluginHookBeforeToolCallEvent,
     ctx: PluginHookToolContext,
   ) => Promise<PluginHookBeforeToolCallResult | void> | PluginHookBeforeToolCallResult | void;
+  tool_result_transform: (
+    event: PluginHookToolResultTransformEvent,
+    ctx: PluginHookToolContext,
+  ) =>
+    | Promise<PluginHookToolResultTransformResult | void>
+    | PluginHookToolResultTransformResult
+    | void;
   after_tool_call: (
     event: PluginHookAfterToolCallEvent,
     ctx: PluginHookToolContext,

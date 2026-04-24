@@ -40,6 +40,7 @@ beforeEach(async () => {
 });
 
 type BeforeToolCallHandlerMock = ReturnType<typeof vi.fn>;
+type ToolResultTransformHandlerMock = ReturnType<typeof vi.fn>;
 
 type BeforeToolCallHookInstall = {
   pluginId: string;
@@ -75,6 +76,23 @@ function installBeforeToolCallHooks(hooks: BeforeToolCallHookInstall[]): void {
     });
   }
   initializeGlobalHookRunner(registry);
+}
+
+function installToolResultTransformHook(params?: {
+  enabled?: boolean;
+  runToolResultTransformImpl?: (...args: unknown[]) => unknown;
+}): ToolResultTransformHandlerMock {
+  resetGlobalHookRunner();
+  const handler = params?.runToolResultTransformImpl
+    ? vi.fn(params.runToolResultTransformImpl)
+    : vi.fn(async () => undefined);
+  if (params?.enabled === false) {
+    return handler;
+  }
+  initializeGlobalHookRunner(
+    createMockPluginRegistry([{ hookName: "tool_result_transform", handler }]),
+  );
+  return handler;
 }
 
 describe("before_tool_call hook integration", () => {
@@ -299,6 +317,63 @@ describe("before_tool_call hook deduplication (#15502)", () => {
     );
 
     expect(beforeToolCallHook).toHaveBeenCalledTimes(1);
+  });
+});
+
+describe("tool_result_transform hook integration", () => {
+  let toolResultTransformHook: ToolResultTransformHandlerMock;
+
+  beforeEach(() => {
+    resetGlobalHookRunner();
+    resetDiagnosticSessionStateForTest();
+    toolResultTransformHook = installToolResultTransformHook();
+  });
+
+  it("returns transformed tool results after tool execution", async () => {
+    toolResultTransformHook = installToolResultTransformHook({
+      runToolResultTransformImpl: async (_event, _ctx) => ({
+        result: { ok: true, transformed: true },
+      }),
+    });
+    const execute = vi.fn().mockResolvedValue({ ok: true });
+    const tool = wrapToolWithBeforeToolCallHook({ name: "Web_Fetch", execute } as any, {
+      agentId: "main",
+      sessionKey: "main",
+      sessionId: "ephemeral-main",
+      runId: "run-main",
+    });
+    const extensionContext = {} as Parameters<typeof tool.execute>[3];
+
+    await expect(
+      tool.execute("call-transform-1", { url: "https://example.com" }, undefined, extensionContext),
+    ).resolves.toEqual({
+      ok: true,
+      transformed: true,
+    });
+
+    expect(execute).toHaveBeenCalledWith(
+      "call-transform-1",
+      { url: "https://example.com" },
+      undefined,
+      extensionContext,
+    );
+    expect(toolResultTransformHook).toHaveBeenCalledWith(
+      {
+        toolName: "web_fetch",
+        params: { url: "https://example.com" },
+        runId: "run-main",
+        toolCallId: "call-transform-1",
+        result: { ok: true },
+      },
+      {
+        toolName: "web_fetch",
+        agentId: "main",
+        sessionKey: "main",
+        sessionId: "ephemeral-main",
+        runId: "run-main",
+        toolCallId: "call-transform-1",
+      },
+    );
   });
 });
 
