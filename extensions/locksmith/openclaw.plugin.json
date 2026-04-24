@@ -1,0 +1,67 @@
+{
+  "id": "locksmith",
+  "name": "Locksmith",
+  "description": "Optional tool bridge for Agent Locksmith credential-proxy deployments.",
+  "contracts": {
+    "tools": ["locksmith_call"]
+  },
+  "commandAliases": [{ "name": "locksmith" }],
+  "uiHints": {
+    "baseUrl": {
+      "label": "Locksmith Base URL",
+      "help": "Base URL for the Agent Locksmith service."
+    },
+    "inboundToken": {
+      "label": "Locksmith Inbound Token",
+      "help": "Optional bearer token required by Locksmith inbound auth.",
+      "sensitive": true
+    },
+    "catalogTtlSeconds": {
+      "label": "Catalog Cache TTL",
+      "help": "How long to cache /tools discovery results.",
+      "advanced": true
+    },
+    "timeoutSeconds": {
+      "label": "Default Timeout",
+      "help": "Default request timeout in seconds for Locksmith discovery and calls.",
+      "advanced": true
+    },
+    "maxResponseBytes": {
+      "label": "Max Response Bytes",
+      "help": "Maximum response payload size to buffer per Locksmith request.",
+      "advanced": true
+    },
+    "promptCatalog": {
+      "label": "Prompt Catalog Guidance",
+      "help": "When enabled, inject the discovered Locksmith tool catalog into system context.",
+      "advanced": true
+    }
+  },
+  "configSchema": {
+    "type": "object",
+    "additionalProperties": false,
+    "properties": {
+      "baseUrl": {
+        "type": "string"
+      },
+      "inboundToken": {
+        "type": ["string", "object"]
+      },
+      "catalogTtlSeconds": {
+        "type": "number",
+        "minimum": 1
+      },
+      "timeoutSeconds": {
+        "type": "number",
+        "minimum": 1
+      },
+      "maxResponseBytes": {
+        "type": "number",
+        "minimum": 1024
+      },
+      "promptCatalog": {
+        "type": "boolean"
+      }
+    }
+  }
+}

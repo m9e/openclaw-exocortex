@@ -1,0 +1,117 @@
+{
+  "id": "untrusted-content",
+  "name": "Untrusted Content",
+  "description": "Sanitize and quarantine untrusted tool output through a local tool-untrusted-content service.",
+  "contracts": {
+    "tools": ["untrusted_content_scan"]
+  },
+  "uiHints": {
+    "enabled": {
+      "label": "Enable Guard",
+      "help": "When enabled, selected tool results are scanned before they reach agent context."
+    },
+    "baseUrl": {
+      "label": "Service Base URL",
+      "help": "Base URL for the tool-untrusted-content API."
+    },
+    "toolNames": {
+      "label": "Guarded Tools",
+      "help": "Tool names whose results should be guarded, for example web_fetch or browser."
+    },
+    "trustLevel": {
+      "label": "Trust Level",
+      "help": "Default trust level sent to the untrusted-content pipeline."
+    },
+    "timeoutSeconds": {
+      "label": "Timeout",
+      "help": "HTTP timeout for the guard service in seconds.",
+      "advanced": true
+    },
+    "maxContentChars": {
+      "label": "Max Input Chars",
+      "help": "Maximum characters forwarded to the guard service per content block.",
+      "advanced": true
+    },
+    "onError": {
+      "label": "Service Error Mode",
+      "help": "Choose whether tool results pass through or get replaced when the guard service is unavailable.",
+      "advanced": true
+    },
+    "sanitize": {
+      "label": "Force Sanitizer",
+      "help": "Override pipeline sanitize stage for guarded calls.",
+      "advanced": true
+    },
+    "guardrail": {
+      "label": "Force Guardrail",
+      "help": "Override pipeline guardrail stage for guarded calls.",
+      "advanced": true
+    },
+    "scan": {
+      "label": "Force Scanner",
+      "help": "Override pipeline scan stage for guarded calls.",
+      "advanced": true
+    },
+    "windowSize": {
+      "label": "Window Size",
+      "help": "Optional scan window size override.",
+      "advanced": true
+    },
+    "windowOverlap": {
+      "label": "Window Overlap",
+      "help": "Optional scan window overlap override.",
+      "advanced": true
+    }
+  },
+  "configSchema": {
+    "type": "object",
+    "additionalProperties": false,
+    "properties": {
+      "enabled": {
+        "type": "boolean"
+      },
+      "baseUrl": {
+        "type": "string"
+      },
+      "toolNames": {
+        "type": "array",
+        "items": {
+          "type": "string"
+        }
+      },
+      "trustLevel": {
+        "type": "string",
+        "enum": ["untrusted", "semi-trusted", "trusted"]
+      },
+      "timeoutSeconds": {
+        "type": "number",
+        "minimum": 1
+      },
+      "maxContentChars": {
+        "type": "number",
+        "minimum": 256
+      },
+      "onError": {
+        "type": "string",
+        "enum": ["pass", "quarantine"]
+      },
+      "sanitize": {
+        "type": "boolean"
+      },
+      "guardrail": {
+        "type": "boolean"
+      },
+      "scan": {
+        "type": "boolean"
+      },
+      "windowSize": {
+        "type": "number",
+        "minimum": 32
+      },
+      "windowOverlap": {
+        "type": "number",
+        "minimum": 0
+      }
+    }
+  }
+}

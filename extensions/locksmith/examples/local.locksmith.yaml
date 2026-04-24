@@ -1,0 +1,29 @@
+listen:
+  host: "127.0.0.1"
+  port: 9200
+
+inbound_auth:
+  mode: "bearer"
+  token: "${LOCKSMITH_INBOUND_TOKEN}"
+
+logging:
+  level: "info"
+
+tools:
+  - name: "github"
+    description: "GitHub REST API"
+    upstream: "https://api.github.com"
+    cloud: true
+    auth:
+      header: "Authorization"
+      value: "Bearer ${GITHUB_TOKEN}"
+    timeout_seconds: 30
+
+  - name: "tavily"
+    description: "Tavily search API"
+    upstream: "https://api.tavily.com"
+    cloud: true
+    auth:
+      header: "x-api-key"
+      value: "${TAVILY_API_KEY}"
+    timeout_seconds: 30
