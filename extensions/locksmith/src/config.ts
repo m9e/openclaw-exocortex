@@ -26,6 +26,7 @@ export type LocksmithProjectedTool = {
 type LocksmithPluginConfig = {
   baseUrl?: string;
   inboundToken?: unknown;
+  adminToken?: unknown;
   catalogTtlSeconds?: number;
   timeoutSeconds?: number;
   maxResponseBytes?: number;
@@ -89,6 +90,18 @@ export function resolveLocksmithInboundToken(cfg?: OpenClawConfig): string | und
       "plugins.entries.locksmith.config.inboundToken",
     ) ||
     normalizeSecretInput(process.env.LOCKSMITH_INBOUND_TOKEN) ||
+    undefined
+  );
+}
+
+export function resolveLocksmithAdminToken(cfg?: OpenClawConfig): string | undefined {
+  const pluginConfig = resolvePluginConfig(cfg);
+  return (
+    normalizeConfiguredSecret(
+      pluginConfig?.adminToken,
+      "plugins.entries.locksmith.config.adminToken",
+    ) ||
+    normalizeSecretInput(process.env.LOCKSMITH_ADMIN_TOKEN) ||
     undefined
   );
 }

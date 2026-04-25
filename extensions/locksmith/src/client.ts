@@ -1,5 +1,6 @@
 import type { OpenClawConfig } from "openclaw/plugin-sdk/config-runtime";
 import {
+  resolveLocksmithAdminToken,
   resolveLocksmithBaseUrl,
   resolveLocksmithCatalogTtlMs,
   resolveLocksmithInboundToken,
@@ -507,27 +508,6 @@ export async function callLocksmith(params: LocksmithCallParams): Promise<Locksm
     bodyType: "base64",
     bodyBase64: Buffer.from(rawBody).toString("base64"),
   };
-}
-
-/**
- * Resolve the optional admin token for the Locksmith service. Plan §3 says the
- * admin API gates `/admin/*` on a bearer; the plugin reads it from
- * `plugins.entries.locksmith.config.adminToken` (SecretRef-compatible) or
- * `LOCKSMITH_ADMIN_TOKEN`.
- */
-function resolveLocksmithAdminToken(cfg?: OpenClawConfig): string | undefined {
-  const pluginConfig = cfg?.plugins?.entries?.locksmith?.config as
-    | { adminToken?: unknown }
-    | undefined;
-  const fromConfig = pluginConfig?.adminToken;
-  if (typeof fromConfig === "string" && fromConfig.trim() !== "") {
-    return fromConfig.trim();
-  }
-  const fromEnv = process.env.LOCKSMITH_ADMIN_TOKEN;
-  if (typeof fromEnv === "string" && fromEnv.trim() !== "") {
-    return fromEnv.trim();
-  }
-  return undefined;
 }
 
 export type LocksmithAdminFetchParams = {

@@ -16,6 +16,12 @@
       "help": "Optional bearer token required by Locksmith inbound auth.",
       "sensitive": true
     },
+    "adminToken": {
+      "label": "Locksmith Admin Token",
+      "help": "Bearer token for Locksmith /admin/* endpoints (used by `openclaw locksmith audit`). Stored as a SecretRef when supplied as an object.",
+      "sensitive": true,
+      "advanced": true
+    },
     "catalogTtlSeconds": {
       "label": "Catalog Cache TTL",
       "help": "How long to cache /tools discovery results.",
@@ -57,6 +63,9 @@
         "type": "string"
       },
       "inboundToken": {
+        "type": ["string", "object"]
+      },
+      "adminToken": {
         "type": ["string", "object"]
       },
       "catalogTtlSeconds": {
