@@ -65,6 +65,10 @@ export const pluginRegistrationContractCases = {
     pluginId: "groq",
     mediaUnderstandingProviderIds: ["groq"],
   },
+  locksmith: {
+    pluginId: "locksmith",
+    toolNames: ["locksmith_call"],
+  },
   microsoft: {
     pluginId: "microsoft",
     speechProviderIds: ["microsoft"],
