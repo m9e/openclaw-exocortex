@@ -1,6 +1,10 @@
 import { Type } from "@sinclair/typebox";
 import type { OpenClawPluginApi } from "openclaw/plugin-sdk/plugin-runtime";
-import { readNumberParam, readStringParam } from "openclaw/plugin-sdk/provider-web-search";
+import {
+  jsonResult,
+  readNumberParam,
+  readStringParam,
+} from "openclaw/plugin-sdk/provider-web-search";
 import { runUntrustedContentPipeline } from "./client.js";
 import { formatManualScanToolResult } from "./transform.js";
 
@@ -91,17 +95,19 @@ export function createUntrustedContentScanTool(api: OpenClawPluginApi) {
           return typeof timeoutSeconds === "number" ? timeoutSeconds * 1000 : undefined;
         })(),
       });
-      return formatManualScanToolResult({
-        toolName: "untrusted_content_scan",
-        source:
-          source === "browser" ||
-          source === "web_fetch" ||
-          source === "web_search" ||
-          source === "api"
-            ? source
-            : "unknown",
-        response,
-      });
+      return jsonResult(
+        formatManualScanToolResult({
+          toolName: "untrusted_content_scan",
+          source:
+            source === "browser" ||
+            source === "web_fetch" ||
+            source === "web_search" ||
+            source === "api"
+              ? source
+              : "unknown",
+          response,
+        }),
+      );
     },
   };
 }

@@ -1,4 +1,5 @@
 import { definePluginEntry, type AnyAgentTool } from "openclaw/plugin-sdk/plugin-entry";
+import type { PluginHookToolResultTransformResult } from "openclaw/plugin-sdk/plugin-runtime";
 import { isUntrustedContentGuardConfigured, resolveUntrustedContentEnabled } from "./src/config.js";
 import { createUntrustedContentScanTool } from "./src/tool.js";
 import { maybeTransformToolResult } from "./src/transform.js";
@@ -20,14 +21,15 @@ export default definePluginEntry({
       if (!resolveUntrustedContentEnabled(api.config)) {
         return undefined;
       }
+      const result = await maybeTransformToolResult({
+        cfg: api.config,
+        toolName: event.toolName,
+        params: event.params,
+        toolCallId: event.toolCallId,
+        result: event.result,
+      });
       return {
-        result: await maybeTransformToolResult({
-          cfg: api.config,
-          toolName: event.toolName,
-          params: event.params,
-          toolCallId: event.toolCallId,
-          result: event.result,
-        }),
+        result: result as PluginHookToolResultTransformResult["result"],
       };
     });
   },
