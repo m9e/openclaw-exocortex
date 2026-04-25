@@ -35,6 +35,18 @@
       "label": "Prompt Catalog Guidance",
       "help": "When enabled, inject the discovered Locksmith tool catalog into system context.",
       "advanced": true
+    },
+    "tools.*.enabled": {
+      "label": "Enable projected tool",
+      "help": "When true, registers a synthetic locksmith_<slug> agent tool bound to this Locksmith slug."
+    },
+    "tools.*.label": {
+      "label": "Tool label",
+      "help": "Optional display label for the projected tool."
+    },
+    "tools.*.description": {
+      "label": "Tool description",
+      "help": "Optional operator-supplied description shown to the agent."
     }
   },
   "configSchema": {
@@ -61,6 +73,18 @@
       },
       "promptCatalog": {
         "type": "boolean"
+      },
+      "tools": {
+        "type": "object",
+        "additionalProperties": {
+          "type": "object",
+          "additionalProperties": false,
+          "properties": {
+            "enabled": { "type": "boolean" },
+            "label": { "type": "string" },
+            "description": { "type": "string" }
+          }
+        }
       }
     }
   }
