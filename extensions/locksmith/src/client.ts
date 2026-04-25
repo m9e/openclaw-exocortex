@@ -28,6 +28,7 @@ export type LocksmithHealth = {
 export type LocksmithCallParams = {
   cfg?: OpenClawConfig;
   tool: string;
+  user?: string;
   method?: string;
   path?: string;
   query?: Record<string, unknown>;
@@ -51,6 +52,79 @@ export type LocksmithCallResult = {
   bodyBase64?: string;
 };
 
+/**
+ * Closed-union error code for distinguishing service-state outcomes that the
+ * agent and CLI render differently. See plan §2 (client) and §5 (offline).
+ */
+export type LocksmithErrorCode =
+  | "service-unreachable"
+  | "tool-absent"
+  | "service-disabled"
+  | "request-failed";
+
+export class LocksmithError extends Error {
+  readonly code: LocksmithErrorCode;
+  readonly status?: number;
+  readonly tool?: string;
+
+  constructor(params: {
+    code: LocksmithErrorCode;
+    message: string;
+    status?: number;
+    tool?: string;
+    cause?: unknown;
+  }) {
+    super(params.message, params.cause === undefined ? undefined : { cause: params.cause });
+    this.name = "LocksmithError";
+    this.code = params.code;
+    this.status = params.status;
+    this.tool = params.tool;
+  }
+}
+
+function isUnreachableNetworkError(error: unknown): boolean {
+  if (error instanceof LocksmithError) {
+    return false;
+  }
+  if (error instanceof DOMException && error.name === "AbortError") {
+    return true;
+  }
+  if (error instanceof Error) {
+    const code = (error as { code?: unknown }).code;
+    if (typeof code === "string") {
+      const codes = new Set([
+        "ECONNREFUSED",
+        "ECONNRESET",
+        "ETIMEDOUT",
+        "EAI_AGAIN",
+        "ENOTFOUND",
+        "EHOSTUNREACH",
+        "ENETUNREACH",
+        "UND_ERR_CONNECT_TIMEOUT",
+        "UND_ERR_SOCKET",
+      ]);
+      if (codes.has(code)) {
+        return true;
+      }
+    }
+    // fetch() in Node wraps low-level connect/timeout errors as TypeError("fetch failed").
+    if (error.name === "TypeError" && /fetch failed/i.test(error.message)) {
+      return true;
+    }
+  }
+  return false;
+}
+
+function compareToolNames(a: string, b: string): number {
+  const left = a.toLowerCase();
+  const right = b.toLowerCase();
+  return left < right ? -1 : left > right ? 1 : 0;
+}
+
+export function sortLocksmithTools<T extends { name: string }>(tools: T[]): T[] {
+  return [...tools].toSorted((a, b) => compareToolNames(a.name, b.name));
+}
+
 type CacheEntry = {
   expiresAt: number;
   promise: Promise<LocksmithDiscoveredTool[]>;
@@ -72,11 +146,15 @@ function normalizeBaseUrl(baseUrl: string): string {
   return baseUrl.replace(/\/+$/u, "");
 }
 
-function buildAuthHeaders(cfg?: OpenClawConfig): Headers {
+function buildAuthHeaders(cfg?: OpenClawConfig, user?: string): Headers {
   const headers = new Headers();
   const inboundToken = resolveLocksmithInboundToken(cfg);
   if (inboundToken) {
     headers.set("Authorization", `Bearer ${inboundToken}`);
+  }
+  const trimmedUser = typeof user === "string" ? user.trim() : "";
+  if (trimmedUser) {
+    headers.set("X-Locksmith-User", trimmedUser);
   }
   return headers;
 }
@@ -197,14 +275,28 @@ async function fetchJson<T>(params: {
   url: string;
   timeoutMs: number;
 }): Promise<T> {
-  const response = await fetch(params.url, {
-    headers: buildAuthHeaders(params.cfg),
-    signal: AbortSignal.timeout(params.timeoutMs),
-  });
+  let response: Response;
+  try {
+    response = await fetch(params.url, {
+      headers: buildAuthHeaders(params.cfg),
+      signal: AbortSignal.timeout(params.timeoutMs),
+    });
+  } catch (error) {
+    if (isUnreachableNetworkError(error)) {
+      throw new LocksmithError({
+        code: "service-unreachable",
+        message: `Locksmith service unreachable at ${params.url}`,
+        cause: error,
+      });
+    }
+    throw error;
+  }
   if (!response.ok) {
-    throw new Error(
-      `Locksmith request failed (${response.status} ${response.statusText}) for ${params.url}`,
-    );
+    throw new LocksmithError({
+      code: "request-failed",
+      status: response.status,
+      message: `Locksmith request failed (${response.status} ${response.statusText}) for ${params.url}`,
+    });
   }
   return (await response.json()) as T;
 }
@@ -223,7 +315,7 @@ export async function listLocksmithTools(cfg?: OpenClawConfig): Promise<Locksmit
       url: `${normalizeBaseUrl(resolveLocksmithBaseUrl(cfg))}/tools`,
       timeoutMs: resolveLocksmithTimeoutMs(cfg),
     });
-    return Array.isArray(payload.tools)
+    const raw = Array.isArray(payload.tools)
       ? payload.tools
           .filter(
             (tool): tool is LocksmithDiscoveredTool => !!tool && typeof tool.name === "string",
@@ -235,6 +327,9 @@ export async function listLocksmithTools(cfg?: OpenClawConfig): Promise<Locksmit
             description: tool.description,
           }))
       : [];
+    // Sort by normalized lowercase name so CLI/prompt ordering is deterministic
+    // regardless of upstream /tools response order. See plan §5.
+    return sortLocksmithTools(raw);
   })();
 
   discoveryCache.set(key, {
@@ -258,6 +353,38 @@ export async function fetchLocksmithHealth(cfg?: OpenClawConfig): Promise<Locksm
   });
 }
 
+async function readResponseErrorBody(response: Response): Promise<unknown> {
+  try {
+    const text = await response.text();
+    if (!text) {
+      return undefined;
+    }
+    const contentType = response.headers.get("content-type") ?? "";
+    if (isJsonContentType(contentType)) {
+      try {
+        return JSON.parse(text);
+      } catch {
+        return text;
+      }
+    }
+    return text;
+  } catch {
+    return undefined;
+  }
+}
+
+function extractServiceErrorType(payload: unknown): string | undefined {
+  if (!payload || typeof payload !== "object" || Array.isArray(payload)) {
+    return undefined;
+  }
+  const error = (payload as { error?: unknown }).error;
+  if (!error || typeof error !== "object" || Array.isArray(error)) {
+    return undefined;
+  }
+  const type = (error as { type?: unknown }).type;
+  return typeof type === "string" ? type : undefined;
+}
+
 export async function callLocksmith(params: LocksmithCallParams): Promise<LocksmithCallResult> {
   const method = (params.method ?? "GET").toUpperCase();
   const relativePath = normalizeRelativePath(params.path);
@@ -265,11 +392,15 @@ export async function callLocksmith(params: LocksmithCallParams): Promise<Locksm
   const url = new URL(`/api/${params.tool}/${relativePath}`, `${baseUrl}/`);
   appendQuery(url, params.query);
 
-  const headers = buildAuthHeaders(params.cfg);
+  const headers = buildAuthHeaders(params.cfg, params.user);
   if (params.headers) {
     for (const [key, value] of Object.entries(params.headers)) {
       const normalizedKey = key.trim().toLowerCase();
-      if (!normalizedKey || HIDDEN_REQUEST_HEADERS.has(normalizedKey)) {
+      if (
+        !normalizedKey ||
+        HIDDEN_REQUEST_HEADERS.has(normalizedKey) ||
+        normalizedKey === "x-locksmith-user"
+      ) {
         continue;
       }
       if (typeof value === "string" || typeof value === "number" || typeof value === "boolean") {
@@ -291,12 +422,49 @@ export async function callLocksmith(params: LocksmithCallParams): Promise<Locksm
     body = params.body;
   }
 
-  const response = await fetch(url, {
-    method,
-    headers,
-    body,
-    signal: AbortSignal.timeout(resolveLocksmithTimeoutMs(params.cfg, params.timeoutSeconds)),
-  });
+  let response: Response;
+  try {
+    response = await fetch(url, {
+      method,
+      headers,
+      body,
+      signal: AbortSignal.timeout(resolveLocksmithTimeoutMs(params.cfg, params.timeoutSeconds)),
+    });
+  } catch (error) {
+    if (isUnreachableNetworkError(error)) {
+      throw new LocksmithError({
+        code: "service-unreachable",
+        tool: params.tool,
+        message: `Locksmith service unreachable for tool "${params.tool}" at ${url.toString()}`,
+        cause: error,
+      });
+    }
+    throw error;
+  }
+
+  if (response.status === 404) {
+    const payload = await readResponseErrorBody(response);
+    throw new LocksmithError({
+      code: "tool-absent",
+      status: 404,
+      tool: params.tool,
+      message: `Locksmith tool "${params.tool}" is not active on the service`,
+      cause: payload,
+    });
+  }
+  if (response.status === 403) {
+    const payload = await peekJsonBody(response);
+    if (extractServiceErrorType(payload) === "service-disabled") {
+      throw new LocksmithError({
+        code: "service-disabled",
+        status: 403,
+        tool: params.tool,
+        message: `Locksmith tool "${params.tool}" is disabled upstream`,
+        cause: payload,
+      });
+    }
+  }
+
   const maxResponseBytes = resolveLocksmithMaxResponseBytes(params.cfg, params.maxResponseBytes);
   const rawBody = await readBodyWithLimit(response, maxResponseBytes);
   const contentType = response.headers.get("content-type") ?? "";
@@ -339,4 +507,94 @@ export async function callLocksmith(params: LocksmithCallParams): Promise<Locksm
     bodyType: "base64",
     bodyBase64: Buffer.from(rawBody).toString("base64"),
   };
+}
+
+/**
+ * Resolve the optional admin token for the Locksmith service. Plan §3 says the
+ * admin API gates `/admin/*` on a bearer; the plugin reads it from
+ * `plugins.entries.locksmith.config.adminToken` (SecretRef-compatible) or
+ * `LOCKSMITH_ADMIN_TOKEN`.
+ */
+function resolveLocksmithAdminToken(cfg?: OpenClawConfig): string | undefined {
+  const pluginConfig = cfg?.plugins?.entries?.locksmith?.config as
+    | { adminToken?: unknown }
+    | undefined;
+  const fromConfig = pluginConfig?.adminToken;
+  if (typeof fromConfig === "string" && fromConfig.trim() !== "") {
+    return fromConfig.trim();
+  }
+  const fromEnv = process.env.LOCKSMITH_ADMIN_TOKEN;
+  if (typeof fromEnv === "string" && fromEnv.trim() !== "") {
+    return fromEnv.trim();
+  }
+  return undefined;
+}
+
+export type LocksmithAdminFetchParams = {
+  cfg?: OpenClawConfig;
+  path: string;
+  query?: Record<string, string>;
+};
+
+/**
+ * Issue a GET against the Locksmith admin surface. Returns parsed JSON.
+ *
+ * Throws {@link LocksmithError} for unreachable services and request failures
+ * (including 401/403 missing/invalid admin token).
+ */
+export async function fetchLocksmithAdmin<T = unknown>(
+  params: LocksmithAdminFetchParams,
+): Promise<T> {
+  const baseUrl = normalizeBaseUrl(resolveLocksmithBaseUrl(params.cfg));
+  const url = new URL(`/admin/${params.path.replace(/^\/+/u, "")}`, `${baseUrl}/`);
+  if (params.query) {
+    for (const [key, value] of Object.entries(params.query)) {
+      if (typeof value === "string" && value !== "") {
+        url.searchParams.set(key, value);
+      }
+    }
+  }
+  const headers = buildAuthHeaders(params.cfg);
+  const adminToken = resolveLocksmithAdminToken(params.cfg);
+  if (adminToken) {
+    headers.set("Authorization", `Bearer ${adminToken}`);
+  }
+  let response: Response;
+  try {
+    response = await fetch(url, {
+      headers,
+      signal: AbortSignal.timeout(resolveLocksmithTimeoutMs(params.cfg)),
+    });
+  } catch (error) {
+    if (isUnreachableNetworkError(error)) {
+      throw new LocksmithError({
+        code: "service-unreachable",
+        message: `Locksmith service unreachable at ${url.toString()}`,
+        cause: error,
+      });
+    }
+    throw error;
+  }
+  if (!response.ok) {
+    throw new LocksmithError({
+      code: "request-failed",
+      status: response.status,
+      message: `Locksmith admin request failed (${response.status} ${response.statusText}) for ${url.toString()}`,
+    });
+  }
+  return (await response.json()) as T;
+}
+
+async function peekJsonBody(response: Response): Promise<unknown> {
+  const contentType = response.headers.get("content-type") ?? "";
+  if (!isJsonContentType(contentType)) {
+    return undefined;
+  }
+  try {
+    const cloned = response.clone();
+    const text = await cloned.text();
+    return text ? JSON.parse(text) : undefined;
+  } catch {
+    return undefined;
+  }
 }

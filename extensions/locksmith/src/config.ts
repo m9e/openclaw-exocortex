@@ -10,6 +10,19 @@ export const DEFAULT_LOCKSMITH_TIMEOUT_SECONDS = 30;
 export const DEFAULT_LOCKSMITH_CATALOG_TTL_SECONDS = 30;
 export const DEFAULT_LOCKSMITH_MAX_RESPONSE_BYTES = 262_144;
 
+export type LocksmithToolConfig = {
+  enabled?: boolean;
+  label?: string;
+  description?: string;
+};
+
+export type LocksmithProjectedTool = {
+  slug: string;
+  toolName: string;
+  label?: string;
+  description?: string;
+};
+
 type LocksmithPluginConfig = {
   baseUrl?: string;
   inboundToken?: unknown;
@@ -17,7 +30,23 @@ type LocksmithPluginConfig = {
   timeoutSeconds?: number;
   maxResponseBytes?: number;
   promptCatalog?: boolean;
+  tools?: Record<string, LocksmithToolConfig>;
 };
+
+const TOOL_NAME_PREFIX = "locksmith_";
+const SLUG_PATTERN = /^[a-z0-9](?:[a-z0-9-]*[a-z0-9])?$/u;
+
+function normalizeSlug(raw: string): string | undefined {
+  const trimmed = raw.trim().toLowerCase();
+  if (!trimmed || !SLUG_PATTERN.test(trimmed)) {
+    return undefined;
+  }
+  return trimmed;
+}
+
+export function projectedToolName(slug: string): string {
+  return `${TOOL_NAME_PREFIX}${slug}`;
+}
 
 function resolvePluginConfig(cfg?: OpenClawConfig): LocksmithPluginConfig | undefined {
   const pluginConfig = cfg?.plugins?.entries?.locksmith?.config;
@@ -97,4 +126,45 @@ export function resolveLocksmithMaxResponseBytes(
 export function resolveLocksmithPromptCatalogEnabled(cfg?: OpenClawConfig): boolean {
   const pluginConfig = resolvePluginConfig(cfg);
   return pluginConfig?.promptCatalog !== false;
+}
+
+/**
+ * Resolve operator-declared projected tools, sorted deterministically by slug.
+ *
+ * Returns the canonical list used both for prompt-cache-stable `registerTool({ names })`
+ * and for synthetic factory output. Disabled, malformed, or duplicate slugs are dropped.
+ * The lowercase-sorted order makes registration insensitive to object insertion order.
+ */
+export function resolveLocksmithProjectedTools(cfg?: OpenClawConfig): LocksmithProjectedTool[] {
+  const pluginConfig = resolvePluginConfig(cfg);
+  const raw = pluginConfig?.tools;
+  if (!raw || typeof raw !== "object" || Array.isArray(raw)) {
+    return [];
+  }
+  const seen = new Set<string>();
+  const projected: LocksmithProjectedTool[] = [];
+  for (const [rawSlug, value] of Object.entries(raw)) {
+    if (!value || typeof value !== "object" || Array.isArray(value)) {
+      continue;
+    }
+    const entry = value;
+    if (entry.enabled !== true) {
+      continue;
+    }
+    const slug = normalizeSlug(rawSlug);
+    if (!slug || seen.has(slug)) {
+      continue;
+    }
+    seen.add(slug);
+    const label = normalizeOptionalString(entry.label);
+    const description = normalizeOptionalString(entry.description);
+    projected.push({
+      slug,
+      toolName: projectedToolName(slug),
+      label,
+      description,
+    });
+  }
+  projected.sort((a, b) => (a.slug < b.slug ? -1 : a.slug > b.slug ? 1 : 0));
+  return projected;
 }
