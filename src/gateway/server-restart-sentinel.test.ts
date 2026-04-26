@@ -1,6 +1,5 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import type { ChannelPlugin } from "../channels/plugins/types.plugin.js";
-import { mergeMockedModule } from "../test-utils/vitest-module-mocks.js";
 
 type LoadedSessionEntry = ReturnType<typeof import("./session-utils.js").loadSessionEntry>;
 type RecordInboundSessionAndDispatchReplyParams = Parameters<
@@ -158,6 +157,9 @@ vi.mock("../utils/delivery-context.shared.js", () => ({
 }));
 
 vi.mock("../channels/plugins/index.js", async () => {
+  const { mergeMockedModule } = await vi.importActual<
+    typeof import("../test-utils/vitest-module-mocks.js")
+  >("../test-utils/vitest-module-mocks.js");
   return await mergeMockedModule(
     await vi.importActual<typeof import("../channels/plugins/index.js")>(
       "../channels/plugins/index.js",
@@ -198,6 +200,9 @@ vi.mock("../plugin-sdk/inbound-reply-dispatch.js", () => ({
 }));
 
 vi.mock("../infra/heartbeat-wake.js", async () => {
+  const { mergeMockedModule } = await vi.importActual<
+    typeof import("../test-utils/vitest-module-mocks.js")
+  >("../test-utils/vitest-module-mocks.js");
   return await mergeMockedModule(
     await vi.importActual<typeof import("../infra/heartbeat-wake.js")>(
       "../infra/heartbeat-wake.js",
