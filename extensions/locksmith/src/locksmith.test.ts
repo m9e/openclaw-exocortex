@@ -158,8 +158,7 @@ describe("locksmith client", () => {
 
     const fetchCall = vi.mocked(globalThis.fetch).mock.calls[0];
     const requestUrl = fetchCall?.[0];
-    expect(requestUrl).toBeInstanceOf(URL);
-    expect((requestUrl as URL).toString()).toBe(
+    expect(requestUrl).toBe(
       "http://127.0.0.1:9200/api/github/repos/openclaw/openclaw/issues?state=open",
     );
     expect(fetchCall?.[1]?.method).toBe("POST");

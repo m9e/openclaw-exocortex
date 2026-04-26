@@ -1,4 +1,5 @@
 import type { OpenClawConfig } from "openclaw/plugin-sdk/config-runtime";
+import { fetchWithSsrFGuard } from "openclaw/plugin-sdk/ssrf-runtime";
 import {
   resolveLocksmithAdminToken,
   resolveLocksmithBaseUrl,
@@ -133,6 +134,7 @@ type CacheEntry = {
 
 const discoveryCache = new Map<string, CacheEntry>();
 const HIDDEN_REQUEST_HEADERS = new Set(["authorization", "proxy-authorization", "x-api-key"]);
+const LOCAL_SERVICE_FETCH_POLICY = { allowPrivateNetwork: true } as const;
 const EXPOSED_RESPONSE_HEADERS = new Set([
   "content-type",
   "content-length",
@@ -276,11 +278,17 @@ async function fetchJson<T>(params: {
   url: string;
   timeoutMs: number;
 }): Promise<T> {
-  let response: Response;
+  let guarded: Awaited<ReturnType<typeof fetchWithSsrFGuard>>;
   try {
-    response = await fetch(params.url, {
-      headers: buildAuthHeaders(params.cfg),
-      signal: AbortSignal.timeout(params.timeoutMs),
+    guarded = await fetchWithSsrFGuard({
+      url: params.url,
+      init: {
+        headers: buildAuthHeaders(params.cfg),
+      },
+      timeoutMs: params.timeoutMs,
+      policy: LOCAL_SERVICE_FETCH_POLICY,
+      auditContext: "locksmith-client",
+      capture: false,
     });
   } catch (error) {
     if (isUnreachableNetworkError(error)) {
@@ -292,14 +300,19 @@ async function fetchJson<T>(params: {
     }
     throw error;
   }
-  if (!response.ok) {
-    throw new LocksmithError({
-      code: "request-failed",
-      status: response.status,
-      message: `Locksmith request failed (${response.status} ${response.statusText}) for ${params.url}`,
-    });
+  const { response } = guarded;
+  try {
+    if (!response.ok) {
+      throw new LocksmithError({
+        code: "request-failed",
+        status: response.status,
+        message: `Locksmith request failed (${response.status} ${response.statusText}) for ${params.url}`,
+      });
+    }
+    return (await response.json()) as T;
+  } finally {
+    await guarded.release();
   }
-  return (await response.json()) as T;
 }
 
 export async function listLocksmithTools(cfg?: OpenClawConfig): Promise<LocksmithDiscoveredTool[]> {
@@ -423,13 +436,19 @@ export async function callLocksmith(params: LocksmithCallParams): Promise<Locksm
     body = params.body;
   }
 
-  let response: Response;
+  let guarded: Awaited<ReturnType<typeof fetchWithSsrFGuard>>;
   try {
-    response = await fetch(url, {
-      method,
-      headers,
-      body,
-      signal: AbortSignal.timeout(resolveLocksmithTimeoutMs(params.cfg, params.timeoutSeconds)),
+    guarded = await fetchWithSsrFGuard({
+      url: url.toString(),
+      init: {
+        method,
+        headers,
+        body,
+      },
+      timeoutMs: resolveLocksmithTimeoutMs(params.cfg, params.timeoutSeconds),
+      policy: LOCAL_SERVICE_FETCH_POLICY,
+      auditContext: "locksmith-tool-call",
+      capture: false,
     });
   } catch (error) {
     if (isUnreachableNetworkError(error)) {
@@ -443,36 +462,63 @@ export async function callLocksmith(params: LocksmithCallParams): Promise<Locksm
     throw error;
   }
 
-  if (response.status === 404) {
-    const payload = await readResponseErrorBody(response);
-    throw new LocksmithError({
-      code: "tool-absent",
-      status: 404,
-      tool: params.tool,
-      message: `Locksmith tool "${params.tool}" is not active on the service`,
-      cause: payload,
-    });
-  }
-  if (response.status === 403) {
-    const payload = await peekJsonBody(response);
-    if (extractServiceErrorType(payload) === "service-disabled") {
+  const { response } = guarded;
+  try {
+    if (response.status === 404) {
+      const payload = await readResponseErrorBody(response);
       throw new LocksmithError({
-        code: "service-disabled",
-        status: 403,
+        code: "tool-absent",
+        status: 404,
         tool: params.tool,
-        message: `Locksmith tool "${params.tool}" is disabled upstream`,
+        message: `Locksmith tool "${params.tool}" is not active on the service`,
         cause: payload,
       });
     }
-  }
+    if (response.status === 403) {
+      const payload = await peekJsonBody(response);
+      if (extractServiceErrorType(payload) === "service-disabled") {
+        throw new LocksmithError({
+          code: "service-disabled",
+          status: 403,
+          tool: params.tool,
+          message: `Locksmith tool "${params.tool}" is disabled upstream`,
+          cause: payload,
+        });
+      }
+    }
 
-  const maxResponseBytes = resolveLocksmithMaxResponseBytes(params.cfg, params.maxResponseBytes);
-  const rawBody = await readBodyWithLimit(response, maxResponseBytes);
-  const contentType = response.headers.get("content-type") ?? "";
-  const filteredHeaders = filterResponseHeaders(response.headers);
+    const maxResponseBytes = resolveLocksmithMaxResponseBytes(params.cfg, params.maxResponseBytes);
+    const rawBody = await readBodyWithLimit(response, maxResponseBytes);
+    const contentType = response.headers.get("content-type") ?? "";
+    const filteredHeaders = filterResponseHeaders(response.headers);
 
-  if (isJsonContentType(contentType)) {
-    const text = new TextDecoder().decode(rawBody);
+    if (isJsonContentType(contentType)) {
+      const text = new TextDecoder().decode(rawBody);
+      return {
+        ok: response.ok,
+        url: url.toString(),
+        status: response.status,
+        statusText: response.statusText,
+        contentType,
+        headers: filteredHeaders,
+        bodyType: "json",
+        data: text === "" ? null : JSON.parse(text),
+      };
+    }
+
+    if (isTextualContentType(contentType) || rawBody.length === 0) {
+      return {
+        ok: response.ok,
+        url: url.toString(),
+        status: response.status,
+        statusText: response.statusText,
+        contentType,
+        headers: filteredHeaders,
+        bodyType: "text",
+        text: new TextDecoder().decode(rawBody),
+      };
+    }
+
     return {
       ok: response.ok,
       url: url.toString(),
@@ -480,34 +526,12 @@ export async function callLocksmith(params: LocksmithCallParams): Promise<Locksm
       statusText: response.statusText,
       contentType,
       headers: filteredHeaders,
-      bodyType: "json",
-      data: text === "" ? null : JSON.parse(text),
+      bodyType: "base64",
+      bodyBase64: Buffer.from(rawBody).toString("base64"),
     };
+  } finally {
+    await guarded.release();
   }
-
-  if (isTextualContentType(contentType) || rawBody.length === 0) {
-    return {
-      ok: response.ok,
-      url: url.toString(),
-      status: response.status,
-      statusText: response.statusText,
-      contentType,
-      headers: filteredHeaders,
-      bodyType: "text",
-      text: new TextDecoder().decode(rawBody),
-    };
-  }
-
-  return {
-    ok: response.ok,
-    url: url.toString(),
-    status: response.status,
-    statusText: response.statusText,
-    contentType,
-    headers: filteredHeaders,
-    bodyType: "base64",
-    bodyBase64: Buffer.from(rawBody).toString("base64"),
-  };
 }
 
 export type LocksmithAdminFetchParams = {
@@ -539,11 +563,17 @@ export async function fetchLocksmithAdmin<T = unknown>(
   if (adminToken) {
     headers.set("Authorization", `Bearer ${adminToken}`);
   }
-  let response: Response;
+  let guarded: Awaited<ReturnType<typeof fetchWithSsrFGuard>>;
   try {
-    response = await fetch(url, {
-      headers,
-      signal: AbortSignal.timeout(resolveLocksmithTimeoutMs(params.cfg)),
+    guarded = await fetchWithSsrFGuard({
+      url: url.toString(),
+      init: {
+        headers,
+      },
+      timeoutMs: resolveLocksmithTimeoutMs(params.cfg),
+      policy: LOCAL_SERVICE_FETCH_POLICY,
+      auditContext: "locksmith-admin",
+      capture: false,
     });
   } catch (error) {
     if (isUnreachableNetworkError(error)) {
@@ -555,14 +585,19 @@ export async function fetchLocksmithAdmin<T = unknown>(
     }
     throw error;
   }
-  if (!response.ok) {
-    throw new LocksmithError({
-      code: "request-failed",
-      status: response.status,
-      message: `Locksmith admin request failed (${response.status} ${response.statusText}) for ${url.toString()}`,
-    });
+  const { response } = guarded;
+  try {
+    if (!response.ok) {
+      throw new LocksmithError({
+        code: "request-failed",
+        status: response.status,
+        message: `Locksmith admin request failed (${response.status} ${response.statusText}) for ${url.toString()}`,
+      });
+    }
+    return (await response.json()) as T;
+  } finally {
+    await guarded.release();
   }
-  return (await response.json()) as T;
 }
 
 async function peekJsonBody(response: Response): Promise<unknown> {

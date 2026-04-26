@@ -1,4 +1,5 @@
 import type { OpenClawConfig } from "openclaw/plugin-sdk/config-runtime";
+import { fetchWithSsrFGuard } from "openclaw/plugin-sdk/ssrf-runtime";
 import { normalizeOptionalString } from "openclaw/plugin-sdk/text-runtime";
 import {
   resolveUntrustedContentBaseUrl,
@@ -53,6 +54,7 @@ type RunUntrustedContentPipelineParams = {
 };
 
 const SERVICE_FAILURE_COOLDOWN_MS = 30_000;
+const LOCAL_SERVICE_FETCH_POLICY = { allowPrivateNetwork: true } as const;
 const unavailableServices = new Map<string, { until: number; error: string }>();
 
 class UntrustedContentHttpError extends Error {
@@ -86,23 +88,6 @@ function markServiceUnavailable(baseUrl: string, error: string): void {
 
 function clearServiceUnavailable(baseUrl: string): void {
   unavailableServices.delete(baseUrl);
-}
-
-function buildAbortSignal(timeoutMs: number): {
-  signal: AbortSignal;
-  cleanup: () => void;
-} {
-  const controller = new AbortController();
-  const timer = setTimeout(
-    () => {
-      controller.abort(new Error(`untrusted-content timeout after ${timeoutMs}ms`));
-    },
-    Math.max(1, timeoutMs),
-  );
-  return {
-    signal: controller.signal,
-    cleanup: () => clearTimeout(timer),
-  };
 }
 
 async function readErrorResponse(response: Response): Promise<string> {
@@ -158,16 +143,23 @@ export async function runUntrustedContentPipeline(
   };
 
   const endpoint = new URL("/v1/pipeline", baseUrl).toString();
-  const { signal, cleanup } = buildAbortSignal(timeoutMs);
+  let guarded: Awaited<ReturnType<typeof fetchWithSsrFGuard>> | undefined;
   try {
-    const response = await fetch(endpoint, {
-      method: "POST",
-      headers: {
-        "content-type": "application/json",
+    guarded = await fetchWithSsrFGuard({
+      url: endpoint,
+      init: {
+        method: "POST",
+        headers: {
+          "content-type": "application/json",
+        },
+        body: JSON.stringify(requestBody),
       },
-      body: JSON.stringify(requestBody),
-      signal,
+      timeoutMs,
+      policy: LOCAL_SERVICE_FETCH_POLICY,
+      auditContext: "untrusted-content-pipeline",
+      capture: false,
     });
+    const { response } = guarded;
     if (!response.ok) {
       const errorText = await readErrorResponse(response);
       if (response.status >= 500) {
@@ -189,6 +181,6 @@ export async function runUntrustedContentPipeline(
     markServiceUnavailable(baseUrl, message);
     throw error instanceof Error ? error : new Error(message);
   } finally {
-    cleanup();
+    await guarded?.release();
   }
 }
