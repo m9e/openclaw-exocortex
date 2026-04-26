@@ -5,8 +5,8 @@
 import fs from "node:fs/promises";
 import path from "node:path";
 import { pathToFileURL } from "node:url";
-import { formatErrorMessage } from "../../dist/infra/errors.js";
 import { runTelegramQaLive } from "../../extensions/qa-lab/src/live-transports/telegram/telegram-live.runtime.ts";
+import { formatErrorMessage } from "../lib/error-format.mjs";
 
 function parseBoolean(value: string | undefined) {
   const normalized = value?.trim().toLowerCase();
