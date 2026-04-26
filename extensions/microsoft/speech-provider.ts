@@ -142,16 +142,19 @@ export async function listMicrosoftVoices(): Promise<SpeechVoiceOption[]> {
     "https://speech.platform.bing.com/consumer/speech/synthesize/readaloud/voices/list" +
     `?trustedclienttoken=${TRUSTED_CLIENT_TOKEN}`;
   const headers = buildMicrosoftVoiceHeaders();
+  const debugProxyFetchPatchInstalled = isDebugProxyGlobalFetchPatchInstalled();
   const { response, release } = await fetchWithSsrFGuard({
     url,
     init: {
       headers,
     },
     policy: ssrfPolicyFromHttpBaseUrlAllowedHostname("https://speech.platform.bing.com"),
+    capture: false,
+    pinDns: debugProxyFetchPatchInstalled ? false : undefined,
     auditContext: "microsoft.speech.voices",
   });
   try {
-    if (!isDebugProxyGlobalFetchPatchInstalled()) {
+    if (!debugProxyFetchPatchInstalled) {
       captureHttpExchange({
         url,
         method: "GET",

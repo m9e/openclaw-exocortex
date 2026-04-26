@@ -151,8 +151,8 @@ describe("listMicrosoftVoices", () => {
       const kinds = events.map((event) => String(event.kind)).toSorted();
       expect(kinds).toEqual(["request", "response"]);
     } finally {
-      globalThis.fetch = proxyReset.originalFetch;
       finalizeDebugProxyCapture();
+      globalThis.fetch = proxyReset.originalFetch;
     }
   });
 });
