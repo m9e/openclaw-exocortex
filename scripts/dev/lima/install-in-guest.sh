@@ -162,6 +162,7 @@ write_run_helper() {
 set -euo pipefail
 
 export OPENCLAW_GATEWAY_TOKEN="\${OPENCLAW_GATEWAY_TOKEN:-\$(cat "\$HOME/.openclaw/gateway.token")}"
+export OPENCLAW_REQUIRE_LOCKSMITH="\${OPENCLAW_REQUIRE_LOCKSMITH:-1}"
 extra_args=()
 if [[ "\${OPENCLAW_GATEWAY_REQUIRE_CONFIG:-}" != "1" ]]; then
   extra_args+=(--allow-unconfigured)
@@ -189,6 +190,20 @@ export PATH
 EOF
 }
 
+install_locksmith() {
+  local install_dir="$1"
+  if [[ "${OPENCLAW_GUEST_INSTALL_LOCKSMITH:-1}" == "0" ]]; then
+    log "skipping Locksmith install (OPENCLAW_GUEST_INSTALL_LOCKSMITH=0)"
+    return
+  fi
+
+  local installer="$install_dir/scripts/dev/lima/install-locksmith-in-guest.sh"
+  [[ -f "$installer" ]] || die "Locksmith installer not found at $installer"
+
+  log "installing required Locksmith sidecar"
+  OPENCLAW_CLI="$HOME/bin/openclaw" bash "$installer"
+}
+
 main() {
   assert_guest_context
 
@@ -213,6 +228,7 @@ main() {
   write_cli_helper "$install_dir"
   write_run_helper "$install_dir"
   ensure_user_bin_on_path
+  install_locksmith "$install_dir"
 
   log "installed checkout: $install_dir"
   log "gateway token: $HOME/.openclaw/gateway.token"

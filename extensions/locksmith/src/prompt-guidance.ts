@@ -2,6 +2,7 @@ import type { OpenClawConfig } from "openclaw/plugin-sdk/config-runtime";
 import { listLocksmithTools, sortLocksmithTools } from "./client.js";
 import {
   resolveLocksmithBaseUrl,
+  resolveLocksmithGenericToolEnabled,
   resolveLocksmithProjectedTools,
   resolveLocksmithPromptCatalogEnabled,
 } from "./config.js";
@@ -30,7 +31,9 @@ const PROJECTED_GUIDANCE = [
 export function buildLocksmithStaticPromptGuidance(cfg?: OpenClawConfig): string {
   const projected = resolveLocksmithProjectedTools(cfg);
   if (projected.length === 0) {
-    return BRIDGE_GUIDANCE;
+    return resolveLocksmithGenericToolEnabled(cfg)
+      ? BRIDGE_GUIDANCE
+      : "Agent Locksmith is required, but no projected Locksmith tools are configured.";
   }
   // Slugs are already sorted deterministically by resolveLocksmithProjectedTools().
   const lines = projected.map((entry) => {

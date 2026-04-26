@@ -7,6 +7,15 @@
   },
   "commandAliases": [{ "name": "locksmith" }],
   "uiHints": {
+    "required": {
+      "label": "Require Locksmith at Gateway Startup",
+      "help": "When true, gateway startup fails closed unless Locksmith is reachable, inbound bearer auth is enforced, and every projected tool is active."
+    },
+    "genericTool": {
+      "label": "Expose Generic Locksmith Tool",
+      "help": "When false, hides locksmith_call so agents can only use explicitly projected locksmith_<slug> tools.",
+      "advanced": true
+    },
     "baseUrl": {
       "label": "Locksmith Base URL",
       "help": "Base URL for the Agent Locksmith service."
@@ -59,6 +68,12 @@
     "type": "object",
     "additionalProperties": false,
     "properties": {
+      "required": {
+        "type": "boolean"
+      },
+      "genericTool": {
+        "type": "boolean"
+      },
       "baseUrl": {
         "type": "string"
       },

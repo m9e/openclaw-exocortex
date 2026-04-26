@@ -39,10 +39,16 @@ limactl shell openclaw-gateway -- \
 
 The installer clones the mounted checkout into `~/code/openclaw-exocortex`,
 installs Node 24 + pnpm, runs `pnpm install`, creates
-`~/.openclaw/gateway.token`, and writes two guest helpers:
+`~/.openclaw/gateway.token`, installs the required local Locksmith sidecar,
+and writes two guest helpers:
 
 - `~/bin/openclaw`: runs the dev CLI from the guest checkout without typing `pnpm`
 - `~/bin/openclaw-gateway-dev`: starts the gateway with local VM defaults
+
+Set `OPENCLAW_GUEST_INSTALL_LOCKSMITH=0` only when you intentionally need a
+non-hardened guest for debugging. The gateway helper also defaults
+`OPENCLAW_REQUIRE_LOCKSMITH=1`; override that only for the same kind of
+debugging session.
 
 The helper starts with `--allow-unconfigured` by default for first-boot VM
 bring-up; set `OPENCLAW_GATEWAY_REQUIRE_CONFIG=1` once you want config to be
@@ -53,6 +59,44 @@ Open a new guest shell after install, then run CLI commands directly:
 ```bash
 openclaw pairing list --channel telegram
 openclaw channels status --probe
+```
+
+## Re-run Locksmith setup in the gateway guest
+
+`install-in-guest.sh` installs and enables the `agent-locksmith` sidecar by
+default. Re-run the Locksmith installer directly after changing sidecar config,
+rotating its local bearer token, or repairing an older gateway checkout:
+
+```bash
+limactl shell openclaw-gateway -- \
+  bash /Users/yod/code/exocortex/openclaw-exocortex/scripts/dev/lima/install-locksmith-in-guest.sh
+```
+
+The helper installs the Linux Locksmith release binary for the guest
+architecture, writes a user-level `locksmith.service`, enables the bundled
+OpenClaw `locksmith` plugin, and restarts the gateway if one is already
+running.
+
+The default config:
+
+- listens on `127.0.0.1:9200`
+- generates a local bearer token in `~/.config/locksmith/locksmith.env`
+- makes Locksmith reject unauthenticated `/tools`
+- sets `plugins.entries.locksmith.config.required: true`
+- hides the generic `locksmith_call` tool
+- projects only `locksmith_github`
+- denies direct `group:web`, `group:ui`, and `locksmith_call` tools in the VM
+
+That last policy keeps normal local/runtime tools available while forcing web
+API access through the projected Locksmith tool.
+
+Check it from inside the guest:
+
+```bash
+systemctl --user status locksmith.service
+openclaw locksmith status
+openclaw locksmith tools
+openclaw locksmith call github zen
 ```
 
 Start the gateway from inside the guest with:

@@ -1,8 +1,8 @@
 # Locksmith Plugin
 
-Optional OpenClaw plugin that bridges the local `exocortex-agent-locksmith`
-dep checkout into an agent-facing `locksmith_call` tool and a small operator
-CLI. That dep is intended to track upstream
+OpenClaw plugin that bridges the local `exocortex-agent-locksmith` dep checkout
+into agent-facing Locksmith tools and a small operator CLI. That dep is intended
+to track upstream
 [`SentientSwarm/agent-locksmith`](https://github.com/SentientSwarm/agent-locksmith).
 
 This keeps the integration additive:
@@ -14,12 +14,22 @@ This keeps the integration additive:
 
 ## What it does
 
-- registers optional tool `locksmith_call`
-- injects discovery-backed prompt guidance from `GET /tools`
+- registers optional generic tool `locksmith_call` when `genericTool` is not false
+- registers projected `locksmith_<slug>` tools from the configured allowlist
+- injects prompt guidance for configured or discovered Locksmith tools
 - exposes `openclaw locksmith status` and `openclaw locksmith tools`
 
 The plugin expects a running Locksmith instance and does not try to own its
 deployment lifecycle.
+
+The bundled plugin is disabled by default. Enable it before using the
+top-level CLI command:
+
+```bash
+openclaw plugins enable locksmith
+openclaw gateway restart
+openclaw locksmith status
+```
 
 ## Config
 
@@ -30,21 +40,35 @@ deployment lifecycle.
       locksmith: {
         enabled: true,
         config: {
+          required: true,
+          genericTool: false,
           baseUrl: "http://127.0.0.1:9200",
           inboundToken: { ref: "env:LOCKSMITH_INBOUND_TOKEN" },
           catalogTtlSeconds: 30,
           timeoutSeconds: 30,
           maxResponseBytes: 262144,
           promptCatalog: true,
+          tools: {
+            github: {
+              enabled: true,
+              description: "GitHub REST API exposed through Locksmith",
+            },
+          },
         },
       },
     },
   },
   tools: {
-    allow: ["locksmith_call"],
+    alsoAllow: ["locksmith_github"],
+    deny: ["group:web", "group:ui", "locksmith_call"],
   },
 }
 ```
+
+When `required` is true, gateway startup fails closed unless the plugin is
+enabled, `genericTool` is false, an inbound bearer token is configured,
+unauthenticated `GET /tools` is rejected by Locksmith, authenticated `GET
+/tools` succeeds, and every projected tool is active on the sidecar.
 
 Environment fallbacks:
 

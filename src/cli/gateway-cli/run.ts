@@ -24,6 +24,7 @@ import {
 import type { OpenClawConfig } from "../../config/types.openclaw.js";
 import { hasConfiguredSecretInput } from "../../config/types.secrets.js";
 import { resolveGatewayAuth } from "../../gateway/auth.js";
+import { assertRequiredLocksmithReady } from "../../gateway/locksmith-requirement.js";
 import { defaultGatewayBindMode, isContainerEnvironment } from "../../gateway/net.js";
 import type { GatewayWsLogStyle } from "../../gateway/ws-logging.js";
 import { setGatewayWsLogStyle } from "../../gateway/ws-logging.js";
@@ -666,6 +667,22 @@ async function runGatewayCommand(opts: GatewayRunOpts) {
     defaultRuntime.exit(EXIT_CONFIG_ERROR);
     return;
   }
+
+  try {
+    const locksmithStatus = await startupTrace.measure("cli.locksmith-required", () =>
+      assertRequiredLocksmithReady({ cfg: effectiveCfg }),
+    );
+    if (locksmithStatus) {
+      gatewayLog.info(
+        `required Locksmith ready at ${locksmithStatus.baseUrl} with ${locksmithStatus.activeTools.length} active tool(s)`,
+      );
+    }
+  } catch (err) {
+    defaultRuntime.error(formatErrorMessage(err));
+    defaultRuntime.exit(EXIT_CONFIG_ERROR);
+    return;
+  }
+
   const tailscaleOverride =
     tailscaleMode || opts.tailscaleResetOnExit
       ? {

@@ -27,6 +27,8 @@ type LocksmithPluginConfig = {
   baseUrl?: string;
   inboundToken?: unknown;
   adminToken?: unknown;
+  required?: boolean;
+  genericTool?: boolean;
   catalogTtlSeconds?: number;
   timeoutSeconds?: number;
   maxResponseBytes?: number;
@@ -139,6 +141,11 @@ export function resolveLocksmithMaxResponseBytes(
 export function resolveLocksmithPromptCatalogEnabled(cfg?: OpenClawConfig): boolean {
   const pluginConfig = resolvePluginConfig(cfg);
   return pluginConfig?.promptCatalog !== false;
+}
+
+export function resolveLocksmithGenericToolEnabled(cfg?: OpenClawConfig): boolean {
+  const pluginConfig = resolvePluginConfig(cfg);
+  return pluginConfig?.genericTool !== false;
 }
 
 /**

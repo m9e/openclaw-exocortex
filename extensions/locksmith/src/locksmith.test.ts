@@ -16,6 +16,7 @@ import {
   DEFAULT_LOCKSMITH_TIMEOUT_SECONDS,
   resolveLocksmithBaseUrl,
   resolveLocksmithCatalogTtlMs,
+  resolveLocksmithGenericToolEnabled,
   resolveLocksmithInboundToken,
   resolveLocksmithMaxResponseBytes,
   resolveLocksmithProjectedTools,
@@ -47,6 +48,7 @@ describe("locksmith config", () => {
               timeoutSeconds: 25,
               maxResponseBytes: 4096,
               promptCatalog: false,
+              genericTool: false,
             },
           },
         },
@@ -59,6 +61,7 @@ describe("locksmith config", () => {
     expect(resolveLocksmithTimeoutMs(cfg)).toBe(25_000);
     expect(resolveLocksmithMaxResponseBytes(cfg)).toBe(4096);
     expect(resolveLocksmithPromptCatalogEnabled(cfg)).toBe(false);
+    expect(resolveLocksmithGenericToolEnabled(cfg)).toBe(false);
   });
 
   it("uses sane defaults when config is absent", () => {
@@ -74,6 +77,7 @@ describe("locksmith config", () => {
       DEFAULT_LOCKSMITH_MAX_RESPONSE_BYTES,
     );
     expect(resolveLocksmithPromptCatalogEnabled({} as OpenClawConfig)).toBe(true);
+    expect(resolveLocksmithGenericToolEnabled({} as OpenClawConfig)).toBe(true);
   });
 });
 

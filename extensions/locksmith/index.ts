@@ -1,6 +1,9 @@
 import { definePluginEntry, type AnyAgentTool } from "openclaw/plugin-sdk/plugin-entry";
 import { registerLocksmithCli } from "./src/cli.js";
-import { resolveLocksmithProjectedTools } from "./src/config.js";
+import {
+  resolveLocksmithGenericToolEnabled,
+  resolveLocksmithProjectedTools,
+} from "./src/config.js";
 import {
   buildLocksmithDynamicCatalogGuidance,
   buildLocksmithStaticPromptGuidance,
@@ -12,7 +15,9 @@ export default definePluginEntry({
   name: "Locksmith",
   description: "Optional tool bridge for Agent Locksmith credential-proxy deployments.",
   register(api) {
-    api.registerTool(createLocksmithCallTool(api) as AnyAgentTool, { optional: true });
+    if (resolveLocksmithGenericToolEnabled(api.config)) {
+      api.registerTool(createLocksmithCallTool(api) as AnyAgentTool, { optional: true });
+    }
 
     // Project one synthetic tool per operator-declared, enabled slug. Names
     // are predeclared at registration time so the agent prompt prefix is
