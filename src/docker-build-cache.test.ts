@@ -28,7 +28,6 @@ describe("docker build cache layout", () => {
   it("uses pnpm cache mounts in Dockerfiles that install repo dependencies", async () => {
     for (const path of [
       "Dockerfile",
-      "scripts/e2e/Dockerfile",
       "scripts/e2e/Dockerfile.qr-import",
       "scripts/docker/cleanup-smoke/Dockerfile",
     ]) {
@@ -89,42 +88,23 @@ describe("docker build cache layout", () => {
     }
   });
 
-  it("copies only install inputs before pnpm install in the e2e image", async () => {
+  it("installs the packaged tarball in the e2e functional image", async () => {
     const dockerfile = await readRepoFile("scripts/e2e/Dockerfile");
-    const installIndex = dockerfile.indexOf("pnpm install --frozen-lockfile");
-    const expectPatternBeforeInstall = (pattern: RegExp) => {
-      const index = indexOfPattern(dockerfile, pattern);
-      expect(index).toBeGreaterThan(-1);
-      expect(index).toBeLessThan(installIndex);
-    };
-    const expectPatternAfterInstall = (pattern: RegExp) => {
-      const index = indexOfPattern(dockerfile, pattern);
-      expect(index).toBeGreaterThan(installIndex);
-    };
+    const tarballCopyIndex = indexOfPattern(
+      dockerfile,
+      /^COPY --from=openclaw_package --chown=appuser:appuser openclaw-current\.tgz \/tmp\/openclaw-current\.tgz$/m,
+    );
+    const installIndex = dockerfile.indexOf("npm install -g --prefix /tmp/openclaw-prefix");
+    const appCopyIndex = dockerfile.indexOf(
+      "cp -a /tmp/openclaw-prefix/lib/node_modules/openclaw/. /app/",
+    );
 
-    expectPatternBeforeInstall(
-      /^COPY(?:\s+--chown=\S+)?\s+package\.json pnpm-lock\.yaml pnpm-workspace\.yaml \.npmrc \.\/$/m,
-    );
-    expectPatternBeforeInstall(
-      /^COPY(?:\s+--chown=\S+)?\s+ui\/package\.json \.\/ui\/package\.json$/m,
-    );
-    expectPatternBeforeInstall(
-      /^RUN --mount=type=bind,source=extensions,target=\/tmp\/extensions,readonly\s+\\$/m,
-    );
-    expectPatternBeforeInstall(/^COPY(?:\s+--chown=\S+)?\s+patches \.\/patches$/m);
-    expectPatternBeforeInstall(
-      /^COPY(?:\s+--chown=\S+)?\s+scripts\/postinstall-bundled-plugins\.mjs scripts\/preinstall-package-manager-warning\.mjs scripts\/npm-runner\.mjs scripts\/windows-cmd-helpers\.mjs \.\/scripts\/$/m,
-    );
-    expectPatternAfterInstall(
-      /^COPY(?:\s+--chown=\S+)?\s+\.oxlintrc\.json tsconfig\.json tsconfig\.plugin-sdk\.dts\.json tsconfig\.oxlint\*\.json tsdown\.config\.ts vitest\.config\.ts openclaw\.mjs \.\/$/m,
-    );
-    expectPatternAfterInstall(/^COPY(?:\s+--chown=\S+)?\s+src \.\/src$/m);
-    expectPatternAfterInstall(/^COPY(?:\s+--chown=\S+)?\s+test \.\/test$/m);
-    expectPatternAfterInstall(/^COPY(?:\s+--chown=\S+)?\s+scripts \.\/scripts$/m);
-    expectPatternAfterInstall(/^COPY(?:\s+--chown=\S+)?\s+ui \.\/ui$/m);
-    expectPatternAfterInstall(
-      /^COPY(?:\s+--link)?(?:\s+--chown=\S+)?\s+extensions \.\/extensions$/m,
-    );
+    expect(dockerfile).not.toContain("pnpm install --frozen-lockfile");
+    expect(dockerfile).not.toMatch(/^COPY(?:\s+--chown=\S+)?\s+\.\s+\.$/m);
+    expect(tarballCopyIndex).toBeGreaterThan(-1);
+    expect(installIndex).toBeGreaterThan(tarballCopyIndex);
+    expect(appCopyIndex).toBeGreaterThan(installIndex);
+    expect(dockerfile).toContain('ln -sf /app/openclaw.mjs "$HOME/.local/bin/openclaw"');
   });
 
   it("copies manifests before install in the qr-import image", async () => {
