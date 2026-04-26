@@ -12,6 +12,7 @@ permissions: {}
 
 jobs:
   stale:
+    if: github.repository == 'openclaw/openclaw'
     permissions:
       issues: write
       pull-requests: write
@@ -120,6 +121,7 @@ jobs:
             That channel is the escape hatch for high-quality PRs that get auto-closed.
 
   lock-closed-issues:
+    if: github.repository == 'openclaw/openclaw'
     permissions:
       issues: write
     runs-on: blacksmith-16vcpu-ubuntu-2404
