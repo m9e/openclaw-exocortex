@@ -307,12 +307,9 @@ async function refreshGatewayServiceEnv(params: {
     );
   }
 
-  if (isPackageManagerUpdateMode(params.result.mode)) {
-    throw new Error(
-      `updated install entrypoint not found under ${params.result.root ?? "unknown"}`,
-    );
-  }
-
+  // Package updates normally refresh through the updated entrypoint. If the
+  // entrypoint is unavailable, fall back to the installed daemon CLI rather
+  // than leaving the service environment stale.
   await runDaemonInstall({ force: true, json: params.jsonMode || undefined });
 }
 
@@ -324,9 +321,7 @@ async function runUpdatedInstallGatewayRestart(params: {
 }): Promise<boolean> {
   const entrypoint = await resolveGatewayInstallEntrypoint(params.result.root);
   if (!entrypoint) {
-    throw new Error(
-      `updated install entrypoint not found under ${params.result.root ?? "unknown"}`,
-    );
+    return await runDaemonRestart();
   }
 
   const args = ["gateway", "restart"];

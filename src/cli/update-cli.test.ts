@@ -22,6 +22,7 @@ const readPackageName = vi.fn();
 const readPackageVersion = vi.fn();
 const resolveGlobalManager = vi.fn();
 const serviceLoaded = vi.fn();
+const serviceReadCommand = vi.fn();
 const prepareRestartScript = vi.fn();
 const runRestartScript = vi.fn();
 const mockedRunDaemonInstall = vi.fn();
@@ -163,12 +164,17 @@ vi.mock("../plugins/installed-plugin-index-records.js", async (importOriginal) =
   };
 });
 
-vi.mock("../daemon/service.js", () => ({
-  resolveGatewayService: vi.fn(() => ({
-    isLoaded: (...args: unknown[]) => serviceLoaded(...args),
-    readRuntime: (...args: unknown[]) => serviceReadRuntime(...args),
-  })),
-}));
+vi.mock("../daemon/service.js", async (importOriginal) => {
+  const actual = await importOriginal<typeof import("../daemon/service.js")>();
+  return {
+    ...actual,
+    resolveGatewayService: vi.fn(() => ({
+      isLoaded: (...args: unknown[]) => serviceLoaded(...args),
+      readCommand: (...args: unknown[]) => serviceReadCommand(...args),
+      readRuntime: (...args: unknown[]) => serviceReadRuntime(...args),
+    })),
+  };
+});
 
 vi.mock("../infra/ports.js", () => ({
   inspectPortUsage: (...args: unknown[]) => inspectPortUsage(...args),
@@ -312,6 +318,13 @@ describe("update-cli", () => {
       ...overrides,
     }) as UpdateRunResult;
 
+  const mockInstalledGatewayService = () => {
+    serviceReadCommand.mockResolvedValue({
+      programArguments: ["node", "/tmp/openclaw/openclaw.mjs", "gateway", "run"],
+      environment: {},
+    });
+  };
+
   const runUpdateCliScenario = async (testCase: UpdateCliScenario) => {
     vi.clearAllMocks();
     await testCase.run();
@@ -379,6 +392,7 @@ describe("update-cli", () => {
       });
     }
     serviceLoaded.mockResolvedValue(true);
+    mockInstalledGatewayService();
     return { root, entrypoints };
   };
 
@@ -411,6 +425,7 @@ describe("update-cli", () => {
       version: "9999.0.0",
     });
     nodeVersionSatisfiesEngine.mockReturnValue(true);
+    serviceReadCommand.mockResolvedValue(null);
     vi.mocked(checkUpdateStatus).mockResolvedValue({
       root: "/test/path",
       installKind: "git",
@@ -1868,6 +1883,7 @@ describe("update-cli", () => {
     const tempDir = createCaseDir("openclaw-update");
     mockPackageInstallStatus(tempDir);
     serviceLoaded.mockResolvedValue(true);
+    mockInstalledGatewayService();
     vi.mocked(runDaemonInstall).mockRejectedValueOnce(new Error("refresh failed"));
 
     await updateCommand({ yes: true });
