@@ -98,7 +98,7 @@ function resolveProjectedToolSlugs(pluginConfig?: LocksmithPluginConfig): string
     if (!value || typeof value !== "object" || Array.isArray(value)) {
       continue;
     }
-    if ((value as LocksmithToolConfig).enabled === true) {
+    if (value.enabled === true) {
       projected.push(slug.toLowerCase());
     }
   }

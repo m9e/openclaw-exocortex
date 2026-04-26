@@ -41,7 +41,7 @@ describe("required Locksmith startup config", () => {
 
   it("requires the plugin to be enabled", () => {
     const cfg = requiredConfig();
-    cfg.plugins!.entries!.locksmith!.enabled = false;
+    cfg.plugins!.entries!.locksmith.enabled = false;
 
     expect(() => resolveRequiredLocksmithStartupConfig(cfg, {})).toThrow(
       "locksmith plugin is not enabled",
