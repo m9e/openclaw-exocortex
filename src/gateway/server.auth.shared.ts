@@ -15,6 +15,7 @@ import {
   onceMessage,
   rpcReq,
   startGatewayServer,
+  startServer,
   startServerWithClient,
   trackConnectChallengeNonce,
   testTailscaleWhois,
@@ -73,7 +74,7 @@ const readConnectChallengeNonce = async (ws: WebSocket) => {
   return String(nonce);
 };
 
-const openTailscaleWs = async (port: number) => {
+const openTailscaleWs = async (port: number, headers?: Record<string, string>) => {
   const ws = new WebSocket(`ws://127.0.0.1:${port}`, {
     headers: {
       "x-forwarded-for": "100.64.0.1",
@@ -81,6 +82,7 @@ const openTailscaleWs = async (port: number) => {
       "x-forwarded-host": "gateway.tailnet.ts.net",
       "tailscale-user-login": "peter",
       "tailscale-user-name": "Peter",
+      ...headers,
     },
   });
   trackConnectChallengeNonce(ws);
@@ -395,6 +397,7 @@ export {
   sendRawConnectReq,
   startGatewayServer,
   startRateLimitedTokenServerWithPairedDeviceToken,
+  startServer,
   startServerWithClient,
   TEST_OPERATOR_CLIENT,
   trackConnectChallengeNonce,

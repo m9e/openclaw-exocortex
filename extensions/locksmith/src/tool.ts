@@ -1,4 +1,3 @@
-import { Type } from "@sinclair/typebox";
 import type {
   AnyAgentTool,
   OpenClawPluginToolContext,
@@ -10,6 +9,7 @@ import {
   readNumberParam,
   readStringParam,
 } from "openclaw/plugin-sdk/provider-web-search";
+import { Type } from "typebox";
 import { callLocksmith, listLocksmithTools, LocksmithError } from "./client.js";
 import { type LocksmithProjectedTool, resolveLocksmithProjectedTools } from "./config.js";
 

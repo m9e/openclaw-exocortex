@@ -2,7 +2,11 @@ import fs from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
 import { afterEach, describe, expect, it, vi } from "vitest";
-import { createEmbeddedLobsterRunner, resolveLobsterCwd } from "./lobster-runner.js";
+import {
+  createEmbeddedLobsterRunner,
+  loadEmbeddedToolRuntimeFromPackage,
+  resolveLobsterCwd,
+} from "./lobster-runner.js";
 
 describe("resolveLobsterCwd", () => {
   it("defaults to the current working directory", () => {
@@ -236,6 +240,82 @@ describe("createEmbeddedLobsterRunner", () => {
     });
   });
 
+  it("forwards approvalId through resume when token is absent", async () => {
+    const runtime = {
+      runToolRequest: vi.fn(),
+      resumeToolRequest: vi.fn().mockResolvedValue({
+        ok: true,
+        protocolVersion: 1,
+        status: "ok",
+        output: [],
+        requiresApproval: null,
+      }),
+    };
+
+    const runner = createEmbeddedLobsterRunner({
+      loadRuntime: vi.fn().mockResolvedValue(runtime),
+    });
+
+    await runner.run({
+      action: "resume",
+      approvalId: "dbc98d05",
+      approve: true,
+      cwd: process.cwd(),
+      timeoutMs: 2000,
+      maxStdoutBytes: 4096,
+    });
+
+    expect(runtime.resumeToolRequest).toHaveBeenCalledWith({
+      approvalId: "dbc98d05",
+      approved: true,
+      ctx: expect.objectContaining({ mode: "tool" }),
+    });
+  });
+
+  it("passes approvalId through the normalized needs_approval envelope", async () => {
+    const runtime = {
+      runToolRequest: vi.fn().mockResolvedValue({
+        ok: true,
+        protocolVersion: 1,
+        status: "needs_approval",
+        output: [],
+        requiresApproval: {
+          type: "approval_request",
+          prompt: "ok?",
+          items: [],
+          resumeToken: "eyJ...",
+          approvalId: "dbc98d05",
+        },
+      }),
+      resumeToolRequest: vi.fn(),
+    };
+
+    const runner = createEmbeddedLobsterRunner({
+      loadRuntime: vi.fn().mockResolvedValue(runtime),
+    });
+
+    const envelope = await runner.run({
+      action: "run",
+      pipeline: "exec --json=true echo hi",
+      cwd: process.cwd(),
+      timeoutMs: 2000,
+      maxStdoutBytes: 4096,
+    });
+
+    expect(envelope).toEqual({
+      ok: true,
+      status: "needs_approval",
+      output: [],
+      requiresApproval: {
+        type: "approval_request",
+        prompt: "ok?",
+        items: [],
+        resumeToken: "eyJ...",
+        approvalId: "dbc98d05",
+      },
+    });
+  });
+
   it("loads the embedded runtime once per runner", async () => {
     const runtime = {
       runToolRequest: vi.fn().mockResolvedValue({
@@ -276,6 +356,60 @@ describe("createEmbeddedLobsterRunner", () => {
     expect(loadRuntime).toHaveBeenCalledTimes(1);
   });
 
+  it("falls back to the installed package core file when the core export is unavailable", async () => {
+    const tempDir = await fs.mkdtemp(path.join(os.tmpdir(), "openclaw-lobster-package-"));
+    const packageRoot = path.join(tempDir, "node_modules", "@clawdbot", "lobster");
+    const packageEntryPath = path.join(packageRoot, "dist", "src", "sdk", "index.js");
+    const packageCorePath = path.join(packageRoot, "dist", "src", "core", "index.js");
+
+    try {
+      await fs.mkdir(path.dirname(packageEntryPath), { recursive: true });
+      await fs.mkdir(path.dirname(packageCorePath), { recursive: true });
+      await fs.writeFile(
+        path.join(packageRoot, "package.json"),
+        JSON.stringify({
+          name: "@clawdbot/lobster",
+          type: "module",
+          main: "./dist/src/sdk/index.js",
+        }),
+        "utf8",
+      );
+      await fs.writeFile(packageEntryPath, "export {};\n", "utf8");
+      await fs.writeFile(
+        packageCorePath,
+        [
+          "export async function runToolRequest() {",
+          "  return { ok: true, status: 'ok', output: [{ source: 'fallback' }], requiresApproval: null };",
+          "}",
+          "export async function resumeToolRequest() {",
+          "  return { ok: true, status: 'cancelled', output: [], requiresApproval: null };",
+          "}",
+          "",
+        ].join("\n"),
+        "utf8",
+      );
+
+      const runtime = await loadEmbeddedToolRuntimeFromPackage({
+        importModule: async (specifier) => {
+          if (specifier === "@clawdbot/lobster/core") {
+            throw new Error("package export missing");
+          }
+          return (await import(`${specifier}?t=${Date.now()}`)) as object;
+        },
+        resolvePackageEntry: () => packageEntryPath,
+      });
+
+      await expect(runtime.runToolRequest({ pipeline: "commands.list" })).resolves.toEqual({
+        ok: true,
+        status: "ok",
+        output: [{ source: "fallback" }],
+        requiresApproval: null,
+      });
+    } finally {
+      await fs.rm(tempDir, { recursive: true, force: true });
+    }
+  });
+
   it("requires a pipeline for run", async () => {
     const runner = createEmbeddedLobsterRunner({
       loadRuntime: vi.fn().mockResolvedValue({
@@ -310,7 +444,7 @@ describe("createEmbeddedLobsterRunner", () => {
         timeoutMs: 2000,
         maxStdoutBytes: 4096,
       }),
-    ).rejects.toThrow(/token required/);
+    ).rejects.toThrow(/token or approvalId required/);
 
     await expect(
       runner.run({

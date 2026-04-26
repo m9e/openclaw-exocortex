@@ -1,6 +1,11 @@
 import type {
+  SilentReplyPolicyShape,
+  SilentReplyRewriteShape,
+} from "../shared/silent-reply-policy.js";
+import type {
   AgentEmbeddedHarnessConfig,
   AgentModelConfig,
+  AgentRuntimePolicyConfig,
   AgentSandboxConfig,
 } from "./types.agents-shared.js";
 import type {
@@ -11,8 +16,18 @@ import type {
 } from "./types.base.js";
 import type { MemorySearchConfig } from "./types.tools.js";
 
-export type AgentContextInjection = "always" | "continuation-skip";
+export type AgentContextInjection = "always" | "continuation-skip" | "never";
 export type EmbeddedPiExecutionContract = "default" | "strict-agentic";
+
+export type Gpt5PromptOverlayConfig = {
+  /** Friendly interaction-style layer for GPT-5-family models (default: friendly). */
+  personality?: "friendly" | "on" | "off";
+};
+
+export type PromptOverlaysConfig = {
+  /** Shared GPT-5-family prompt overlay used across providers. */
+  gpt5?: Gpt5PromptOverlayConfig;
+};
 
 export type AgentModelEntryConfig = {
   alias?: string;
@@ -87,6 +102,8 @@ export type CliBackendConfig = {
   resumeOutput?: "json" | "text" | "jsonl";
   /** JSONL event dialect for CLIs with provider-specific stream formats. */
   jsonlDialect?: "claude-stream-json";
+  /** Long-lived CLI process mode. */
+  liveSession?: "claude-stdio";
   /** Prompt input mode (default: arg). */
   input?: "arg" | "stdin";
   /** Max prompt length for arg mode (if exceeded, stdin is used). */
@@ -111,6 +128,8 @@ export type CliBackendConfig = {
   sessionIdFields?: string[];
   /** Flag used to pass system prompt. */
   systemPromptArg?: string;
+  /** Flag used to pass a system prompt file. */
+  systemPromptFileArg?: string;
   /** Config override flag used to pass a system prompt file (e.g. -c). */
   systemPromptFileConfigArg?: string;
   /** Config override key used to pass a system prompt file. */
@@ -160,7 +179,9 @@ export type CliBackendConfig = {
 export type AgentDefaultsConfig = {
   /** Global default provider params applied to all models before per-model and per-agent overrides. */
   params?: Record<string, unknown>;
-  /** Default embedded agent harness policy. */
+  /** Default agent runtime policy. */
+  agentRuntime?: AgentRuntimePolicyConfig;
+  /** @deprecated Use agentRuntime. */
   embeddedHarness?: AgentEmbeddedHarnessConfig;
   /** Primary model and fallbacks (provider/model). Accepts string or {primary,fallbacks}. */
   model?: AgentModelConfig;
@@ -191,10 +212,16 @@ export type AgentDefaultsConfig = {
   workspace?: string;
   /** Optional default allowlist of skills for agents that do not set agents.list[].skills. */
   skills?: string[];
+  /** Silent-reply policy by conversation type. */
+  silentReply?: SilentReplyPolicyShape;
+  /** Whether disallowed silent replies should be rewritten by conversation type. */
+  silentReplyRewrite?: SilentReplyRewriteShape;
   /** Optional repository root for system prompt runtime line (overrides auto-detect). */
   repoRoot?: string;
   /** Optional full system prompt replacement. Primarily for prompt debugging and controlled experiments. */
   systemPromptOverride?: string;
+  /** Provider-independent prompt overlays applied by model family. */
+  promptOverlays?: PromptOverlaysConfig;
   /** Skip bootstrap (BOOTSTRAP.md creation, etc.) for pre-configured deployments. */
   skipBootstrap?: boolean;
   /**
@@ -273,7 +300,7 @@ export type AgentDefaultsConfig = {
   /** Vector memory search configuration (per-agent overrides supported). */
   memorySearch?: MemorySearchConfig;
   /** Default thinking level when no /think directive is present. */
-  thinkingDefault?: "off" | "minimal" | "low" | "medium" | "high" | "xhigh" | "adaptive";
+  thinkingDefault?: "off" | "minimal" | "low" | "medium" | "high" | "xhigh" | "adaptive" | "max";
   /** Default verbose level when no /verbose directive is present. */
   verboseDefault?: "off" | "on" | "full";
   /** Default elevated level when no /elevated directive is present. */
@@ -450,7 +477,7 @@ export type AgentCompactionConfig = {
    */
   truncateAfterCompaction?: boolean;
   /**
-   * Send a "🧹 Compacting context..." notice to the user when compaction starts.
+   * Send brief compaction notices to the user when compaction starts and completes.
    * Default: false (silent by default).
    */
   notifyUser?: boolean;

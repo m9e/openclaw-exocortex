@@ -4,6 +4,9 @@
   "private": true,
   "description": "OpenClaw untrusted content guard plugin",
   "type": "module",
+  "dependencies": {
+    "typebox": "1.1.33"
+  },
   "devDependencies": {
     "@openclaw/plugin-sdk": "workspace:*"
   },

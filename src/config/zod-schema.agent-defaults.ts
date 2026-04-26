@@ -6,6 +6,7 @@ import {
   AgentSandboxSchema,
   AgentContextLimitsSchema,
   AgentEmbeddedHarnessSchema,
+  AgentRuntimePolicySchema,
   AgentModelSchema,
   MemorySearchSchema,
 } from "./zod-schema.agent-runtime.js";
@@ -17,10 +18,29 @@ import {
   TypingModeSchema,
 } from "./zod-schema.core.js";
 
+export const SilentReplyPolicySchema = z.union([z.literal("allow"), z.literal("disallow")]);
+
+export const SilentReplyPolicyConfigSchema = z
+  .object({
+    direct: SilentReplyPolicySchema.optional(),
+    group: SilentReplyPolicySchema.optional(),
+    internal: SilentReplyPolicySchema.optional(),
+  })
+  .strict();
+
+export const SilentReplyRewriteConfigSchema = z
+  .object({
+    direct: z.boolean().optional(),
+    group: z.boolean().optional(),
+    internal: z.boolean().optional(),
+  })
+  .strict();
+
 export const AgentDefaultsSchema = z
   .object({
     /** Global default provider params applied to all models before per-model and per-agent overrides. */
     params: z.record(z.string(), z.unknown()).optional(),
+    agentRuntime: AgentRuntimePolicySchema,
     embeddedHarness: AgentEmbeddedHarnessSchema,
     model: AgentModelSchema.optional(),
     imageModel: AgentModelSchema.optional(),
@@ -47,10 +67,27 @@ export const AgentDefaultsSchema = z
       .optional(),
     workspace: z.string().optional(),
     skills: z.array(z.string()).optional(),
+    silentReply: SilentReplyPolicyConfigSchema.optional(),
+    silentReplyRewrite: SilentReplyRewriteConfigSchema.optional(),
     repoRoot: z.string().optional(),
     systemPromptOverride: z.string().optional(),
+    promptOverlays: z
+      .object({
+        gpt5: z
+          .object({
+            personality: z
+              .union([z.literal("friendly"), z.literal("on"), z.literal("off")])
+              .optional(),
+          })
+          .strict()
+          .optional(),
+      })
+      .strict()
+      .optional(),
     skipBootstrap: z.boolean().optional(),
-    contextInjection: z.union([z.literal("always"), z.literal("continuation-skip")]).optional(),
+    contextInjection: z
+      .union([z.literal("always"), z.literal("continuation-skip"), z.literal("never")])
+      .optional(),
     bootstrapMaxChars: z.number().int().positive().optional(),
     bootstrapTotalMaxChars: z.number().int().positive().optional(),
     experimental: z
@@ -175,6 +212,7 @@ export const AgentDefaultsSchema = z
           })
           .strict()
           .optional(),
+        truncateAfterCompaction: z.boolean().optional(),
         notifyUser: z.boolean().optional(),
       })
       .strict()
@@ -197,6 +235,7 @@ export const AgentDefaultsSchema = z
         z.literal("high"),
         z.literal("xhigh"),
         z.literal("adaptive"),
+        z.literal("max"),
       ])
       .optional(),
     verboseDefault: z.union([z.literal("off"), z.literal("on"), z.literal("full")]).optional(),

@@ -1,10 +1,10 @@
-import { Type } from "@sinclair/typebox";
 import type { OpenClawPluginApi } from "openclaw/plugin-sdk/plugin-runtime";
 import {
   jsonResult,
   readNumberParam,
   readStringParam,
 } from "openclaw/plugin-sdk/provider-web-search";
+import { Type } from "typebox";
 import { runUntrustedContentPipeline } from "./client.js";
 import { formatManualScanToolResult } from "./transform.js";
 
