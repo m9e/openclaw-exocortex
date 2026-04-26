@@ -27,6 +27,54 @@ limactl shell openclaw-gateway
 limactl shell openclaw-untrusted
 ```
 
+## Install OpenClaw in the gateway guest
+
+The gateway VM sees the host checkout read-only at the same `/Users/...` path.
+Install a writable Linux checkout in the guest user's home directory:
+
+```bash
+limactl shell openclaw-gateway -- \
+  bash /Users/yod/code/exocortex/openclaw-exocortex/scripts/dev/lima/install-in-guest.sh
+```
+
+The installer clones the mounted checkout into `~/code/openclaw-exocortex`,
+installs Node 24 + pnpm, runs `pnpm install`, creates
+`~/.openclaw/gateway.token`, and writes two guest helpers:
+
+- `~/bin/openclaw`: runs the dev CLI from the guest checkout without typing `pnpm`
+- `~/bin/openclaw-gateway-dev`: starts the gateway with local VM defaults
+
+The helper starts with `--allow-unconfigured` by default for first-boot VM
+bring-up; set `OPENCLAW_GATEWAY_REQUIRE_CONFIG=1` once you want config to be
+mandatory.
+
+Open a new guest shell after install, then run CLI commands directly:
+
+```bash
+openclaw pairing list --channel telegram
+openclaw channels status --probe
+```
+
+Start the gateway from inside the guest with:
+
+```bash
+openclaw-gateway-dev
+```
+
+From the Mac host, the gateway is reachable on `http://127.0.0.1:29789/`
+because Lima forwards host port `29789` to guest port `18789`.
+
+To open the dashboard from the host and copy the token:
+
+```bash
+bash scripts/dev/lima/dashboard-open.sh
+```
+
+Paste these values into the login gate if prompted:
+
+- Gateway URL: `ws://127.0.0.1:29789`
+- Token: the value printed by `dashboard-open.sh`
+
 ## Isolation model
 
 - `openclaw-gateway` inherits Lima's default read-only home mount so it can inspect the host repo without mutating it.
