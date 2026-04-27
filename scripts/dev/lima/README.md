@@ -86,11 +86,15 @@ The default config:
 - hides the generic `locksmith_call` tool
 - projects only `locksmith_github`
 - constrains file tools to the workspace
-- denies direct runtime shell/process, web/UI, messaging, automation, node,
-  media, session-spawn, subagent, and generic `locksmith_call` tools in the VM
+- configures a tight `main` agent policy with local workspace edits, memory,
+  status, plan, outbound message/TTS, session send/spawn/yield, subagent
+  control, agent discovery, and `locksmith_github`
+- denies direct shell/process, direct web, UI/browser, automation, node-control,
+  media generation/understanding, session list/history, and generic
+  `locksmith_call` on the trusted `main` agent
 
-That policy keeps local workspace, memory, status, plan, and projected
-Locksmith tools available while removing the easy direct-egress bypasses.
+That policy keeps trusted orchestration and communication available while
+removing the easy direct-egress bypasses from the gateway agent.
 
 Check it from inside the guest:
 
@@ -100,6 +104,30 @@ openclaw locksmith status
 openclaw locksmith tools
 openclaw locksmith call github zen
 ```
+
+## Configure the untrusted sandbox target
+
+Use the host-side helper after both Lima instances are running:
+
+```bash
+bash scripts/dev/lima/configure-untrusted-sandbox.sh
+```
+
+The helper enables SSH in `openclaw-untrusted`, creates a gateway-only SSH key,
+authorizes it in the untrusted guest, records the current untrusted Lima SSH
+port in the gateway config, and re-runs the Locksmith policy installer.
+
+After that, the trusted `main` agent can choose:
+
+- local constrained work: `sessions_spawn` without `agentId`, or with
+  `agentId: "main"`
+- broader isolated work: `sessions_spawn` with `agentId: "untrusted"` and
+  `sandbox: "require"`
+
+The `untrusted` agent runs file tools and `exec`/`process` through the SSH
+sandbox backend in `openclaw-untrusted`. It intentionally does not get direct
+message/TTS, gateway, node, browser/UI, session-list/history, or generic
+`locksmith_call` tools.
 
 Start the gateway from inside the guest with:
 

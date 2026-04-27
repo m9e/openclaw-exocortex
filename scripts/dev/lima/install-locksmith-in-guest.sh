@@ -145,22 +145,254 @@ openclaw_cli() {
   return 127
 }
 
-clear_legacy_tools_also_allow() {
-  if openclaw_cli config unset tools.alsoAllow >/dev/null 2>&1; then
-    return
-  fi
-
+configure_openclaw_hardened_config() {
+  local token="$1"
+  local ssh_target="${OPENCLAW_UNTRUSTED_SSH_TARGET:-}"
+  local ssh_identity="${OPENCLAW_UNTRUSTED_SSH_IDENTITY:-$HOME/.ssh/openclaw_untrusted_ed25519}"
+  local ssh_workspace_root="${OPENCLAW_UNTRUSTED_SSH_WORKSPACE_ROOT:-/tmp/openclaw-sandboxes}"
   local config_path="${OPENCLAW_CONFIG_PATH:-$HOME/.openclaw/openclaw.json}"
-  [[ -f "$config_path" ]] || return
+  mkdir -p "$(dirname "$config_path")"
+  [[ -f "$config_path" ]] || printf '{}\n' >"$config_path"
 
-  node - "$config_path" <<'NODE'
-const fs = require("node:fs");
-const configPath = process.argv[2];
-const cfg = JSON.parse(fs.readFileSync(configPath, "utf8"));
-if (cfg && typeof cfg === "object" && cfg.tools && typeof cfg.tools === "object") {
-  delete cfg.tools.alsoAllow;
-  fs.writeFileSync(configPath, `${JSON.stringify(cfg, null, 2)}\n`, { mode: 0o600 });
+  log "writing required Locksmith and per-agent tool policy"
+  CONFIG_PATH="$config_path" \
+  LOCKSMITH_TOKEN="$token" \
+  OPENCLAW_UNTRUSTED_SSH_TARGET="$ssh_target" \
+  OPENCLAW_UNTRUSTED_SSH_IDENTITY="$ssh_identity" \
+  OPENCLAW_UNTRUSTED_SSH_WORKSPACE_ROOT="$ssh_workspace_root" \
+    node <<'NODE'
+const fs = require("fs");
+const os = require("os");
+
+const configPath = (process.env.CONFIG_PATH || "").replace(/^~(?=$|\/)/, os.homedir());
+const locksmithToken = process.env.LOCKSMITH_TOKEN || "";
+const untrustedSshTarget = (process.env.OPENCLAW_UNTRUSTED_SSH_TARGET || "").trim();
+const untrustedSshIdentity = process.env.OPENCLAW_UNTRUSTED_SSH_IDENTITY || "";
+const untrustedSshWorkspaceRoot =
+  process.env.OPENCLAW_UNTRUSTED_SSH_WORKSPACE_ROOT || "/tmp/openclaw-sandboxes";
+
+const trustedAllow = [
+  "read",
+  "write",
+  "edit",
+  "apply_patch",
+  "memory_search",
+  "memory_get",
+  "session_status",
+  "update_plan",
+  "message",
+  "tts",
+  "sessions_send",
+  "sessions_spawn",
+  "sessions_yield",
+  "subagents",
+  "agents_list",
+  "locksmith_github",
+];
+
+const trustedDeny = [
+  "group:runtime",
+  "group:web",
+  "group:ui",
+  "group:automation",
+  "group:nodes",
+  "image",
+  "image_generate",
+  "music_generate",
+  "video_generate",
+  "sessions_list",
+  "sessions_history",
+  "locksmith_call",
+];
+
+const untrustedAllow = [
+  "read",
+  "write",
+  "edit",
+  "apply_patch",
+  "exec",
+  "process",
+  "web_search",
+  "web_fetch",
+  "x_search",
+  "memory_search",
+  "memory_get",
+  "session_status",
+  "update_plan",
+  "sessions_yield",
+  "locksmith_github",
+];
+
+const untrustedDeny = [
+  "group:ui",
+  "group:automation",
+  "group:nodes",
+  "browser",
+  "canvas",
+  "gateway",
+  "cron",
+  "nodes",
+  "message",
+  "tts",
+  "sessions_send",
+  "sessions_list",
+  "sessions_history",
+  "agents_list",
+  "subagents",
+  "sessions_spawn",
+  "image_generate",
+  "music_generate",
+  "video_generate",
+  "locksmith_call",
+];
+
+function isRecord(value) {
+  return value !== null && typeof value === "object" && !Array.isArray(value);
 }
+
+function ensureRecord(parent, key) {
+  if (!isRecord(parent[key])) {
+    parent[key] = {};
+  }
+  return parent[key];
+}
+
+function uniqueStrings(values) {
+  return Array.from(
+    new Set(
+      values
+        .filter((value) => typeof value === "string")
+        .map((value) => value.trim())
+        .filter(Boolean),
+    ),
+  );
+}
+
+function mergeList(existing, additions) {
+  return uniqueStrings([...(Array.isArray(existing) ? existing : []), ...additions]);
+}
+
+function upsertAgent(agents, id) {
+  const list = Array.isArray(agents.list) ? agents.list : [];
+  agents.list = list;
+  const found = list.find((entry) => isRecord(entry) && entry.id === id);
+  if (found) {
+    return found;
+  }
+  const created = { id };
+  list.push(created);
+  return created;
+}
+
+let cfg = {};
+try {
+  cfg = JSON.parse(fs.readFileSync(configPath, "utf8"));
+} catch {
+  cfg = {};
+}
+if (!isRecord(cfg)) {
+  cfg = {};
+}
+
+const plugins = ensureRecord(cfg, "plugins");
+const pluginEntries = ensureRecord(plugins, "entries");
+const locksmith = ensureRecord(pluginEntries, "locksmith");
+locksmith.enabled = true;
+const locksmithConfig = ensureRecord(locksmith, "config");
+locksmithConfig.baseUrl = "http://127.0.0.1:9200";
+locksmithConfig.inboundToken = locksmithToken;
+locksmithConfig.required = true;
+locksmithConfig.genericTool = false;
+const locksmithTools = ensureRecord(locksmithConfig, "tools");
+const githubTool = ensureRecord(locksmithTools, "github");
+githubTool.enabled = true;
+githubTool.description = "GitHub REST API exposed through required local Locksmith";
+
+const tools = ensureRecord(cfg, "tools");
+delete tools.allow;
+delete tools.alsoAllow;
+delete tools.deny;
+const globalFs = ensureRecord(tools, "fs");
+globalFs.workspaceOnly = true;
+if (isRecord(tools.exec)) {
+  delete tools.exec.security;
+  if (Object.keys(tools.exec).length === 0) {
+    delete tools.exec;
+  }
+}
+if (isRecord(tools.web)) {
+  for (const key of ["search", "fetch"]) {
+    const section = tools.web[key];
+    if (isRecord(section) && section.enabled === false) {
+      delete section.enabled;
+      if (Object.keys(section).length === 0) {
+        delete tools.web[key];
+      }
+    }
+  }
+  if (Object.keys(tools.web).length === 0) {
+    delete tools.web;
+  }
+}
+
+const agents = ensureRecord(cfg, "agents");
+const main = upsertAgent(agents, "main");
+if (main.default === undefined) {
+  main.default = true;
+}
+if (main.name === undefined) {
+  main.name = "Trusted Gateway";
+}
+const mainTools = ensureRecord(main, "tools");
+mainTools.allow = trustedAllow;
+mainTools.deny = trustedDeny;
+mainTools.fs = { ...(isRecord(mainTools.fs) ? mainTools.fs : {}), workspaceOnly: true };
+mainTools.exec = { ...(isRecord(mainTools.exec) ? mainTools.exec : {}), security: "deny" };
+const mainSubagents = ensureRecord(main, "subagents");
+mainSubagents.allowAgents = mergeList(mainSubagents.allowAgents, ["main", "untrusted"]);
+
+if (untrustedSshTarget) {
+  const untrusted = upsertAgent(agents, "untrusted");
+  if (untrusted.name === undefined) {
+    untrusted.name = "Untrusted Sandbox";
+  }
+  const untrustedTools = ensureRecord(untrusted, "tools");
+  untrustedTools.allow = untrustedAllow;
+  untrustedTools.deny = untrustedDeny;
+  untrustedTools.fs = {
+    ...(isRecord(untrustedTools.fs) ? untrustedTools.fs : {}),
+    workspaceOnly: true,
+  };
+  untrustedTools.exec = {
+    ...(isRecord(untrustedTools.exec) ? untrustedTools.exec : {}),
+    host: "sandbox",
+    security: "full",
+    ask: "off",
+  };
+  const sandboxTools = ensureRecord(ensureRecord(untrustedTools, "sandbox"), "tools");
+  sandboxTools.allow = untrustedAllow;
+  sandboxTools.deny = untrustedDeny;
+
+  untrusted.sandbox = {
+    ...(isRecord(untrusted.sandbox) ? untrusted.sandbox : {}),
+    mode: "all",
+    backend: "ssh",
+    scope: "session",
+    workspaceAccess: "rw",
+    ssh: {
+      ...(isRecord(untrusted.sandbox?.ssh) ? untrusted.sandbox.ssh : {}),
+      target: untrustedSshTarget,
+      workspaceRoot: untrustedSshWorkspaceRoot,
+      strictHostKeyChecking: false,
+      updateHostKeys: false,
+      identityFile: untrustedSshIdentity,
+    },
+  };
+  const untrustedSubagents = ensureRecord(untrusted, "subagents");
+  untrustedSubagents.allowAgents = mergeList(untrustedSubagents.allowAgents, ["untrusted"]);
+}
+
+fs.writeFileSync(configPath, `${JSON.stringify(cfg, null, 2)}\n`, { mode: 0o600 });
 NODE
 }
 
@@ -172,28 +404,11 @@ enable_openclaw_plugin() {
     return
   fi
 
-  clear_legacy_tools_also_allow
-
+  configure_openclaw_hardened_config "$token"
   log "enabling OpenClaw locksmith plugin"
   openclaw_cli plugins enable locksmith >/dev/null
-  local batch_file
-  batch_file="$(mktemp)"
-  cat >"$batch_file" <<JSON
-[
-  {"path":"plugins.entries.locksmith.config.baseUrl","value":"http://127.0.0.1:9200"},
-  {"path":"plugins.entries.locksmith.config.inboundToken","value":"$token"},
-  {"path":"plugins.entries.locksmith.config.required","value":true},
-  {"path":"plugins.entries.locksmith.config.genericTool","value":false},
-  {"path":"plugins.entries.locksmith.config.tools.github.enabled","value":true},
-  {"path":"plugins.entries.locksmith.config.tools.github.description","value":"GitHub REST API exposed through required local Locksmith"},
-  {"path":"tools.fs.workspaceOnly","value":true},
-  {"path":"tools.exec.security","value":"deny"},
-  {"path":"tools.allow","value":["read","write","edit","apply_patch","memory_search","memory_get","session_status","update_plan","locksmith_github"]},
-  {"path":"tools.deny","value":["group:runtime","group:web","group:ui","group:messaging","group:automation","group:nodes","group:media","agents_list","sessions_list","sessions_history","sessions_send","sessions_spawn","sessions_yield","subagents","locksmith_call"]}
-]
-JSON
-  openclaw_cli config set --batch-file "$batch_file" --strict-json >/dev/null
-  rm -f "$batch_file"
+  openclaw_cli config get plugins.entries.locksmith.config.required >/dev/null
+  openclaw_cli config get agents.list --json >/dev/null
 
   if openclaw_cli gateway status >/dev/null 2>&1; then
     log "restarting gateway so runtime plugin state is current"
