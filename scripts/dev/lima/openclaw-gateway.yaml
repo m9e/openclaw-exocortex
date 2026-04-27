@@ -45,16 +45,17 @@ provision:
 message: |
   openclaw-gateway is a trusted Lima VM for the OpenClaw gateway and trusted tools.
   Guest localhost ports are not auto-forwarded; only these host forwards are enabled:
-    host port 29789 -> guest 127.0.0.1:18789
-    host port 29790 -> guest 127.0.0.1:18790
-  These forwards bind on all host interfaces so other Lima guests can reach them via host.lima.internal.
+    host 127.0.0.1:29789 -> guest 127.0.0.1:18789
+    host 127.0.0.1:29790 -> guest 127.0.0.1:18790
+  These forwards are host-loopback only. Do not expose the trusted Gateway
+  WebSocket to sibling Lima guests or the host LAN.
 
 portForwards:
   - guestPort: 18789
-    hostIP: "0.0.0.0"
+    hostIP: "127.0.0.1"
     hostPort: 29789
   - guestPort: 18790
-    hostIP: "0.0.0.0"
+    hostIP: "127.0.0.1"
     hostPort: 29790
   - guestIP: "127.0.0.1"
     guestPortRange: [1, 65535]

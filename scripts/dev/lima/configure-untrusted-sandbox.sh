@@ -44,6 +44,74 @@ fi
 REMOTE
 }
 
+configure_untrusted_egress_guard() {
+  local ports_text="${OPENCLAW_UNTRUSTED_BLOCK_HOST_PORTS:-29789 29790}"
+  local port
+  for port in $ports_text; do
+    [[ "$port" =~ ^[0-9]+$ ]] || die "invalid OPENCLAW_UNTRUSTED_BLOCK_HOST_PORTS entry: $port"
+  done
+
+  log "blocking untrusted guest egress to trusted gateway host ports: $ports_text"
+  limactl shell openclaw-untrusted -- sudo env "OPENCLAW_BLOCK_HOST_PORTS=$ports_text" bash -s <<'REMOTE'
+set -euo pipefail
+
+if ! command -v iptables >/dev/null 2>&1; then
+  apt-get update
+  DEBIAN_FRONTEND=noninteractive apt-get install -y iptables
+fi
+
+mkdir -p /usr/local/sbin
+cat >/usr/local/sbin/openclaw-untrusted-egress-guard <<'SCRIPT'
+#!/usr/bin/env bash
+set -euo pipefail
+
+ports_text="${OPENCLAW_BLOCK_HOST_PORTS:-29789 29790}"
+host_ip="$(getent ahostsv4 host.lima.internal | awk 'NR == 1 { print $1 }')"
+if [[ -z "$host_ip" ]]; then
+  echo "failed to resolve host.lima.internal" >&2
+  exit 1
+fi
+
+iptables -w -N OPENCLAW_UNTRUSTED_EGRESS 2>/dev/null || true
+iptables -w -F OPENCLAW_UNTRUSTED_EGRESS
+
+for port in $ports_text; do
+  [[ "$port" =~ ^[0-9]+$ ]] || {
+    echo "invalid blocked host port: $port" >&2
+    exit 1
+  }
+  iptables -w -A OPENCLAW_UNTRUSTED_EGRESS \
+    -p tcp -d "$host_ip" --dport "$port" \
+    -j REJECT --reject-with tcp-reset
+done
+
+iptables -w -C OUTPUT -j OPENCLAW_UNTRUSTED_EGRESS 2>/dev/null ||
+  iptables -w -I OUTPUT 1 -j OPENCLAW_UNTRUSTED_EGRESS
+SCRIPT
+chmod 0755 /usr/local/sbin/openclaw-untrusted-egress-guard
+
+cat >/etc/systemd/system/openclaw-untrusted-egress-guard.service <<SERVICE
+[Unit]
+Description=OpenClaw untrusted VM egress guard
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=oneshot
+Environment="OPENCLAW_BLOCK_HOST_PORTS=$OPENCLAW_BLOCK_HOST_PORTS"
+ExecStart=/usr/local/sbin/openclaw-untrusted-egress-guard
+RemainAfterExit=yes
+
+[Install]
+WantedBy=multi-user.target
+SERVICE
+
+systemctl daemon-reload
+systemctl enable openclaw-untrusted-egress-guard.service >/dev/null
+systemctl restart openclaw-untrusted-egress-guard.service
+REMOTE
+}
+
 main() {
   command -v limactl >/dev/null 2>&1 || die "limactl is required"
   require_running_instance openclaw-gateway
@@ -88,6 +156,8 @@ main() {
   log "testing gateway -> untrusted SSH target $target"
   limactl shell openclaw-gateway -- bash -lc \
     "ssh -i \"\$HOME/.ssh/openclaw_untrusted_ed25519\" -p '$port' -o BatchMode=yes -o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null '${untrusted_user}@host.lima.internal' 'printf ok' >/dev/null"
+
+  configure_untrusted_egress_guard
 
   log "applying gateway OpenClaw config for the untrusted agent"
   limactl shell openclaw-gateway -- bash -lc \

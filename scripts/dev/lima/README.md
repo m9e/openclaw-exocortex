@@ -5,19 +5,19 @@ These templates create two additive Lima guests on macOS without touching Podman
 - `openclaw-gateway`: trusted VM for the OpenClaw gateway and trusted tools
 - `openclaw-untrusted`: isolated VM for untrusted content and tool execution
 
-Both instances use the Apple Virtualization.framework backend (`vmType: vz`) on Apple Silicon and disable Lima's catch-all localhost port forwarding. Only explicit localhost forwards are enabled.
+Both instances use the Apple Virtualization.framework backend (`vmType: vz`) on Apple Silicon and disable Lima's catch-all localhost port forwarding. Only explicit host-loopback forwards are enabled.
 
 ## Host port mapping
 
 - `openclaw-gateway`
-  - host `*:29789` -> guest `127.0.0.1:18789`
-  - host `*:29790` -> guest `127.0.0.1:18790`
+  - host `127.0.0.1:29789` -> guest `127.0.0.1:18789`
+  - host `127.0.0.1:29790` -> guest `127.0.0.1:18790`
 - `openclaw-untrusted`
-  - host `*:39789` -> guest `127.0.0.1:18789`
-  - host `*:39790` -> guest `127.0.0.1:18790`
+  - host `127.0.0.1:39789` -> guest `127.0.0.1:18789`
+  - host `127.0.0.1:39790` -> guest `127.0.0.1:18790`
 
-From another Lima guest, reach those services via `host.lima.internal`.
-Because the forwards bind on all host interfaces, they are also reachable from the host LAN unless a local firewall blocks them.
+The OpenClaw Gateway forwards are for the Mac host only. Sibling Lima guests
+should not use `host.lima.internal` to call the trusted gateway API.
 
 ## Usage
 
@@ -115,7 +115,9 @@ bash scripts/dev/lima/configure-untrusted-sandbox.sh
 
 The helper enables SSH in `openclaw-untrusted`, creates a gateway-only SSH key,
 authorizes it in the untrusted guest, records the current untrusted Lima SSH
-port in the gateway config, and re-runs the Locksmith policy installer.
+port in the gateway config, installs an egress guard that blocks the untrusted
+guest from calling the trusted gateway's host-forwarded OpenClaw ports, and
+re-runs the Locksmith policy installer.
 
 After that, the trusted `main` agent can choose:
 
@@ -154,3 +156,6 @@ Paste these values into the login gate if prompted:
 - `openclaw-gateway` inherits Lima's default read-only home mount so it can inspect the host repo without mutating it.
 - `openclaw-untrusted` mounts no host directories.
 - Neither VM auto-forwards random guest localhost ports back onto the host.
+- The untrusted guest is blocked from reaching the trusted gateway's
+  host-forwarded OpenClaw ports (`29789` and `29790` by default). Override the
+  blocked list for experiments with `OPENCLAW_UNTRUSTED_BLOCK_HOST_PORTS`.

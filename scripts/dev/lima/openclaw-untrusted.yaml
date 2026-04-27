@@ -44,16 +44,16 @@ message: |
   openclaw-untrusted is an isolated Lima VM for untrusted content and tool execution.
   No host directories are mounted into this guest.
   Guest localhost ports are not auto-forwarded; only these host forwards are enabled:
-    host port 39789 -> guest 127.0.0.1:18789
-    host port 39790 -> guest 127.0.0.1:18790
-  Reach the trusted gateway VM through host.lima.internal:29789 or :29790.
+    host 127.0.0.1:39789 -> guest 127.0.0.1:18789
+    host 127.0.0.1:39790 -> guest 127.0.0.1:18790
+  These forwards are host-loopback only.
 
 portForwards:
   - guestPort: 18789
-    hostIP: "0.0.0.0"
+    hostIP: "127.0.0.1"
     hostPort: 39789
   - guestPort: 18790
-    hostIP: "0.0.0.0"
+    hostIP: "127.0.0.1"
     hostPort: 39790
   - guestIP: "127.0.0.1"
     guestPortRange: [1, 65535]
