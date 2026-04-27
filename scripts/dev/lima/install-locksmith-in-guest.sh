@@ -145,6 +145,25 @@ openclaw_cli() {
   return 127
 }
 
+clear_legacy_tools_also_allow() {
+  if openclaw_cli config unset tools.alsoAllow >/dev/null 2>&1; then
+    return
+  fi
+
+  local config_path="${OPENCLAW_CONFIG_PATH:-$HOME/.openclaw/openclaw.json}"
+  [[ -f "$config_path" ]] || return
+
+  node - "$config_path" <<'NODE'
+const fs = require("node:fs");
+const configPath = process.argv[2];
+const cfg = JSON.parse(fs.readFileSync(configPath, "utf8"));
+if (cfg && typeof cfg === "object" && cfg.tools && typeof cfg.tools === "object") {
+  delete cfg.tools.alsoAllow;
+  fs.writeFileSync(configPath, `${JSON.stringify(cfg, null, 2)}\n`, { mode: 0o600 });
+}
+NODE
+}
+
 enable_openclaw_plugin() {
   local token="$1"
 
@@ -152,6 +171,8 @@ enable_openclaw_plugin() {
     log "openclaw helper not found on PATH; skipping plugin enablement"
     return
   fi
+
+  clear_legacy_tools_also_allow
 
   log "enabling OpenClaw locksmith plugin"
   openclaw_cli plugins enable locksmith >/dev/null
