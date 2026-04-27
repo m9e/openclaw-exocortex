@@ -178,6 +178,8 @@ const untrustedSshKnownHostsFile =
 const untrustedSshWorkspaceRoot =
   process.env.OPENCLAW_UNTRUSTED_SSH_WORKSPACE_ROOT || "/tmp/openclaw-sandboxes";
 
+const untrustedAgentIds = ["untrusted", "untrusted-read", "untrusted-write"];
+
 const trustedAllow = [
   "read",
   "write",
@@ -194,7 +196,6 @@ const trustedAllow = [
   "sessions_yield",
   "subagents",
   "agents_list",
-  "locksmith_github",
 ];
 
 const trustedDeny = [
@@ -210,15 +211,11 @@ const trustedDeny = [
   "sessions_list",
   "sessions_history",
   "locksmith_call",
+  "locksmith_github",
 ];
 
-const untrustedAllow = [
+const untrustedReadAllow = [
   "read",
-  "write",
-  "edit",
-  "apply_patch",
-  "exec",
-  "process",
   "memory_search",
   "memory_get",
   "session_status",
@@ -226,7 +223,21 @@ const untrustedAllow = [
   "sessions_yield",
 ];
 
-const untrustedDeny = [
+const untrustedWriteAllow = [
+  "write",
+  "edit",
+  "apply_patch",
+  "session_status",
+  "update_plan",
+  "sessions_yield",
+];
+
+const untrustedReadDeny = [
+  "write",
+  "edit",
+  "apply_patch",
+  "exec",
+  "process",
   "group:web",
   "group:ui",
   "group:automation",
@@ -244,6 +255,38 @@ const untrustedDeny = [
   "agents_list",
   "subagents",
   "sessions_spawn",
+  "image",
+  "image_generate",
+  "music_generate",
+  "video_generate",
+  "locksmith_call",
+  "locksmith_github",
+];
+
+const untrustedWriteDeny = [
+  "read",
+  "exec",
+  "process",
+  "memory_search",
+  "memory_get",
+  "group:web",
+  "group:ui",
+  "group:automation",
+  "group:nodes",
+  "browser",
+  "canvas",
+  "gateway",
+  "cron",
+  "nodes",
+  "message",
+  "tts",
+  "sessions_send",
+  "sessions_list",
+  "sessions_history",
+  "agents_list",
+  "subagents",
+  "sessions_spawn",
+  "image",
   "image_generate",
   "music_generate",
   "video_generate",
@@ -319,12 +362,10 @@ delete tools.alsoAllow;
 delete tools.deny;
 const globalFs = ensureRecord(tools, "fs");
 globalFs.workspaceOnly = true;
-if (isRecord(tools.exec)) {
-  delete tools.exec.security;
-  if (Object.keys(tools.exec).length === 0) {
-    delete tools.exec;
-  }
-}
+const globalExec = ensureRecord(tools, "exec");
+delete globalExec.security;
+const globalApplyPatch = ensureRecord(globalExec, "applyPatch");
+globalApplyPatch.workspaceOnly = true;
 if (isRecord(tools.web)) {
   for (const key of ["search", "fetch"]) {
     const section = tools.web[key];
@@ -354,48 +395,72 @@ mainTools.deny = trustedDeny;
 mainTools.fs = { ...(isRecord(mainTools.fs) ? mainTools.fs : {}), workspaceOnly: true };
 mainTools.exec = { ...(isRecord(mainTools.exec) ? mainTools.exec : {}), security: "deny" };
 const mainSubagents = ensureRecord(main, "subagents");
-mainSubagents.allowAgents = mergeList(mainSubagents.allowAgents, ["main", "untrusted"]);
+mainSubagents.allowAgents = mergeList(mainSubagents.allowAgents, ["main", ...untrustedAgentIds]);
+mainSubagents.requireAgentId = true;
 
 if (untrustedSshTarget) {
-  const untrusted = upsertAgent(agents, "untrusted");
-  if (untrusted.name === undefined) {
-    untrusted.name = "Untrusted Sandbox";
-  }
-  const untrustedTools = ensureRecord(untrusted, "tools");
-  untrustedTools.allow = untrustedAllow;
-  untrustedTools.deny = untrustedDeny;
-  untrustedTools.fs = {
-    ...(isRecord(untrustedTools.fs) ? untrustedTools.fs : {}),
-    workspaceOnly: true,
+  const sandboxSsh = {
+    target: untrustedSshTarget,
+    workspaceRoot: untrustedSshWorkspaceRoot,
+    strictHostKeyChecking: Boolean(untrustedSshKnownHostsFile),
+    updateHostKeys: false,
+    identityFile: untrustedSshIdentity,
+    ...(untrustedSshKnownHostsFile ? { knownHostsFile: untrustedSshKnownHostsFile } : {}),
   };
-  untrustedTools.exec = {
-    ...(isRecord(untrustedTools.exec) ? untrustedTools.exec : {}),
-    host: "sandbox",
-    security: "full",
-    ask: "off",
-  };
-  const sandboxTools = ensureRecord(ensureRecord(untrustedTools, "sandbox"), "tools");
-  sandboxTools.allow = untrustedAllow;
-  sandboxTools.deny = untrustedDeny;
 
-  untrusted.sandbox = {
-    ...(isRecord(untrusted.sandbox) ? untrusted.sandbox : {}),
-    mode: "all",
-    backend: "ssh",
-    scope: "session",
-    workspaceAccess: "rw",
-    ssh: {
-      ...(isRecord(untrusted.sandbox?.ssh) ? untrusted.sandbox.ssh : {}),
-      target: untrustedSshTarget,
-      workspaceRoot: untrustedSshWorkspaceRoot,
-      strictHostKeyChecking: Boolean(untrustedSshKnownHostsFile),
-      updateHostKeys: false,
-      identityFile: untrustedSshIdentity,
-      ...(untrustedSshKnownHostsFile ? { knownHostsFile: untrustedSshKnownHostsFile } : {}),
-    },
-  };
-  const untrustedSubagents = ensureRecord(untrusted, "subagents");
-  untrustedSubagents.allowAgents = mergeList(untrustedSubagents.allowAgents, ["untrusted"]);
+  function configureSandboxAgent(id, name, workspace, allow, deny) {
+    const agent = upsertAgent(agents, id);
+    agent.name = name;
+    agent.workspace = workspace;
+    const agentTools = ensureRecord(agent, "tools");
+    agentTools.allow = allow;
+    agentTools.deny = deny;
+    agentTools.fs = {
+      ...(isRecord(agentTools.fs) ? agentTools.fs : {}),
+      workspaceOnly: true,
+    };
+    agentTools.exec = { ...(isRecord(agentTools.exec) ? agentTools.exec : {}), security: "deny" };
+    const sandboxTools = ensureRecord(ensureRecord(agentTools, "sandbox"), "tools");
+    sandboxTools.allow = allow;
+    sandboxTools.deny = deny;
+
+    agent.sandbox = {
+      ...(isRecord(agent.sandbox) ? agent.sandbox : {}),
+      mode: "all",
+      backend: "ssh",
+      scope: "session",
+      workspaceAccess: "rw",
+      ssh: {
+        ...(isRecord(agent.sandbox?.ssh) ? agent.sandbox.ssh : {}),
+        ...sandboxSsh,
+      },
+    };
+    const agentSubagents = ensureRecord(agent, "subagents");
+    agentSubagents.allowAgents = [];
+    agentSubagents.requireAgentId = true;
+  }
+
+  configureSandboxAgent(
+    "untrusted",
+    "Untrusted Read Sandbox",
+    "~/.openclaw/workspace/untrusted-read",
+    untrustedReadAllow,
+    untrustedReadDeny,
+  );
+  configureSandboxAgent(
+    "untrusted-read",
+    "Untrusted Read Sandbox",
+    "~/.openclaw/workspace/untrusted-read",
+    untrustedReadAllow,
+    untrustedReadDeny,
+  );
+  configureSandboxAgent(
+    "untrusted-write",
+    "Untrusted Write Sandbox",
+    "~/.openclaw/workspace/untrusted-write",
+    untrustedWriteAllow,
+    untrustedWriteDeny,
+  );
 }
 
 fs.writeFileSync(configPath, `${JSON.stringify(cfg, null, 2)}\n`, { mode: 0o600 });

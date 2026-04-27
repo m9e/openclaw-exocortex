@@ -5,19 +5,53 @@ These templates create two additive Lima guests on macOS without touching Podman
 - `openclaw-gateway`: trusted VM for the OpenClaw gateway and trusted tools
 - `openclaw-untrusted`: isolated VM for untrusted content and tool execution
 
-Both instances use the Apple Virtualization.framework backend (`vmType: vz`) on Apple Silicon and disable Lima's catch-all localhost port forwarding. Only explicit host-loopback forwards are enabled.
+Both instances use the Apple Virtualization.framework backend (`vmType: vz`) on
+Apple Silicon, attach to Lima `vzNAT` networking so macOS can enforce egress by
+guest IP, and disable Lima's catch-all localhost port forwarding. Only explicit
+forwards are enabled.
 
 ## Host port mapping
 
 - `openclaw-gateway`
   - host `127.0.0.1:29789` -> guest `127.0.0.1:18789`
   - host `127.0.0.1:29790` -> guest `127.0.0.1:18790`
+  - host `0.0.0.0:8888` -> guest `0.0.0.0:8888` for Pipelock proxy traffic
 - `openclaw-untrusted`
   - host `127.0.0.1:39789` -> guest `127.0.0.1:18789`
   - host `127.0.0.1:39790` -> guest `127.0.0.1:18790`
 
 The OpenClaw Gateway forwards are for the Mac host only. Sibling Lima guests
 should not use `host.lima.internal` to call the trusted gateway API.
+The Pipelock forward is host-wide because Apple VZ NAT does not provide
+guest-to-guest reachability. `configure-host-egress-pf.sh` installs a PF anchor
+that allows only the untrusted VM's VZ NAT IP and host loopback to reach port
+`8888`, then blocks other inbound sources for that port.
+
+This is intentional: `vzNAT` gives each guest a PF-visible source IP, which is
+what lets the Mac host enforce "untrusted must use the proxy." The tradeoff is
+that the guests cannot directly route to each other on the VZ NAT segment. For
+local dev, the controlled crossings are therefore:
+
+- untrusted -> gateway Pipelock: host forward `0.0.0.0:8888`, restricted by PF
+  to the untrusted VM source IP and host loopback;
+- gateway -> untrusted SSH sandbox: Lima's host-forwarded SSH port with a
+  gateway-only key and strict `known_hosts`;
+- host -> gateway OpenClaw UI/API: loopback-only forwards `29789` / `29790`.
+
+Do not replace these with broad `host.lima.internal` access to the OpenClaw
+Gateway API. The gateway API should stay host-loopback only.
+
+Existing instances created before the strict `vzNAT` topology need a one-time
+stop and edit before strict host egress can be installed:
+
+```bash
+limactl stop openclaw-gateway
+limactl stop openclaw-untrusted
+limactl edit --tty=false --set '.networks = [{"vzNAT": true}]' openclaw-gateway
+limactl edit --tty=false --set '.networks = [{"vzNAT": true}]' openclaw-untrusted
+limactl start openclaw-gateway
+limactl start openclaw-untrusted
+```
 
 ## Usage
 
@@ -40,7 +74,7 @@ limactl shell openclaw-gateway -- \
 The installer clones the mounted checkout into `~/code/openclaw-exocortex`,
 installs Node 24 + pnpm, runs `pnpm install`, creates
 `~/.openclaw/gateway.token`, installs the required local Locksmith sidecar,
-installs the required local Pipelock egress proxy,
+installs the required Pipelock egress proxy on the gateway,
 and writes two guest helpers:
 
 - `~/bin/openclaw`: runs the dev CLI from the guest checkout without typing `pnpm`
@@ -81,19 +115,21 @@ running.
 The default config:
 
 - listens on `127.0.0.1:9200`
-- sends cloud tool traffic through local Pipelock at `127.0.0.1:8888`
+- sends cloud tool traffic through local gateway Pipelock at `127.0.0.1:8888`
 - generates a local bearer token in `~/.config/locksmith/locksmith.env`
 - makes Locksmith reject unauthenticated `/tools`
 - sets `plugins.entries.locksmith.config.required: true`
 - hides the generic `locksmith_call` tool
-- projects only `locksmith_github`
+- keeps projected Locksmith tools out of the default trusted agent policy
 - constrains file tools to the workspace
 - configures a tight `main` agent policy with local workspace edits, memory,
   status, plan, outbound message/TTS, session send/spawn/yield, subagent
-  control, agent discovery, and `locksmith_github`
+  control, and agent discovery
 - denies direct shell/process, direct web, UI/browser, automation, node-control,
   media generation/understanding, session list/history, and generic
-  `locksmith_call` on the trusted `main` agent
+  `locksmith_call`/projected Locksmith tools on the trusted `main` agent
+- requires `sessions_spawn` to name an `agentId`, so the trusted agent has to
+  pick the local brain, read-only untrusted, or write-only untrusted profile
 
 That policy keeps trusted orchestration and communication available while
 removing the easy direct-egress bypasses from the gateway agent.
@@ -108,24 +144,24 @@ openclaw locksmith tools
 openclaw locksmith call github zen
 ```
 
-## Re-run Pipelock setup in either guest
+## Re-run Pipelock setup in the gateway guest
 
 The Pipelock installer downloads the pinned Linux release, writes
-`/etc/pipelock/pipelock.yaml`, enables `pipelock.service`, and configures common
-CLI/package-manager HTTP proxy settings for `127.0.0.1:8888`:
+`/etc/pipelock/pipelock.yaml`, enables `pipelock.service`, and configures the
+gateway's common CLI/package-manager HTTP proxy settings for
+`127.0.0.1:8888`. In this topology Pipelock also listens on the gateway's
+non-loopback address and is forwarded to host port `8888`; the host PF anchor
+restricts who can reach that forwarded proxy:
 
 ```bash
 limactl shell openclaw-gateway -- \
-  sudo bash /Users/yod/code/exocortex/openclaw-exocortex/scripts/dev/lima/install-pipelock-in-guest.sh
-
-cat /Users/yod/code/exocortex/openclaw-exocortex/scripts/dev/lima/install-pipelock-in-guest.sh | \
-  limactl shell openclaw-untrusted -- sudo PIPELOCK_PROFILE=untrusted bash -s
+  sudo env PIPELOCK_LISTEN=0.0.0.0:8888 \
+  bash /Users/yod/code/exocortex/openclaw-exocortex/scripts/dev/lima/install-pipelock-in-guest.sh
 ```
 
-The gateway profile is tuned for Locksmith/tool egress. The untrusted profile is
-more permissive for coding tasks: package managers and ordinary HTTP(S) clients
-can pull broad public dependencies through Pipelock while known exfil/dropbox
-domains remain blocklisted.
+Do not run Pipelock as the untrusted guest's local security boundary. The
+untrusted guest is a proxy client; the Mac host PF anchor is what prevents raw
+direct egress from bypassing gateway Pipelock.
 
 ## Configure the untrusted sandbox target
 
@@ -136,24 +172,27 @@ bash scripts/dev/lima/configure-untrusted-sandbox.sh
 ```
 
 The helper enables SSH in `openclaw-untrusted`, creates a gateway-only SSH key,
-authorizes it in the untrusted guest, records the current untrusted Lima SSH
-port and host key in the gateway config, installs Pipelock in both guests,
-installs an egress guard that blocks the untrusted guest from calling the
-trusted gateway's host-forwarded OpenClaw ports, forces ordinary untrusted
-external HTTP(S)/DNS through local Pipelock by default, and re-runs the
+authorizes it in the untrusted guest, records the untrusted host-forwarded SSH
+target and host key in the gateway config, installs gateway Pipelock, configures
+the untrusted guest as a proxy client of gateway Pipelock, installs a Mac host
+PF anchor that default-drops untrusted egress except to gateway Pipelock, and
+re-runs the
 Locksmith policy installer.
 
 After that, the trusted `main` agent can choose:
 
-- local constrained work: `sessions_spawn` without `agentId`, or with
-  `agentId: "main"`
-- broader isolated work: `sessions_spawn` with `agentId: "untrusted"` and
-  `sandbox: "require"`
+- local constrained work: `sessions_spawn` with `agentId: "main"`
+- untrusted read-only work: `sessions_spawn` with `agentId: "untrusted"` or
+  `agentId: "untrusted-read"` and `sandbox: "require"`
+- untrusted write-only work: `sessions_spawn` with
+  `agentId: "untrusted-write"` and `sandbox: "require"`
 
-The `untrusted` agent runs file tools and `exec`/`process` through the SSH
-sandbox backend in `openclaw-untrusted`. It intentionally does not get direct
-web/search/fetch, message/TTS, gateway, node, browser/UI, session-list/history,
-projected Locksmith tools, or generic `locksmith_call` tools.
+The `untrusted` and `untrusted-read` agents can read but cannot write, execute
+commands, call web/search/fetch, talk to users, spawn more agents, or call
+Locksmith. The `untrusted-write` agent can write/edit/apply patches but cannot
+read, execute commands, call web/search/fetch, talk to users, spawn more
+agents, or call Locksmith. The trusted `main` agent is the membrane between
+those profiles.
 
 Start the gateway from inside the guest with:
 
@@ -180,15 +219,16 @@ Paste these values into the login gate if prompted:
 - `openclaw-gateway` inherits Lima's default read-only home mount so it can inspect the host repo without mutating it.
 - `openclaw-untrusted` mounts no host directories.
 - Neither VM auto-forwards random guest localhost ports back onto the host.
-- Both guests run Pipelock on `127.0.0.1:8888`.
+- Both VMs attach to Lima `vzNAT` so macOS PF can distinguish their traffic.
+- The gateway runs Pipelock on `0.0.0.0:8888` inside the VM, forwarded to host
+  port `8888`. The PF anchor allows only host loopback and the untrusted VM's VZ
+  NAT IP to that forward.
+- The untrusted guest does not run local Pipelock as its security boundary; its
+  apt/git/pip/npm/shell proxy environment points at gateway Pipelock.
 - The gateway's Locksmith sidecar sends cloud tool traffic through Pipelock.
-- The untrusted guest is blocked from reaching the trusted gateway's
-  host-forwarded OpenClaw ports (`29789` and `29790` by default). Override the
-  blocked list for experiments with `OPENCLAW_UNTRUSTED_BLOCK_HOST_PORTS`.
-- The untrusted guest allows direct loopback and RFC1918/link-local LAN traffic,
-  but direct external DNS/HTTP(S) is reserved for the `pipelock` service user.
-  Shell tools, `apt`, `git`, `pip`, and `npm` should use `http_proxy` /
-  `https_proxy` or their installed system proxy config.
-- Set `OPENCLAW_UNTRUSTED_ALLOW_DIRECT_INTERNET=1` only for a deliberate
-  experiment that needs raw direct network egress. The older
-  `OPENCLAW_UNTRUSTED_ALLOW_INTERNET=1` name is still accepted as an alias.
+- The Mac host PF anchor installed by `configure-host-egress-pf.sh` permits
+  untrusted egress only to the gateway Pipelock port and default-drops
+  everything else from the untrusted VM's VZ NAT IP.
+- The trusted `main` agent has no direct shell/process, direct web, or
+  Locksmith tools by default. It can talk to the user, read/write only its
+  workspace, and delegate to explicitly selected subagent profiles.

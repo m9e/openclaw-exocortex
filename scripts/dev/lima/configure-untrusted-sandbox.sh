@@ -22,6 +22,23 @@ ssh_local_port() {
   limactl list --format '{{.Name}} {{.SSHLocalPort}}' | awk -v name="$name" '$1 == name { print $2 }'
 }
 
+instance_primary_ip() {
+  local name="$1"
+  limactl shell "$name" -- bash -s <<'REMOTE' | tr -d '\r'
+set -euo pipefail
+ip route get 1.1.1.1 2>/dev/null |
+  awk '{ for (i = 1; i <= NF; i++) if ($i == "src") { print $(i + 1); exit } }'
+REMOTE
+}
+
+instance_default_gateway() {
+  local name="$1"
+  limactl shell "$name" -- bash -s <<'REMOTE' | tr -d '\r'
+set -euo pipefail
+ip route show default | awk '{ print $3; exit }'
+REMOTE
+}
+
 require_running_instance() {
   local name="$1"
   local status
@@ -72,179 +89,132 @@ REMOTE
 install_pipelock_on_instance() {
   local name="$1"
   local profile="$2"
+  local listen="${3:-127.0.0.1:8888}"
+  local proxy_url="${4:-http://127.0.0.1:8888}"
   local installer="$ROOT_DIR/scripts/dev/lima/install-pipelock-in-guest.sh"
   [[ -f "$installer" ]] || die "Pipelock installer not found at $installer"
 
   log "installing Pipelock egress proxy in $name"
   limactl shell "$name" -- sudo env \
     "PIPELOCK_PROFILE=$profile" \
+    "PIPELOCK_LISTEN=$listen" \
+    "PIPELOCK_HEALTH_ADDR=127.0.0.1:8888" \
+    "PIPELOCK_PROXY_URL=$proxy_url" \
     bash -s <"$installer"
 }
 
-configure_untrusted_egress_guard() {
-  local ports_text="${OPENCLAW_UNTRUSTED_BLOCK_HOST_PORTS:-29789 29790}"
-  local allow_direct_internet="${OPENCLAW_UNTRUSTED_ALLOW_DIRECT_INTERNET:-${OPENCLAW_UNTRUSTED_ALLOW_INTERNET:-0}}"
-  local port
-  for port in $ports_text; do
-    [[ "$port" =~ ^[0-9]+$ ]] || die "invalid OPENCLAW_UNTRUSTED_BLOCK_HOST_PORTS entry: $port"
-  done
-  [[ "$allow_direct_internet" == "0" || "$allow_direct_internet" == "1" ]] ||
-    die "OPENCLAW_UNTRUSTED_ALLOW_DIRECT_INTERNET must be 0 or 1"
+configure_gateway_egress_route() {
+  log "preferring gateway slirp egress for Pipelock upstream traffic"
+  limactl shell openclaw-gateway -- sudo bash -s <<'REMOTE'
+set -euo pipefail
+slirp_gateway="$(ip route show default dev eth0 | awk '{ print $3; exit }')"
+if [[ -n "$slirp_gateway" ]]; then
+  ip route replace default via "$slirp_gateway" dev eth0 metric 50 || true
+fi
+REMOTE
+}
 
-  log "blocking untrusted guest egress to trusted gateway host ports: $ports_text"
-  if [[ "$allow_direct_internet" != "1" ]]; then
-    log "forcing untrusted guest external HTTP(S)/DNS through local Pipelock"
-  fi
+configure_untrusted_proxy_client() {
+  local gateway_ip="$1"
+  local proxy_port="$2"
+  local proxy_url="http://$gateway_ip:$proxy_port"
+
+  log "configuring untrusted guest proxy client for gateway Pipelock at $proxy_url"
   limactl shell openclaw-untrusted -- sudo env \
-    "OPENCLAW_BLOCK_HOST_PORTS=$ports_text" \
-    "OPENCLAW_ALLOW_DIRECT_INTERNET=$allow_direct_internet" \
+    "OPENCLAW_GATEWAY_IP=$gateway_ip" \
+    "OPENCLAW_PROXY_URL=$proxy_url" \
     bash -s <<'REMOTE'
 set -euo pipefail
 
-if ! command -v iptables >/dev/null 2>&1; then
-  apt-get update
-  DEBIAN_FRONTEND=noninteractive apt-get install -y iptables
+systemctl disable --now pipelock.service >/dev/null 2>&1 || true
+
+tmp_hosts="$(mktemp)"
+grep -Ev '(^|[[:space:]])(lima-openclaw-gateway\.internal|openclaw-gateway\.internal)([[:space:]]|$)' /etc/hosts >"$tmp_hosts" || true
+printf '%s lima-openclaw-gateway.internal openclaw-gateway.internal\n' "$OPENCLAW_GATEWAY_IP" >>"$tmp_hosts"
+install -m 0644 "$tmp_hosts" /etc/hosts
+rm -f "$tmp_hosts"
+
+cat >/etc/apt/apt.conf.d/95openclaw-pipelock-proxy <<APT
+Acquire::http::Proxy "$OPENCLAW_PROXY_URL";
+Acquire::https::Proxy "$OPENCLAW_PROXY_URL";
+Acquire::http::No-Proxy "localhost,127.0.0.1";
+Acquire::https::No-Proxy "localhost,127.0.0.1";
+APT
+
+cat >/etc/profile.d/openclaw-pipelock-proxy.sh <<PROFILE
+# OpenClaw untrusted Lima guests route ordinary external HTTP(S) through
+# the trusted gateway's Pipelock proxy. The host PF anchor is the security
+# boundary; this file is client convenience.
+export http_proxy="$OPENCLAW_PROXY_URL"
+export https_proxy="$OPENCLAW_PROXY_URL"
+export HTTP_PROXY="$OPENCLAW_PROXY_URL"
+export HTTPS_PROXY="$OPENCLAW_PROXY_URL"
+export no_proxy="localhost,127.0.0.1,127.0.0.0/8,::1"
+export NO_PROXY="localhost,127.0.0.1,127.0.0.0/8,::1"
+PROFILE
+
+cat >/etc/pip.conf <<PIP
+[global]
+proxy = $OPENCLAW_PROXY_URL
+PIP
+
+if command -v git >/dev/null 2>&1; then
+  git config --system http.proxy "$OPENCLAW_PROXY_URL"
+  git config --system https.proxy "$OPENCLAW_PROXY_URL"
+fi
+if command -v npm >/dev/null 2>&1; then
+  npm config set --location=global proxy "$OPENCLAW_PROXY_URL" >/dev/null
+  npm config set --location=global https-proxy "$OPENCLAW_PROXY_URL" >/dev/null
 fi
 
 mkdir -p /usr/local/sbin
-cat >/usr/local/sbin/openclaw-untrusted-egress-guard <<'SCRIPT'
+cat >/usr/local/sbin/openclaw-untrusted-route-guard <<'SCRIPT'
 #!/usr/bin/env bash
 set -euo pipefail
 
-ports_text="${OPENCLAW_BLOCK_HOST_PORTS:-29789 29790}"
-pipelock_uid="$(id -u pipelock 2>/dev/null || true)"
-if [[ -z "$pipelock_uid" ]]; then
-  echo "pipelock user is missing; run install-pipelock-in-guest.sh first" >&2
-  exit 1
+egress_dev="$(ip route get 1.1.1.1 2>/dev/null |
+  awk '{ for (i = 1; i <= NF; i++) if ($i == "dev") { print $(i + 1); exit } }')"
+egress_gateway="$(ip route show default ${egress_dev:+dev "$egress_dev"} |
+  awk '{ print $3; exit }')"
+
+if [[ -n "$egress_dev" && -n "$egress_gateway" ]]; then
+  ip route replace default via "$egress_gateway" dev "$egress_dev" metric 50 || true
 fi
 
-resolver_uids=()
-for resolver_user in systemd-resolve _systemd-resolve; do
-  if resolver_uid="$(id -u "$resolver_user" 2>/dev/null)"; then
-    resolver_uids+=("$resolver_uid")
+while read -r _ _ route_gateway _ route_dev _; do
+  if [[ -n "${route_dev:-}" && "$route_dev" != "$egress_dev" ]]; then
+    ip route del default via "$route_gateway" dev "$route_dev" 2>/dev/null || true
   fi
-done
+done < <(ip route show default)
 
-host_ip="$(getent ahostsv4 host.lima.internal | awk 'NR == 1 { print $1 }')"
-if [[ -z "$host_ip" ]]; then
-  echo "failed to resolve host.lima.internal" >&2
-  exit 1
-fi
-
-iptables -w -N OPENCLAW_UNTRUSTED_EGRESS 2>/dev/null || true
-iptables -w -F OPENCLAW_UNTRUSTED_EGRESS
-iptables -w -A OPENCLAW_UNTRUSTED_EGRESS \
-  -m conntrack --ctstate ESTABLISHED,RELATED -j RETURN
-
-for port in $ports_text; do
-  [[ "$port" =~ ^[0-9]+$ ]] || {
-    echo "invalid blocked host port: $port" >&2
-    exit 1
-  }
-  iptables -w -A OPENCLAW_UNTRUSTED_EGRESS \
-    -p tcp -d "$host_ip" --dport "$port" \
-    -j REJECT --reject-with tcp-reset
-done
-
-iptables -w -A OPENCLAW_UNTRUSTED_EGRESS \
-  -m owner --uid-owner "$pipelock_uid" \
-  -p tcp -m multiport --dports 80,443 -j RETURN
-iptables -w -A OPENCLAW_UNTRUSTED_EGRESS \
-  -m owner --uid-owner "$pipelock_uid" \
-  -p udp --dport 53 -j RETURN
-iptables -w -A OPENCLAW_UNTRUSTED_EGRESS \
-  -m owner --uid-owner "$pipelock_uid" \
-  -p tcp --dport 53 -j RETURN
-for resolver_uid in "${resolver_uids[@]}"; do
-  iptables -w -A OPENCLAW_UNTRUSTED_EGRESS \
-    -m owner --uid-owner "$resolver_uid" \
-    -p udp --dport 53 -j RETURN
-  iptables -w -A OPENCLAW_UNTRUSTED_EGRESS \
-    -m owner --uid-owner "$resolver_uid" \
-    -p tcp --dport 53 -j RETURN
-done
-iptables -w -A OPENCLAW_UNTRUSTED_EGRESS \
-  -p udp --dport 53 -j REJECT --reject-with icmp-port-unreachable
-iptables -w -A OPENCLAW_UNTRUSTED_EGRESS \
-  -p tcp --dport 53 -j REJECT --reject-with tcp-reset
-
-iptables -w -A OPENCLAW_UNTRUSTED_EGRESS -o lo -j RETURN
-iptables -w -A OPENCLAW_UNTRUSTED_EGRESS -d 10.0.0.0/8 -j RETURN
-iptables -w -A OPENCLAW_UNTRUSTED_EGRESS -d 172.16.0.0/12 -j RETURN
-iptables -w -A OPENCLAW_UNTRUSTED_EGRESS -d 192.168.0.0/16 -j RETURN
-iptables -w -A OPENCLAW_UNTRUSTED_EGRESS -d 169.254.0.0/16 -j RETURN
-
-if [[ "${OPENCLAW_ALLOW_DIRECT_INTERNET:-0}" != "1" ]]; then
-  iptables -w -A OPENCLAW_UNTRUSTED_EGRESS \
-    -m limit --limit 5/min -j LOG --log-prefix "openclaw-egress-block: " --log-uid
-  iptables -w -A OPENCLAW_UNTRUSTED_EGRESS \
-    -p tcp -j REJECT --reject-with tcp-reset
-  iptables -w -A OPENCLAW_UNTRUSTED_EGRESS \
-    -p udp -j REJECT --reject-with icmp-port-unreachable
-  iptables -w -A OPENCLAW_UNTRUSTED_EGRESS \
-    -p icmp -j REJECT --reject-with icmp-host-prohibited
-fi
-
-iptables -w -C OUTPUT -j OPENCLAW_UNTRUSTED_EGRESS 2>/dev/null ||
-  iptables -w -I OUTPUT 1 -j OPENCLAW_UNTRUSTED_EGRESS
-
-if command -v ip6tables >/dev/null 2>&1; then
-  ip6tables -w -N OPENCLAW_UNTRUSTED_EGRESS 2>/dev/null || true
-  ip6tables -w -F OPENCLAW_UNTRUSTED_EGRESS
-  ip6tables -w -A OPENCLAW_UNTRUSTED_EGRESS \
-    -m conntrack --ctstate ESTABLISHED,RELATED -j RETURN
-
-  ip6tables -w -A OPENCLAW_UNTRUSTED_EGRESS \
-    -m owner --uid-owner "$pipelock_uid" \
-    -p tcp -m multiport --dports 80,443 -j RETURN
-  ip6tables -w -A OPENCLAW_UNTRUSTED_EGRESS \
-    -m owner --uid-owner "$pipelock_uid" \
-    -p udp --dport 53 -j RETURN
-  ip6tables -w -A OPENCLAW_UNTRUSTED_EGRESS \
-    -m owner --uid-owner "$pipelock_uid" \
-    -p tcp --dport 53 -j RETURN
-  for resolver_uid in "${resolver_uids[@]}"; do
-    ip6tables -w -A OPENCLAW_UNTRUSTED_EGRESS \
-      -m owner --uid-owner "$resolver_uid" \
-      -p udp --dport 53 -j RETURN
-    ip6tables -w -A OPENCLAW_UNTRUSTED_EGRESS \
-      -m owner --uid-owner "$resolver_uid" \
-      -p tcp --dport 53 -j RETURN
-  done
-  ip6tables -w -A OPENCLAW_UNTRUSTED_EGRESS -p udp --dport 53 -j REJECT
-  ip6tables -w -A OPENCLAW_UNTRUSTED_EGRESS -p tcp --dport 53 -j REJECT --reject-with tcp-reset
-  ip6tables -w -A OPENCLAW_UNTRUSTED_EGRESS -o lo -j RETURN
-  ip6tables -w -A OPENCLAW_UNTRUSTED_EGRESS -d fc00::/7 -j RETURN
-  ip6tables -w -A OPENCLAW_UNTRUSTED_EGRESS -d fe80::/10 -j RETURN
-
-  if [[ "${OPENCLAW_ALLOW_DIRECT_INTERNET:-0}" != "1" ]]; then
-    ip6tables -w -A OPENCLAW_UNTRUSTED_EGRESS \
-      -m limit --limit 5/min -j LOG --log-prefix "openclaw-ipv6-egress-block: " --log-uid
-    ip6tables -w -A OPENCLAW_UNTRUSTED_EGRESS \
-      -p tcp -j REJECT --reject-with tcp-reset
-    ip6tables -w -A OPENCLAW_UNTRUSTED_EGRESS \
-      -p udp -j REJECT
-    ip6tables -w -A OPENCLAW_UNTRUSTED_EGRESS \
-      -p ipv6-icmp -j REJECT
+if command -v iptables >/dev/null 2>&1; then
+  chain="OC_UNTRUSTED_ROUTE"
+  iptables -w -N "$chain" 2>/dev/null || true
+  iptables -w -F "$chain"
+  iptables -w -A "$chain" -m conntrack --ctstate ESTABLISHED,RELATED -j RETURN
+  iptables -w -A "$chain" -o lo -j RETURN
+  if [[ -n "$egress_dev" ]]; then
+    iptables -w -A "$chain" -o "$egress_dev" -j RETURN
   fi
-  ip6tables -w -C OUTPUT -j OPENCLAW_UNTRUSTED_EGRESS 2>/dev/null ||
-    ip6tables -w -I OUTPUT 1 -j OPENCLAW_UNTRUSTED_EGRESS
+  iptables -w -A "$chain" -j REJECT --reject-with icmp-host-prohibited
+  iptables -w -C OUTPUT -j "$chain" 2>/dev/null ||
+    iptables -w -I OUTPUT 1 -j "$chain"
 fi
+
+sysctl -w net.ipv6.conf.all.disable_ipv6=1 >/dev/null 2>&1 || true
+sysctl -w net.ipv6.conf.default.disable_ipv6=1 >/dev/null 2>&1 || true
 SCRIPT
-chmod 0755 /usr/local/sbin/openclaw-untrusted-egress-guard
+chmod 0755 /usr/local/sbin/openclaw-untrusted-route-guard
 
-cat >/etc/systemd/system/openclaw-untrusted-egress-guard.service <<SERVICE
+cat >/etc/systemd/system/openclaw-untrusted-route-guard.service <<'SERVICE'
 [Unit]
-Description=OpenClaw untrusted VM egress guard
-After=network-online.target pipelock.service
+Description=OpenClaw untrusted VM route guard
+After=network-online.target
 Wants=network-online.target
-Requires=pipelock.service
 
 [Service]
 Type=oneshot
-Environment="OPENCLAW_BLOCK_HOST_PORTS=$OPENCLAW_BLOCK_HOST_PORTS"
-Environment="OPENCLAW_ALLOW_DIRECT_INTERNET=$OPENCLAW_ALLOW_DIRECT_INTERNET"
-ExecStart=/usr/local/sbin/openclaw-untrusted-egress-guard
+ExecStart=/usr/local/sbin/openclaw-untrusted-route-guard
 RemainAfterExit=yes
 
 [Install]
@@ -252,9 +222,29 @@ WantedBy=multi-user.target
 SERVICE
 
 systemctl daemon-reload
-systemctl enable openclaw-untrusted-egress-guard.service >/dev/null
-systemctl restart openclaw-untrusted-egress-guard.service
+systemctl enable openclaw-untrusted-route-guard.service >/dev/null
+systemctl restart openclaw-untrusted-route-guard.service
 REMOTE
+}
+
+configure_host_egress_pf() {
+  local script="$ROOT_DIR/scripts/dev/lima/configure-host-egress-pf.sh"
+  [[ -f "$script" ]] || die "host PF script not found at $script"
+  log "installing host-enforced untrusted egress PF anchor"
+  OPENCLAW_PIPELOCK_PORT="${OPENCLAW_PIPELOCK_PORT:-8888}" bash "$script"
+}
+
+ensure_agent_workspace_roots() {
+  log "creating gateway and untrusted workspace roots"
+  limactl shell openclaw-gateway -- bash -lc '
+    set -euo pipefail
+    mkdir -p "$HOME/.openclaw/workspace/untrusted-read" "$HOME/.openclaw/workspace/untrusted-write"
+  '
+  limactl shell openclaw-untrusted -- bash -lc '
+    set -euo pipefail
+    mkdir -p /tmp/openclaw-sandboxes
+    chmod 700 /tmp/openclaw-sandboxes
+  '
 }
 
 main() {
@@ -262,13 +252,29 @@ main() {
   require_running_instance openclaw-gateway
   require_running_instance openclaw-untrusted
 
+  local gateway_ip untrusted_ip host_gateway proxy_port
+  proxy_port="${OPENCLAW_PIPELOCK_PORT:-8888}"
+  [[ "$proxy_port" =~ ^[0-9]+$ ]] || die "OPENCLAW_PIPELOCK_PORT must be numeric"
+  gateway_ip="$(instance_primary_ip openclaw-gateway)"
+  untrusted_ip="$(instance_primary_ip openclaw-untrusted)"
+  host_gateway="$(instance_default_gateway openclaw-untrusted)"
+  [[ -n "$gateway_ip" ]] ||
+    die "failed to resolve openclaw-gateway primary egress IP; strict host egress needs a visible VZ NAT IP"
+  [[ -n "$untrusted_ip" ]] ||
+    die "failed to resolve openclaw-untrusted primary egress IP; strict host egress needs a visible VZ NAT IP"
+  [[ "$gateway_ip" != "$untrusted_ip" ]] ||
+    die "openclaw-gateway and openclaw-untrusted resolved the same IP ($gateway_ip); strict egress requires distinct VZ NAT addresses"
+  [[ -n "$host_gateway" ]] || die "failed to resolve untrusted VM default gateway"
+
   local untrusted_user
   untrusted_user="$(limactl shell openclaw-untrusted -- whoami | tr -d '\r\n')"
   [[ -n "$untrusted_user" ]] || die "failed to resolve untrusted guest user"
 
-  install_pipelock_on_instance openclaw-gateway gateway
+  configure_gateway_egress_route
+  install_pipelock_on_instance openclaw-gateway gateway "0.0.0.0:$proxy_port" "http://127.0.0.1:$proxy_port"
   clear_legacy_untrusted_egress_guard
-  install_pipelock_on_instance openclaw-untrusted untrusted
+  configure_untrusted_proxy_client "$host_gateway" "$proxy_port"
+  ensure_agent_workspace_roots
 
   log "ensuring SSH server is active in openclaw-untrusted"
   limactl shell openclaw-untrusted -- bash -lc '
@@ -297,11 +303,10 @@ main() {
   [[ -n "$pubkey" ]] || die "failed to read gateway SSH public key"
   append_authorized_key "$pubkey"
 
-  local port
+  local port target
   port="$(ssh_local_port openclaw-untrusted)"
   [[ "$port" =~ ^[0-9]+$ ]] || die "failed to resolve openclaw-untrusted SSH local port"
-
-  local target="${untrusted_user}@host.lima.internal:${port}"
+  target="${untrusted_user}@host.lima.internal:${port}"
   log "recording untrusted SSH host key"
   limactl shell openclaw-gateway -- bash -lc \
     "set -euo pipefail; mkdir -p \"\$HOME/.ssh\"; chmod 700 \"\$HOME/.ssh\"; ssh-keyscan -p '$port' host.lima.internal >\"\$HOME/.ssh/openclaw_untrusted_known_hosts.tmp\" 2>/dev/null; mv \"\$HOME/.ssh/openclaw_untrusted_known_hosts.tmp\" \"\$HOME/.ssh/openclaw_untrusted_known_hosts\"; chmod 644 \"\$HOME/.ssh/openclaw_untrusted_known_hosts\""
@@ -310,11 +315,19 @@ main() {
   limactl shell openclaw-gateway -- bash -lc \
     "ssh -i \"\$HOME/.ssh/openclaw_untrusted_ed25519\" -p '$port' -o BatchMode=yes -o StrictHostKeyChecking=yes -o UserKnownHostsFile=\"\$HOME/.ssh/openclaw_untrusted_known_hosts\" '${untrusted_user}@host.lima.internal' 'printf ok' >/dev/null"
 
-  configure_untrusted_egress_guard
+  configure_host_egress_pf
+
+  log "testing untrusted -> gateway Pipelock proxy path"
+  limactl shell openclaw-untrusted -- bash -lc \
+    "timeout 20 curl -fsS --proxy 'http://$host_gateway:$proxy_port' https://api.github.com/zen >/dev/null"
+
+  log "re-testing gateway -> untrusted SSH after host PF enforcement"
+  limactl shell openclaw-gateway -- bash -lc \
+    "ssh -i \"\$HOME/.ssh/openclaw_untrusted_ed25519\" -p '$port' -o BatchMode=yes -o StrictHostKeyChecking=yes -o UserKnownHostsFile=\"\$HOME/.ssh/openclaw_untrusted_known_hosts\" '${untrusted_user}@host.lima.internal' 'printf ok' >/dev/null"
 
   log "applying gateway OpenClaw config for the untrusted agent"
   limactl shell openclaw-gateway -- bash -lc \
-    "OPENCLAW_CLI=\"\$HOME/bin/openclaw\" LOCKSMITH_EGRESS_PROXY=\"http://127.0.0.1:8888\" OPENCLAW_UNTRUSTED_SSH_TARGET='$target' OPENCLAW_UNTRUSTED_SSH_KNOWN_HOSTS_FILE=\"\$HOME/.ssh/openclaw_untrusted_known_hosts\" bash '$ROOT_DIR/scripts/dev/lima/install-locksmith-in-guest.sh'"
+    "OPENCLAW_CLI=\"\$HOME/bin/openclaw\" LOCKSMITH_EGRESS_PROXY=\"http://127.0.0.1:$proxy_port\" OPENCLAW_UNTRUSTED_SSH_TARGET='$target' OPENCLAW_UNTRUSTED_SSH_KNOWN_HOSTS_FILE=\"\$HOME/.ssh/openclaw_untrusted_known_hosts\" bash '$ROOT_DIR/scripts/dev/lima/install-locksmith-in-guest.sh'"
 
   log "configured untrusted sandbox target: $target"
 }

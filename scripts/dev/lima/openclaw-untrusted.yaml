@@ -16,6 +16,9 @@ containerd:
 hostResolver:
   enabled: true
 
+networks:
+  - vzNAT: true
+
 env:
   OPENCLAW_VM_ROLE: untrusted
 

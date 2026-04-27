@@ -215,7 +215,11 @@ install_pipelock() {
   [[ -f "$installer" ]] || die "Pipelock installer not found at $installer"
 
   log "installing required Pipelock egress proxy"
-  PIPELOCK_PROFILE="${PIPELOCK_PROFILE:-gateway}" bash "$installer"
+  PIPELOCK_PROFILE="${PIPELOCK_PROFILE:-gateway}" \
+    PIPELOCK_LISTEN="${PIPELOCK_LISTEN:-0.0.0.0:8888}" \
+    PIPELOCK_HEALTH_ADDR="${PIPELOCK_HEALTH_ADDR:-127.0.0.1:8888}" \
+    PIPELOCK_PROXY_URL="${PIPELOCK_PROXY_URL:-http://127.0.0.1:8888}" \
+    bash "$installer"
 }
 
 main() {

@@ -84,6 +84,7 @@ profile_value() {
 
 write_pipelock_config() {
   local profile="${PIPELOCK_PROFILE:-${OPENCLAW_VM_ROLE:-gateway}}"
+  local listen="${PIPELOCK_LISTEN:-127.0.0.1:8888}"
   local max_response_mb
   local max_requests_per_minute
   local max_tunnel_seconds
@@ -152,7 +153,7 @@ api_allowlist:
   - "ghcr.io"
 
 fetch_proxy:
-  listen: "127.0.0.1:8888"
+  listen: "$listen"
   timeout_seconds: 60
   max_response_mb: $max_response_mb
   user_agent: "Pipelock Fetch/1.0"
@@ -299,18 +300,19 @@ PIP
 }
 
 verify_install() {
+  local health_addr="${PIPELOCK_HEALTH_ADDR:-127.0.0.1:8888}"
   log "validating Pipelock config"
   run_sudo /usr/local/bin/pipelock check --config /etc/pipelock/pipelock.yaml >/dev/null
   log "starting Pipelock service"
   run_sudo systemctl restart pipelock.service
   for _ in {1..20}; do
-    if /usr/local/bin/pipelock healthcheck --addr 127.0.0.1:8888 >/dev/null 2>&1; then
+    if /usr/local/bin/pipelock healthcheck --addr "$health_addr" >/dev/null 2>&1; then
       return
     fi
     sleep 0.25
   done
   run_sudo systemctl status pipelock.service --no-pager -l >&2 || true
-  /usr/local/bin/pipelock healthcheck --addr 127.0.0.1:8888
+  /usr/local/bin/pipelock healthcheck --addr "$health_addr"
 }
 
 main() {

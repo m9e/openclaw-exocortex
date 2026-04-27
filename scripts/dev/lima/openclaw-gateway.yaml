@@ -18,6 +18,9 @@ containerd:
 hostResolver:
   enabled: true
 
+networks:
+  - vzNAT: true
+
 env:
   OPENCLAW_VM_ROLE: gateway
 
@@ -49,6 +52,8 @@ message: |
     host 127.0.0.1:29790 -> guest 127.0.0.1:18790
   These forwards are host-loopback only. Do not expose the trusted Gateway
   WebSocket to sibling Lima guests or the host LAN.
+  Gateway Pipelock is forwarded to host port 8888 for the untrusted VM only;
+  the host PF anchor blocks other sources from that forward.
 
 portForwards:
   - guestPort: 18789
@@ -57,6 +62,12 @@ portForwards:
   - guestPort: 18790
     hostIP: "127.0.0.1"
     hostPort: 29790
+  - guestPort: 8888
+    guestIP: "0.0.0.0"
+    guestIPMustBeZero: false
+    hostIP: "0.0.0.0"
+    hostPort: 8888
+    proto: tcp
   - guestIP: "127.0.0.1"
     guestPortRange: [1, 65535]
     hostIP: "127.0.0.1"
