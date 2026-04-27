@@ -149,6 +149,7 @@ configure_openclaw_hardened_config() {
   local token="$1"
   local ssh_target="${OPENCLAW_UNTRUSTED_SSH_TARGET:-}"
   local ssh_identity="${OPENCLAW_UNTRUSTED_SSH_IDENTITY:-$HOME/.ssh/openclaw_untrusted_ed25519}"
+  local ssh_known_hosts="${OPENCLAW_UNTRUSTED_SSH_KNOWN_HOSTS_FILE:-}"
   local ssh_workspace_root="${OPENCLAW_UNTRUSTED_SSH_WORKSPACE_ROOT:-/tmp/openclaw-sandboxes}"
   local config_path="${OPENCLAW_CONFIG_PATH:-$HOME/.openclaw/openclaw.json}"
   mkdir -p "$(dirname "$config_path")"
@@ -159,8 +160,9 @@ configure_openclaw_hardened_config() {
   LOCKSMITH_TOKEN="$token" \
   OPENCLAW_UNTRUSTED_SSH_TARGET="$ssh_target" \
   OPENCLAW_UNTRUSTED_SSH_IDENTITY="$ssh_identity" \
+  OPENCLAW_UNTRUSTED_SSH_KNOWN_HOSTS_FILE="$ssh_known_hosts" \
   OPENCLAW_UNTRUSTED_SSH_WORKSPACE_ROOT="$ssh_workspace_root" \
-    node <<'NODE'
+  node <<'NODE'
 const fs = require("fs");
 const os = require("os");
 
@@ -168,6 +170,8 @@ const configPath = (process.env.CONFIG_PATH || "").replace(/^~(?=$|\/)/, os.home
 const locksmithToken = process.env.LOCKSMITH_TOKEN || "";
 const untrustedSshTarget = (process.env.OPENCLAW_UNTRUSTED_SSH_TARGET || "").trim();
 const untrustedSshIdentity = process.env.OPENCLAW_UNTRUSTED_SSH_IDENTITY || "";
+const untrustedSshKnownHostsFile =
+  (process.env.OPENCLAW_UNTRUSTED_SSH_KNOWN_HOSTS_FILE || "").trim();
 const untrustedSshWorkspaceRoot =
   process.env.OPENCLAW_UNTRUSTED_SSH_WORKSPACE_ROOT || "/tmp/openclaw-sandboxes";
 
@@ -212,18 +216,15 @@ const untrustedAllow = [
   "apply_patch",
   "exec",
   "process",
-  "web_search",
-  "web_fetch",
-  "x_search",
   "memory_search",
   "memory_get",
   "session_status",
   "update_plan",
   "sessions_yield",
-  "locksmith_github",
 ];
 
 const untrustedDeny = [
+  "group:web",
   "group:ui",
   "group:automation",
   "group:nodes",
@@ -244,6 +245,7 @@ const untrustedDeny = [
   "music_generate",
   "video_generate",
   "locksmith_call",
+  "locksmith_github",
 ];
 
 function isRecord(value) {
@@ -383,9 +385,10 @@ if (untrustedSshTarget) {
       ...(isRecord(untrusted.sandbox?.ssh) ? untrusted.sandbox.ssh : {}),
       target: untrustedSshTarget,
       workspaceRoot: untrustedSshWorkspaceRoot,
-      strictHostKeyChecking: false,
+      strictHostKeyChecking: Boolean(untrustedSshKnownHostsFile),
       updateHostKeys: false,
       identityFile: untrustedSshIdentity,
+      ...(untrustedSshKnownHostsFile ? { knownHostsFile: untrustedSshKnownHostsFile } : {}),
     },
   };
   const untrustedSubagents = ensureRecord(untrusted, "subagents");

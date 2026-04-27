@@ -115,9 +115,10 @@ bash scripts/dev/lima/configure-untrusted-sandbox.sh
 
 The helper enables SSH in `openclaw-untrusted`, creates a gateway-only SSH key,
 authorizes it in the untrusted guest, records the current untrusted Lima SSH
-port in the gateway config, installs an egress guard that blocks the untrusted
-guest from calling the trusted gateway's host-forwarded OpenClaw ports, and
-re-runs the Locksmith policy installer.
+port and host key in the gateway config, installs an egress guard that blocks
+the untrusted guest from calling the trusted gateway's host-forwarded OpenClaw
+ports, blocks new outbound internet connections from the untrusted guest by
+default, and re-runs the Locksmith policy installer.
 
 After that, the trusted `main` agent can choose:
 
@@ -128,8 +129,8 @@ After that, the trusted `main` agent can choose:
 
 The `untrusted` agent runs file tools and `exec`/`process` through the SSH
 sandbox backend in `openclaw-untrusted`. It intentionally does not get direct
-message/TTS, gateway, node, browser/UI, session-list/history, or generic
-`locksmith_call` tools.
+web/search/fetch, message/TTS, gateway, node, browser/UI, session-list/history,
+projected Locksmith tools, or generic `locksmith_call` tools.
 
 Start the gateway from inside the guest with:
 
@@ -159,3 +160,6 @@ Paste these values into the login gate if prompted:
 - The untrusted guest is blocked from reaching the trusted gateway's
   host-forwarded OpenClaw ports (`29789` and `29790` by default). Override the
   blocked list for experiments with `OPENCLAW_UNTRUSTED_BLOCK_HOST_PORTS`.
+- The untrusted guest blocks new outbound TCP/UDP/ICMP internet connections by
+  default after the helper runs. Set `OPENCLAW_UNTRUSTED_ALLOW_INTERNET=1` only
+  for a deliberate experiment that needs direct network egress.

@@ -46,13 +46,22 @@ REMOTE
 
 configure_untrusted_egress_guard() {
   local ports_text="${OPENCLAW_UNTRUSTED_BLOCK_HOST_PORTS:-29789 29790}"
+  local allow_internet="${OPENCLAW_UNTRUSTED_ALLOW_INTERNET:-0}"
   local port
   for port in $ports_text; do
     [[ "$port" =~ ^[0-9]+$ ]] || die "invalid OPENCLAW_UNTRUSTED_BLOCK_HOST_PORTS entry: $port"
   done
+  [[ "$allow_internet" == "0" || "$allow_internet" == "1" ]] ||
+    die "OPENCLAW_UNTRUSTED_ALLOW_INTERNET must be 0 or 1"
 
   log "blocking untrusted guest egress to trusted gateway host ports: $ports_text"
-  limactl shell openclaw-untrusted -- sudo env "OPENCLAW_BLOCK_HOST_PORTS=$ports_text" bash -s <<'REMOTE'
+  if [[ "$allow_internet" != "1" ]]; then
+    log "blocking new untrusted guest outbound internet connections"
+  fi
+  limactl shell openclaw-untrusted -- sudo env \
+    "OPENCLAW_BLOCK_HOST_PORTS=$ports_text" \
+    "OPENCLAW_ALLOW_INTERNET=$allow_internet" \
+    bash -s <<'REMOTE'
 set -euo pipefail
 
 if ! command -v iptables >/dev/null 2>&1; then
@@ -74,6 +83,9 @@ fi
 
 iptables -w -N OPENCLAW_UNTRUSTED_EGRESS 2>/dev/null || true
 iptables -w -F OPENCLAW_UNTRUSTED_EGRESS
+iptables -w -A OPENCLAW_UNTRUSTED_EGRESS -o lo -j RETURN
+iptables -w -A OPENCLAW_UNTRUSTED_EGRESS \
+  -m conntrack --ctstate ESTABLISHED,RELATED -j RETURN
 
 for port in $ports_text; do
   [[ "$port" =~ ^[0-9]+$ ]] || {
@@ -85,8 +97,38 @@ for port in $ports_text; do
     -j REJECT --reject-with tcp-reset
 done
 
+if [[ "${OPENCLAW_ALLOW_INTERNET:-0}" != "1" ]]; then
+  iptables -w -A OPENCLAW_UNTRUSTED_EGRESS \
+    -p tcp -m conntrack --ctstate NEW \
+    -j REJECT --reject-with tcp-reset
+  iptables -w -A OPENCLAW_UNTRUSTED_EGRESS \
+    -p udp -m conntrack --ctstate NEW \
+    -j REJECT --reject-with icmp-port-unreachable
+  iptables -w -A OPENCLAW_UNTRUSTED_EGRESS \
+    -p icmp -m conntrack --ctstate NEW \
+    -j REJECT --reject-with icmp-host-prohibited
+fi
+
 iptables -w -C OUTPUT -j OPENCLAW_UNTRUSTED_EGRESS 2>/dev/null ||
   iptables -w -I OUTPUT 1 -j OPENCLAW_UNTRUSTED_EGRESS
+
+if command -v ip6tables >/dev/null 2>&1; then
+  ip6tables -w -N OPENCLAW_UNTRUSTED_EGRESS 2>/dev/null || true
+  ip6tables -w -F OPENCLAW_UNTRUSTED_EGRESS
+  ip6tables -w -A OPENCLAW_UNTRUSTED_EGRESS -o lo -j RETURN
+  ip6tables -w -A OPENCLAW_UNTRUSTED_EGRESS \
+    -m conntrack --ctstate ESTABLISHED,RELATED -j RETURN
+  if [[ "${OPENCLAW_ALLOW_INTERNET:-0}" != "1" ]]; then
+    ip6tables -w -A OPENCLAW_UNTRUSTED_EGRESS \
+      -p tcp -m conntrack --ctstate NEW -j REJECT --reject-with tcp-reset
+    ip6tables -w -A OPENCLAW_UNTRUSTED_EGRESS \
+      -p udp -m conntrack --ctstate NEW -j REJECT
+    ip6tables -w -A OPENCLAW_UNTRUSTED_EGRESS \
+      -p ipv6-icmp -m conntrack --ctstate NEW -j REJECT
+  fi
+  ip6tables -w -C OUTPUT -j OPENCLAW_UNTRUSTED_EGRESS 2>/dev/null ||
+    ip6tables -w -I OUTPUT 1 -j OPENCLAW_UNTRUSTED_EGRESS
+fi
 SCRIPT
 chmod 0755 /usr/local/sbin/openclaw-untrusted-egress-guard
 
@@ -99,6 +141,7 @@ Wants=network-online.target
 [Service]
 Type=oneshot
 Environment="OPENCLAW_BLOCK_HOST_PORTS=$OPENCLAW_BLOCK_HOST_PORTS"
+Environment="OPENCLAW_ALLOW_INTERNET=$OPENCLAW_ALLOW_INTERNET"
 ExecStart=/usr/local/sbin/openclaw-untrusted-egress-guard
 RemainAfterExit=yes
 
@@ -153,15 +196,19 @@ main() {
   [[ "$port" =~ ^[0-9]+$ ]] || die "failed to resolve openclaw-untrusted SSH local port"
 
   local target="${untrusted_user}@host.lima.internal:${port}"
+  log "recording untrusted SSH host key"
+  limactl shell openclaw-gateway -- bash -lc \
+    "set -euo pipefail; mkdir -p \"\$HOME/.ssh\"; chmod 700 \"\$HOME/.ssh\"; ssh-keyscan -p '$port' host.lima.internal >\"\$HOME/.ssh/openclaw_untrusted_known_hosts.tmp\" 2>/dev/null; mv \"\$HOME/.ssh/openclaw_untrusted_known_hosts.tmp\" \"\$HOME/.ssh/openclaw_untrusted_known_hosts\"; chmod 644 \"\$HOME/.ssh/openclaw_untrusted_known_hosts\""
+
   log "testing gateway -> untrusted SSH target $target"
   limactl shell openclaw-gateway -- bash -lc \
-    "ssh -i \"\$HOME/.ssh/openclaw_untrusted_ed25519\" -p '$port' -o BatchMode=yes -o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null '${untrusted_user}@host.lima.internal' 'printf ok' >/dev/null"
+    "ssh -i \"\$HOME/.ssh/openclaw_untrusted_ed25519\" -p '$port' -o BatchMode=yes -o StrictHostKeyChecking=yes -o UserKnownHostsFile=\"\$HOME/.ssh/openclaw_untrusted_known_hosts\" '${untrusted_user}@host.lima.internal' 'printf ok' >/dev/null"
 
   configure_untrusted_egress_guard
 
   log "applying gateway OpenClaw config for the untrusted agent"
   limactl shell openclaw-gateway -- bash -lc \
-    "OPENCLAW_CLI=\"\$HOME/bin/openclaw\" OPENCLAW_UNTRUSTED_SSH_TARGET='$target' bash '$ROOT_DIR/scripts/dev/lima/install-locksmith-in-guest.sh'"
+    "OPENCLAW_CLI=\"\$HOME/bin/openclaw\" OPENCLAW_UNTRUSTED_SSH_TARGET='$target' OPENCLAW_UNTRUSTED_SSH_KNOWN_HOSTS_FILE=\"\$HOME/.ssh/openclaw_untrusted_known_hosts\" bash '$ROOT_DIR/scripts/dev/lima/install-locksmith-in-guest.sh'"
 
   log "configured untrusted sandbox target: $target"
 }
