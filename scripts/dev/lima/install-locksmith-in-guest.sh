@@ -165,8 +165,11 @@ enable_openclaw_plugin() {
   {"path":"plugins.entries.locksmith.config.genericTool","value":false},
   {"path":"plugins.entries.locksmith.config.tools.github.enabled","value":true},
   {"path":"plugins.entries.locksmith.config.tools.github.description","value":"GitHub REST API exposed through required local Locksmith"},
+  {"path":"tools.fs.workspaceOnly","value":true},
+  {"path":"tools.exec.security","value":"deny"},
+  {"path":"tools.allow","value":["read","write","edit","apply_patch","memory_search","memory_get","session_status","update_plan","locksmith_github"]},
   {"path":"tools.alsoAllow","value":["locksmith_github"]},
-  {"path":"tools.deny","value":["group:web","group:ui","locksmith_call"]}
+  {"path":"tools.deny","value":["group:runtime","group:web","group:ui","group:messaging","group:automation","group:nodes","group:media","agents_list","sessions_list","sessions_history","sessions_send","sessions_spawn","sessions_yield","subagents","locksmith_call"]}
 ]
 JSON
   openclaw_cli config set --batch-file "$batch_file" --strict-json >/dev/null

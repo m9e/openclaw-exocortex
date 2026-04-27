@@ -85,10 +85,12 @@ The default config:
 - sets `plugins.entries.locksmith.config.required: true`
 - hides the generic `locksmith_call` tool
 - projects only `locksmith_github`
-- denies direct `group:web`, `group:ui`, and `locksmith_call` tools in the VM
+- constrains file tools to the workspace
+- denies direct runtime shell/process, web/UI, messaging, automation, node,
+  media, session-spawn, subagent, and generic `locksmith_call` tools in the VM
 
-That last policy keeps normal local/runtime tools available while forcing web
-API access through the projected Locksmith tool.
+That policy keeps local workspace, memory, status, plan, and projected
+Locksmith tools available while removing the easy direct-egress bypasses.
 
 Check it from inside the guest:
 

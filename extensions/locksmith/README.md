@@ -59,8 +59,37 @@ openclaw locksmith status
     },
   },
   tools: {
+    fs: { workspaceOnly: true },
+    exec: { security: "deny" },
+    allow: [
+      "read",
+      "write",
+      "edit",
+      "apply_patch",
+      "memory_search",
+      "memory_get",
+      "session_status",
+      "update_plan",
+      "locksmith_github",
+    ],
     alsoAllow: ["locksmith_github"],
-    deny: ["group:web", "group:ui", "locksmith_call"],
+    deny: [
+      "group:runtime",
+      "group:web",
+      "group:ui",
+      "group:messaging",
+      "group:automation",
+      "group:nodes",
+      "group:media",
+      "agents_list",
+      "sessions_list",
+      "sessions_history",
+      "sessions_send",
+      "sessions_spawn",
+      "sessions_yield",
+      "subagents",
+      "locksmith_call",
+    ],
   },
 }
 ```
@@ -69,6 +98,11 @@ When `required` is true, gateway startup fails closed unless the plugin is
 enabled, `genericTool` is false, an inbound bearer token is configured,
 unauthenticated `GET /tools` is rejected by Locksmith, authenticated `GET
 /tools` succeeds, and every projected tool is active on the sidecar.
+
+The `tools` policy in the example is the secure gateway posture: keep
+workspace-local editing and projected Locksmith tools, but remove direct shell,
+process, browser/web, messaging, media, session-spawn, and node-control tools
+that could bypass the sidecar.
 
 Environment fallbacks:
 
