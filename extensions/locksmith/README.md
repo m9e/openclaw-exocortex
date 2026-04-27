@@ -72,7 +72,6 @@ openclaw locksmith status
       "update_plan",
       "locksmith_github",
     ],
-    alsoAllow: ["locksmith_github"],
     deny: [
       "group:runtime",
       "group:web",
