@@ -79,16 +79,19 @@ ensure_locksmith_token() {
 
 write_locksmith_config() {
   local config_dir="$HOME/.config/locksmith"
+  local egress_proxy="${LOCKSMITH_EGRESS_PROXY:-http://127.0.0.1:8888}"
   mkdir -p "$config_dir"
 
-  cat >"$config_dir/config.yaml" <<'YAML'
+  cat >"$config_dir/config.yaml" <<YAML
 listen:
   host: "127.0.0.1"
   port: 9200
 
 inbound_auth:
   mode: "bearer"
-  token: "${LOCKSMITH_INBOUND_TOKEN}"
+  token: "\${LOCKSMITH_INBOUND_TOKEN}"
+
+egress_proxy: "$egress_proxy"
 
 logging:
   level: "info"

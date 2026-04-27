@@ -40,15 +40,16 @@ limactl shell openclaw-gateway -- \
 The installer clones the mounted checkout into `~/code/openclaw-exocortex`,
 installs Node 24 + pnpm, runs `pnpm install`, creates
 `~/.openclaw/gateway.token`, installs the required local Locksmith sidecar,
+installs the required local Pipelock egress proxy,
 and writes two guest helpers:
 
 - `~/bin/openclaw`: runs the dev CLI from the guest checkout without typing `pnpm`
 - `~/bin/openclaw-gateway-dev`: starts the gateway with local VM defaults
 
-Set `OPENCLAW_GUEST_INSTALL_LOCKSMITH=0` only when you intentionally need a
-non-hardened guest for debugging. The gateway helper also defaults
-`OPENCLAW_REQUIRE_LOCKSMITH=1`; override that only for the same kind of
-debugging session.
+Set `OPENCLAW_GUEST_INSTALL_PIPELOCK=0` or `OPENCLAW_GUEST_INSTALL_LOCKSMITH=0`
+only when you intentionally need a non-hardened guest for debugging. The
+gateway helper also defaults `OPENCLAW_REQUIRE_LOCKSMITH=1`; override that only
+for the same kind of debugging session.
 
 The helper starts with `--allow-unconfigured` by default for first-boot VM
 bring-up; set `OPENCLAW_GATEWAY_REQUIRE_CONFIG=1` once you want config to be
@@ -80,6 +81,7 @@ running.
 The default config:
 
 - listens on `127.0.0.1:9200`
+- sends cloud tool traffic through local Pipelock at `127.0.0.1:8888`
 - generates a local bearer token in `~/.config/locksmith/locksmith.env`
 - makes Locksmith reject unauthenticated `/tools`
 - sets `plugins.entries.locksmith.config.required: true`
@@ -99,11 +101,31 @@ removing the easy direct-egress bypasses from the gateway agent.
 Check it from inside the guest:
 
 ```bash
+systemctl status pipelock.service
 systemctl --user status locksmith.service
 openclaw locksmith status
 openclaw locksmith tools
 openclaw locksmith call github zen
 ```
+
+## Re-run Pipelock setup in either guest
+
+The Pipelock installer downloads the pinned Linux release, writes
+`/etc/pipelock/pipelock.yaml`, enables `pipelock.service`, and configures common
+CLI/package-manager HTTP proxy settings for `127.0.0.1:8888`:
+
+```bash
+limactl shell openclaw-gateway -- \
+  sudo bash /Users/yod/code/exocortex/openclaw-exocortex/scripts/dev/lima/install-pipelock-in-guest.sh
+
+cat /Users/yod/code/exocortex/openclaw-exocortex/scripts/dev/lima/install-pipelock-in-guest.sh | \
+  limactl shell openclaw-untrusted -- sudo PIPELOCK_PROFILE=untrusted bash -s
+```
+
+The gateway profile is tuned for Locksmith/tool egress. The untrusted profile is
+more permissive for coding tasks: package managers and ordinary HTTP(S) clients
+can pull broad public dependencies through Pipelock while known exfil/dropbox
+domains remain blocklisted.
 
 ## Configure the untrusted sandbox target
 
@@ -115,10 +137,11 @@ bash scripts/dev/lima/configure-untrusted-sandbox.sh
 
 The helper enables SSH in `openclaw-untrusted`, creates a gateway-only SSH key,
 authorizes it in the untrusted guest, records the current untrusted Lima SSH
-port and host key in the gateway config, installs an egress guard that blocks
-the untrusted guest from calling the trusted gateway's host-forwarded OpenClaw
-ports, blocks new outbound internet connections from the untrusted guest by
-default, and re-runs the Locksmith policy installer.
+port and host key in the gateway config, installs Pipelock in both guests,
+installs an egress guard that blocks the untrusted guest from calling the
+trusted gateway's host-forwarded OpenClaw ports, forces ordinary untrusted
+external HTTP(S)/DNS through local Pipelock by default, and re-runs the
+Locksmith policy installer.
 
 After that, the trusted `main` agent can choose:
 
@@ -157,9 +180,15 @@ Paste these values into the login gate if prompted:
 - `openclaw-gateway` inherits Lima's default read-only home mount so it can inspect the host repo without mutating it.
 - `openclaw-untrusted` mounts no host directories.
 - Neither VM auto-forwards random guest localhost ports back onto the host.
+- Both guests run Pipelock on `127.0.0.1:8888`.
+- The gateway's Locksmith sidecar sends cloud tool traffic through Pipelock.
 - The untrusted guest is blocked from reaching the trusted gateway's
   host-forwarded OpenClaw ports (`29789` and `29790` by default). Override the
   blocked list for experiments with `OPENCLAW_UNTRUSTED_BLOCK_HOST_PORTS`.
-- The untrusted guest blocks new outbound TCP/UDP/ICMP internet connections by
-  default after the helper runs. Set `OPENCLAW_UNTRUSTED_ALLOW_INTERNET=1` only
-  for a deliberate experiment that needs direct network egress.
+- The untrusted guest allows direct loopback and RFC1918/link-local LAN traffic,
+  but direct external DNS/HTTP(S) is reserved for the `pipelock` service user.
+  Shell tools, `apt`, `git`, `pip`, and `npm` should use `http_proxy` /
+  `https_proxy` or their installed system proxy config.
+- Set `OPENCLAW_UNTRUSTED_ALLOW_DIRECT_INTERNET=1` only for a deliberate
+  experiment that needs raw direct network egress. The older
+  `OPENCLAW_UNTRUSTED_ALLOW_INTERNET=1` name is still accepted as an alias.

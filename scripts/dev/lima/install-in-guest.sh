@@ -204,6 +204,20 @@ install_locksmith() {
   OPENCLAW_CLI="$HOME/bin/openclaw" bash "$installer"
 }
 
+install_pipelock() {
+  local install_dir="$1"
+  if [[ "${OPENCLAW_GUEST_INSTALL_PIPELOCK:-1}" == "0" ]]; then
+    log "skipping Pipelock install (OPENCLAW_GUEST_INSTALL_PIPELOCK=0)"
+    return
+  fi
+
+  local installer="$install_dir/scripts/dev/lima/install-pipelock-in-guest.sh"
+  [[ -f "$installer" ]] || die "Pipelock installer not found at $installer"
+
+  log "installing required Pipelock egress proxy"
+  PIPELOCK_PROFILE="${PIPELOCK_PROFILE:-gateway}" bash "$installer"
+}
+
 main() {
   assert_guest_context
 
@@ -228,6 +242,7 @@ main() {
   write_cli_helper "$install_dir"
   write_run_helper "$install_dir"
   ensure_user_bin_on_path
+  install_pipelock "$install_dir"
   install_locksmith "$install_dir"
 
   log "installed checkout: $install_dir"
