@@ -14,6 +14,10 @@ export type LocksmithToolConfig = {
   enabled?: boolean;
   label?: string;
   description?: string;
+  mode?: string;
+  method?: string;
+  path?: string;
+  parameters?: unknown;
 };
 
 export type LocksmithProjectedTool = {
@@ -21,6 +25,10 @@ export type LocksmithProjectedTool = {
   toolName: string;
   label?: string;
   description?: string;
+  mode: "proxy" | "json";
+  method?: "GET" | "POST" | "PUT" | "PATCH" | "DELETE" | "HEAD";
+  path?: string;
+  parameters?: unknown;
 };
 
 type LocksmithPluginConfig = {
@@ -37,7 +45,8 @@ type LocksmithPluginConfig = {
 };
 
 const TOOL_NAME_PREFIX = "locksmith_";
-const SLUG_PATTERN = /^[a-z0-9](?:[a-z0-9-]*[a-z0-9])?$/u;
+const SLUG_PATTERN = /^[a-z0-9](?:[a-z0-9_-]*[a-z0-9])?$/u;
+const METHOD_SET = new Set(["GET", "POST", "PUT", "PATCH", "DELETE", "HEAD"]);
 
 function normalizeSlug(raw: string): string | undefined {
   const trimmed = raw.trim().toLowerCase();
@@ -64,6 +73,18 @@ function normalizePositiveInteger(value: unknown): number | undefined {
     return undefined;
   }
   return Math.floor(value);
+}
+
+function normalizeProjectedMode(value: unknown): "proxy" | "json" {
+  return value === "json" ? "json" : "proxy";
+}
+
+function normalizeHttpMethod(value: unknown): LocksmithProjectedTool["method"] {
+  if (typeof value !== "string") {
+    return undefined;
+  }
+  const upper = value.trim().toUpperCase();
+  return METHOD_SET.has(upper) ? (upper as LocksmithProjectedTool["method"]) : undefined;
 }
 
 function normalizeConfiguredSecret(value: unknown, path: string): string | undefined {
@@ -178,11 +199,19 @@ export function resolveLocksmithProjectedTools(cfg?: OpenClawConfig): LocksmithP
     seen.add(slug);
     const label = normalizeOptionalString(entry.label);
     const description = normalizeOptionalString(entry.description);
+    const mode = normalizeProjectedMode(entry.mode);
     projected.push({
       slug,
       toolName: projectedToolName(slug),
       label,
       description,
+      mode,
+      method: normalizeHttpMethod(entry.method),
+      path: normalizeOptionalString(entry.path),
+      parameters:
+        entry.parameters && typeof entry.parameters === "object" && !Array.isArray(entry.parameters)
+          ? entry.parameters
+          : undefined,
     });
   }
   projected.sort((a, b) => (a.slug < b.slug ? -1 : a.slug > b.slug ? 1 : 0));

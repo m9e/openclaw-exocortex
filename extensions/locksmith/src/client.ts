@@ -403,7 +403,8 @@ export async function callLocksmith(params: LocksmithCallParams): Promise<Locksm
   const method = (params.method ?? "GET").toUpperCase();
   const relativePath = normalizeRelativePath(params.path);
   const baseUrl = normalizeBaseUrl(resolveLocksmithBaseUrl(params.cfg));
-  const url = new URL(`/api/${params.tool}/${relativePath}`, `${baseUrl}/`);
+  const apiPath = relativePath ? `/api/${params.tool}/${relativePath}` : `/api/${params.tool}`;
+  const url = new URL(apiPath, `${baseUrl}/`);
   appendQuery(url, params.query);
 
   const headers = buildAuthHeaders(params.cfg, params.user);

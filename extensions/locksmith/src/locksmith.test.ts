@@ -303,6 +303,31 @@ describe("locksmith projection / prompt-cache stability", () => {
     expect(namesB).toEqual(namesA);
   });
 
+  it("supports underscore slugs and direct JSON projected tools", () => {
+    const cfg = buildConfigWithProjectedTools({
+      kamiwaza_tool_z_19607be6_search: {
+        enabled: true,
+        mode: "json",
+        method: "POST",
+        parameters: {
+          type: "object",
+          properties: {
+            query: { type: "string" },
+          },
+          required: ["query"],
+          additionalProperties: false,
+        },
+      },
+    });
+    const [projected] = resolveLocksmithProjectedTools(cfg);
+    expect(projected).toMatchObject({
+      slug: "kamiwaza_tool_z_19607be6_search",
+      toolName: "locksmith_kamiwaza_tool_z_19607be6_search",
+      mode: "json",
+      method: "POST",
+    });
+  });
+
   it("filters out disabled, malformed, and duplicate slugs", () => {
     const cfg = buildConfigWithProjectedTools({
       github: { enabled: true },
@@ -337,6 +362,46 @@ describe("locksmith projection / prompt-cache stability", () => {
     const factory = createLocksmithProjectedToolFactory(fakeApi(cfg));
     factory(fakeCtx());
     expect(fetchMock).not.toHaveBeenCalled();
+  });
+
+  it("direct JSON projected tools forward raw params as the request body", async () => {
+    const fetchMock = vi.spyOn(globalThis, "fetch").mockResolvedValue(
+      new Response(JSON.stringify({ content: [{ type: "text", text: "ok" }] }), {
+        status: 200,
+        headers: { "content-type": "application/json" },
+      }),
+    );
+    const cfg = buildConfigWithProjectedTools({
+      kamiwaza_tool_z_19607be6_search: {
+        enabled: true,
+        mode: "json",
+        description: "Search via Kamiwaza",
+        parameters: {
+          type: "object",
+          properties: { query: { type: "string" } },
+          required: ["query"],
+        },
+      },
+    });
+    const factory = createLocksmithProjectedToolFactory(fakeApi(cfg));
+    const [tool] = factory(fakeCtx()) as AnyAgentTool[];
+
+    await tool.execute("call-1", {
+      query: "latest openclaw news",
+      category: "search",
+      gl: "us",
+    });
+
+    const fetchCall = fetchMock.mock.calls[0];
+    expect(fetchCall?.[0]).toBe("http://127.0.0.1:9200/api/kamiwaza_tool_z_19607be6_search");
+    expect(fetchCall?.[1]?.method).toBe("POST");
+    expect(fetchCall?.[1]?.body).toBe(
+      JSON.stringify({
+        query: "latest openclaw news",
+        category: "search",
+        gl: "us",
+      }),
+    );
   });
 
   it("static prompt guidance is byte-stable across object insertion order", () => {

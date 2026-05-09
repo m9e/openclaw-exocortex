@@ -53,6 +53,20 @@ openclaw locksmith status
               enabled: true,
               description: "GitHub REST API exposed through Locksmith",
             },
+            kamiwaza_tool_z_19607be6_search: {
+              enabled: true,
+              mode: "json",
+              description: "Search through a Kamiwaza MCP tool exposed by Locksmith",
+              parameters: {
+                type: "object",
+                properties: {
+                  query: { type: "string" },
+                  category: { type: "string", default: "search" },
+                  gl: { type: "string", default: "us" },
+                },
+                required: ["query"],
+              },
+            },
           },
         },
       },
@@ -86,6 +100,7 @@ openclaw locksmith status
             "subagents",
             "agents_list",
             "locksmith_github",
+            "locksmith_kamiwaza_tool_z_19607be6_search",
           ],
           deny: [
             "group:runtime",
@@ -187,6 +202,16 @@ The policy in the example keeps `main` limited to workspace-local editing,
 communication/session orchestration, subagent management, and projected
 Locksmith tools. Broader command and web work goes through an explicitly
 targeted `untrusted` agent whose tools run in the SSH sandbox backend.
+
+A projected tool defaults to HTTP proxy mode: the agent supplies `path`,
+`method`, `query`, and `json`/`body`, while Locksmith injects credentials for
+the bound slug. Set `mode: "json"` when the Locksmith slug represents a
+higher-level tool call such as a Kamiwaza MCP tool; in that mode the projected
+OpenClaw tool forwards the agent's raw parameters as the JSON body with `POST`
+by default.
+
+Locksmith slugs may use lowercase letters, numbers, hyphens, and underscores.
+The OpenClaw tool name is always `locksmith_<slug>`.
 
 Environment fallbacks:
 

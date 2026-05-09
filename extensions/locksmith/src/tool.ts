@@ -9,7 +9,7 @@ import {
   readNumberParam,
   readStringParam,
 } from "openclaw/plugin-sdk/provider-web-search";
-import { Type } from "typebox";
+import { Type, type TSchema } from "typebox";
 import { callLocksmith, listLocksmithTools, LocksmithError } from "./client.js";
 import { type LocksmithProjectedTool, resolveLocksmithProjectedTools } from "./config.js";
 
@@ -118,6 +118,21 @@ const ProjectedToolSchema = Type.Object(
   { additionalProperties: false },
 );
 
+const DirectJsonToolSchema = Type.Record(Type.String(), Type.Any(), {
+  description: "JSON arguments forwarded to the bound Locksmith tool.",
+});
+
+function resolveProjectedParameters(projected: LocksmithProjectedTool): TSchema {
+  if (
+    projected.parameters &&
+    typeof projected.parameters === "object" &&
+    !Array.isArray(projected.parameters)
+  ) {
+    return projected.parameters as TSchema;
+  }
+  return DirectJsonToolSchema;
+}
+
 export function createLocksmithCallTool(api: OpenClawPluginApi) {
   return {
     name: "locksmith_call",
@@ -187,6 +202,31 @@ function buildProjectedAgentTool(
   const baseDescription =
     projected.description ??
     `Call the "${projected.slug}" tool exposed by Agent Locksmith without sending raw credentials. Locksmith injects upstream auth.`;
+  if (projected.mode === "json") {
+    return {
+      name: projected.toolName,
+      label: projected.label ?? `Locksmith: ${projected.slug}`,
+      description: baseDescription,
+      parameters: resolveProjectedParameters(projected),
+      execute: async (_toolCallId: string, rawParams: Record<string, unknown>) => {
+        try {
+          return jsonResult(
+            await callLocksmith({
+              cfg: api.config,
+              tool: projected.slug,
+              user: ctx.agentId,
+              method: projected.method ?? "POST",
+              path: projected.path,
+              json: rawParams,
+            }),
+          );
+        } catch (error) {
+          throw new Error(describeLocksmithError(error), { cause: error });
+        }
+      },
+    } as AnyAgentTool;
+  }
+
   return {
     name: projected.toolName,
     label: projected.label ?? `Locksmith: ${projected.slug}`,

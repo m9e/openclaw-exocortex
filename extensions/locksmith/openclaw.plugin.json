@@ -106,7 +106,20 @@
           "properties": {
             "enabled": { "type": "boolean" },
             "label": { "type": "string" },
-            "description": { "type": "string" }
+            "description": { "type": "string" },
+            "mode": {
+              "type": "string",
+              "enum": ["proxy", "json"]
+            },
+            "method": {
+              "type": "string",
+              "enum": ["GET", "POST", "PUT", "PATCH", "DELETE", "HEAD"]
+            },
+            "path": { "type": "string" },
+            "parameters": {
+              "type": "object",
+              "additionalProperties": true
+            }
           }
         }
       }
