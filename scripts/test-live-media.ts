@@ -1,6 +1,6 @@
 #!/usr/bin/env -S node --import tsx
 
-import { spawn, type ChildProcess } from "node:child_process";
+import type { ChildProcess } from "node:child_process";
 import { createRequire } from "node:module";
 import { pathToFileURL } from "node:url";
 import { collectProviderApiKeys } from "../src/agents/live-auth-keys.js";
@@ -33,7 +33,7 @@ export const MEDIA_SUITES: Record<MediaSuiteId, MediaSuiteConfig> = {
     id: "image",
     testFile: "test/image-generation.runtime.live.test.ts",
     providerEnvVar: "OPENCLAW_LIVE_IMAGE_GENERATION_PROVIDERS",
-    providers: ["fal", "google", "minimax", "openai", "vydra", "xai"],
+    providers: ["deepinfra", "fal", "google", "minimax", "openai", "vydra", "xai"],
   },
   music: {
     id: "music",
@@ -48,6 +48,7 @@ export const MEDIA_SUITES: Record<MediaSuiteId, MediaSuiteConfig> = {
     providers: [
       "alibaba",
       "byteplus",
+      "deepinfra",
       "fal",
       "google",
       "minimax",
@@ -61,6 +62,7 @@ export const MEDIA_SUITES: Record<MediaSuiteId, MediaSuiteConfig> = {
     defaultProviders: [
       "alibaba",
       "byteplus",
+      "deepinfra",
       "google",
       "minimax",
       "openai",
@@ -92,19 +94,10 @@ export type SuiteRunPlan = {
 };
 
 function spawnLivePnpm(params: { pnpmArgs: string[]; env: NodeJS.ProcessEnv }): ChildProcess {
-  const npmExecPath = process.env.npm_execpath?.trim();
-  if (npmExecPath) {
-    return spawn(process.execPath, [npmExecPath, ...params.pnpmArgs], {
-      stdio: "inherit",
-      env: params.env,
-      shell: false,
-    });
-  }
-
-  return spawn(process.platform === "win32" ? "pnpm.cmd" : "pnpm", params.pnpmArgs, {
+  return _spawnPnpmRunner({
+    pnpmArgs: params.pnpmArgs,
     stdio: "inherit",
     env: params.env,
-    shell: false,
   });
 }
 

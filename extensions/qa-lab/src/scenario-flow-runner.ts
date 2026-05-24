@@ -1,4 +1,3 @@
-import { formatErrorMessage } from "openclaw/plugin-sdk/error-runtime";
 import type { QaTransportState } from "./qa-transport.js";
 import type { QaScenarioFlow, QaSeedScenarioWithSource } from "./scenario-catalog.js";
 
@@ -26,10 +25,16 @@ type QaFlowApi = Record<string, unknown> & {
 };
 
 type QaFlowVars = Record<string, unknown>;
+type QaFlowImportLoader = () => Promise<unknown>;
 
 const AsyncFunction = Object.getPrototypeOf(async function () {}).constructor as new (
   ...args: string[]
 ) => (...fnArgs: unknown[]) => Promise<unknown>;
+
+const qaFlowImportLoaders: Record<string, QaFlowImportLoader> = {
+  "./auth-profile.fixture.js": () => import("./auth-profile.fixture.js"),
+  "./codex-plugin.fixture.js": () => import("./codex-plugin.fixture.js"),
+};
 
 function isPlainObject(value: unknown): value is Record<string, unknown> {
   return typeof value === "object" && value !== null && !Array.isArray(value);
@@ -68,7 +73,10 @@ function getPathWithParent(
 function createEvalContext(api: QaFlowApi, vars: QaFlowVars) {
   return {
     ...api,
-    qaImport: (specifier: string) => import(specifier),
+    qaImport: (specifier: string) => {
+      const loader = qaFlowImportLoaders[specifier];
+      return loader ? loader() : import(specifier);
+    },
     vars,
     ...vars,
   };
@@ -291,8 +299,4 @@ export async function runScenarioFlow(params: {
     },
   }));
   return await params.api.runScenario(params.scenarioTitle, steps);
-}
-
-export function describeScenarioFlowError(error: unknown) {
-  return formatErrorMessage(error);
 }

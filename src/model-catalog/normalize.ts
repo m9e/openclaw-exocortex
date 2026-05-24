@@ -1,4 +1,11 @@
-import { MODEL_APIS, type ModelApi, type ModelCompatConfig } from "../config/types.models.js";
+import {
+  MODEL_APIS,
+  isModelThinkingFormat,
+  type ModelApi,
+  type ModelCompatConfig,
+  type ModelImageInputConfig,
+  type ModelMediaInputConfig,
+} from "../config/types.models.js";
 import { isBlockedObjectKey } from "../infra/prototype-keys.js";
 import { normalizeOptionalString } from "../shared/string-coerce.js";
 import { normalizeTrimmedStringList } from "../shared/string-normalization.js";
@@ -169,6 +176,7 @@ function normalizeModelCatalogCompat(value: unknown): ModelCompatConfig | undefi
     "supportsTools",
     "supportsStrictMode",
     "requiresStringContent",
+    "strictMessageKeys",
     "requiresToolResultName",
     "requiresAssistantAfterToolResult",
     "requiresThinkingAsText",
@@ -202,20 +210,24 @@ function normalizeModelCatalogCompat(value: unknown): ModelCompatConfig | undefi
     }
   }
 
+  if (isRecord(value.reasoningEffortMap)) {
+    const reasoningEffortMap = Object.fromEntries(
+      Object.entries(value.reasoningEffortMap)
+        .map(([key, mapped]) => [key.trim(), typeof mapped === "string" ? mapped.trim() : ""])
+        .filter(([key, mapped]) => key.length > 0 && mapped.length > 0),
+    );
+    if (Object.keys(reasoningEffortMap).length > 0) {
+      compat.reasoningEffortMap = reasoningEffortMap;
+    }
+  }
+
   const maxTokensField = normalizeOptionalString(value.maxTokensField) ?? "";
   if (maxTokensField === "max_completion_tokens" || maxTokensField === "max_tokens") {
     compat.maxTokensField = maxTokensField;
   }
 
   const thinkingFormat = normalizeOptionalString(value.thinkingFormat) ?? "";
-  if (
-    thinkingFormat === "openai" ||
-    thinkingFormat === "openrouter" ||
-    thinkingFormat === "deepseek" ||
-    thinkingFormat === "zai" ||
-    thinkingFormat === "qwen" ||
-    thinkingFormat === "qwen-chat-template"
-  ) {
+  if (isModelThinkingFormat(thinkingFormat)) {
     compat.thinkingFormat = thinkingFormat;
   }
 
@@ -225,6 +237,33 @@ function normalizeModelCatalogCompat(value: unknown): ModelCompatConfig | undefi
 function normalizeModelCatalogStatus(value: unknown): ModelCatalogStatus | undefined {
   const status = normalizeOptionalString(value) ?? "";
   return MODEL_CATALOG_STATUSES.has(status) ? (status as ModelCatalogStatus) : undefined;
+}
+
+function normalizeModelCatalogImageTokenMode(value: unknown): ModelImageInputConfig["tokenMode"] {
+  const tokenMode = normalizeOptionalString(value) ?? "";
+  if (tokenMode === "tile" || tokenMode === "detail" || tokenMode === "provider") {
+    return tokenMode;
+  }
+  return undefined;
+}
+
+function normalizeModelCatalogMediaInput(value: unknown): ModelMediaInputConfig | undefined {
+  if (!isRecord(value) || !isRecord(value.image)) {
+    return undefined;
+  }
+  const maxBytes = normalizePositiveInteger(value.image.maxBytes);
+  const maxPixels = normalizePositiveInteger(value.image.maxPixels);
+  const maxSidePx = normalizePositiveInteger(value.image.maxSidePx);
+  const preferredSidePx = normalizePositiveInteger(value.image.preferredSidePx);
+  const tokenMode = normalizeModelCatalogImageTokenMode(value.image.tokenMode);
+  const normalizedImage = {
+    ...(maxBytes !== undefined ? { maxBytes } : {}),
+    ...(maxPixels !== undefined ? { maxPixels } : {}),
+    ...(maxSidePx !== undefined ? { maxSidePx } : {}),
+    ...(preferredSidePx !== undefined ? { preferredSidePx } : {}),
+    ...(tokenMode ? { tokenMode } : {}),
+  };
+  return Object.keys(normalizedImage).length > 0 ? { image: normalizedImage } : undefined;
 }
 
 function normalizeModelCatalogModel(value: unknown): ModelCatalogModel | undefined {
@@ -246,6 +285,7 @@ function normalizeModelCatalogModel(value: unknown): ModelCatalogModel | undefin
   const maxTokens = normalizePositiveNumber(value.maxTokens);
   const cost = normalizeModelCatalogCost(value.cost);
   const compat = normalizeModelCatalogCompat(value.compat);
+  const mediaInput = normalizeModelCatalogMediaInput(value.mediaInput);
   const status = normalizeModelCatalogStatus(value.status);
   const statusReason = normalizeOptionalString(value.statusReason) ?? "";
   const replaces = normalizeTrimmedStringList(value.replaces);
@@ -264,6 +304,7 @@ function normalizeModelCatalogModel(value: unknown): ModelCatalogModel | undefin
     ...(maxTokens !== undefined ? { maxTokens } : {}),
     ...(cost ? { cost } : {}),
     ...(compat ? { compat } : {}),
+    ...(mediaInput ? { mediaInput } : {}),
     ...(status ? { status } : {}),
     ...(statusReason ? { statusReason } : {}),
     ...(replaces.length > 0 ? { replaces } : {}),
@@ -361,10 +402,25 @@ function normalizeModelCatalogSuppressions(value: unknown): ModelCatalogSuppress
       continue;
     }
     const reason = normalizeOptionalString(entry.reason) ?? "";
+    const rawWhen = isRecord(entry.when) ? entry.when : undefined;
+    const baseUrlHosts = normalizeTrimmedStringList(rawWhen?.baseUrlHosts).map((host) =>
+      host.toLowerCase(),
+    );
+    const providerConfigApiIn = normalizeTrimmedStringList(rawWhen?.providerConfigApiIn).map(
+      (api) => api.toLowerCase(),
+    );
+    const when =
+      baseUrlHosts.length > 0 || providerConfigApiIn.length > 0
+        ? {
+            ...(baseUrlHosts.length > 0 ? { baseUrlHosts } : {}),
+            ...(providerConfigApiIn.length > 0 ? { providerConfigApiIn } : {}),
+          }
+        : undefined;
     suppressions.push({
       provider,
       model,
       ...(reason ? { reason } : {}),
+      ...(when ? { when } : {}),
     });
   }
   return suppressions.length > 0 ? suppressions : undefined;
@@ -400,11 +456,13 @@ export function normalizeModelCatalog(
   const aliases = normalizeModelCatalogAliases(value.aliases, ownedProviders);
   const suppressions = normalizeModelCatalogSuppressions(value.suppressions);
   const discovery = normalizeModelCatalogDiscovery(value.discovery, ownedProviders);
+  const runtimeAugment = value.runtimeAugment === true;
   const catalog = {
     ...(providers ? { providers } : {}),
     ...(aliases ? { aliases } : {}),
     ...(suppressions ? { suppressions } : {}),
     ...(discovery ? { discovery } : {}),
+    ...(runtimeAugment ? { runtimeAugment } : {}),
   } satisfies ModelCatalog;
   return Object.keys(catalog).length > 0 ? catalog : undefined;
 }
@@ -441,6 +499,7 @@ export function normalizeModelCatalogProviderRows(params: {
     const maxTokens = normalizePositiveNumber(model.maxTokens);
     const cost = normalizeModelCatalogCost(model.cost);
     const compat = normalizeModelCatalogCompat(model.compat);
+    const mediaInput = normalizeModelCatalogMediaInput(model.mediaInput);
     const statusReason = normalizeOptionalString(model.statusReason) ?? "";
     const replacedBy = normalizeOptionalString(model.replacedBy) ?? "";
     const replaces = normalizeStringList(model.replaces);
@@ -463,6 +522,7 @@ export function normalizeModelCatalogProviderRows(params: {
       ...(maxTokens !== undefined ? { maxTokens } : {}),
       ...(cost ? { cost } : {}),
       ...(compat ? { compat } : {}),
+      ...(mediaInput ? { mediaInput } : {}),
       ...(statusReason ? { statusReason } : {}),
       ...(replaces ? { replaces } : {}),
       ...(replacedBy ? { replacedBy } : {}),

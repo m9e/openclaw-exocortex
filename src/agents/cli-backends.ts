@@ -1,5 +1,6 @@
 import type { CliBackendConfig } from "../config/types.js";
 import type { OpenClawConfig } from "../config/types.openclaw.js";
+import type { ContextEngineHostCapability } from "../context-engine/types.js";
 import { resolveRuntimeCliBackends } from "../plugins/cli-backends.runtime.js";
 import { resolvePluginSetupCliBackend } from "../plugins/setup-registry.js";
 import { resolveRuntimeTextTransforms } from "../plugins/text-transforms.runtime.js";
@@ -8,6 +9,7 @@ import type {
   CliBackendNormalizeConfigContext,
   CliBundleMcpMode,
   CliBackendPlugin,
+  CliBackendNativeToolMode,
   PluginTextTransforms,
 } from "../plugins/types.js";
 import { normalizeOptionalLowercaseString } from "../shared/string-coerce.js";
@@ -36,10 +38,13 @@ export type ResolvedCliBackend = {
   textTransforms?: PluginTextTransforms;
   defaultAuthProfileId?: string;
   authEpochMode?: CliBackendAuthEpochMode;
+  contextEngineHostCapabilities?: readonly ContextEngineHostCapability[];
   prepareExecution?: CliBackendPlugin["prepareExecution"];
+  resolveExecutionArgs?: CliBackendPlugin["resolveExecutionArgs"];
+  nativeToolMode?: CliBackendNativeToolMode;
 };
 
-export type ResolvedCliBackendLiveTest = {
+type ResolvedCliBackendLiveTest = {
   defaultModelRef?: string;
   defaultImageProbe: boolean;
   defaultMcpProbe: boolean;
@@ -59,7 +64,10 @@ type FallbackCliBackendPolicy = {
   textTransforms?: PluginTextTransforms;
   defaultAuthProfileId?: string;
   authEpochMode?: CliBackendAuthEpochMode;
+  contextEngineHostCapabilities?: readonly ContextEngineHostCapability[];
   prepareExecution?: CliBackendPlugin["prepareExecution"];
+  resolveExecutionArgs?: CliBackendPlugin["resolveExecutionArgs"];
+  nativeToolMode?: CliBackendNativeToolMode;
 };
 
 const FALLBACK_CLI_BACKEND_POLICIES: Record<string, FallbackCliBackendPolicy> = {};
@@ -95,7 +103,10 @@ function resolveSetupCliBackendPolicy(provider: string): FallbackCliBackendPolic
     textTransforms: entry.backend.textTransforms,
     defaultAuthProfileId: entry.backend.defaultAuthProfileId,
     authEpochMode: entry.backend.authEpochMode,
+    contextEngineHostCapabilities: entry.backend.contextEngineHostCapabilities,
     prepareExecution: entry.backend.prepareExecution,
+    resolveExecutionArgs: entry.backend.resolveExecutionArgs,
+    nativeToolMode: entry.backend.nativeToolMode,
   };
 }
 
@@ -138,8 +149,10 @@ function mergeBackendConfig(base: CliBackendConfig, override?: CliBackendConfig)
   }
   const baseFresh = base.reliability?.watchdog?.fresh ?? {};
   const baseResume = base.reliability?.watchdog?.resume ?? {};
+  const baseOutputLimits = base.reliability?.outputLimits ?? {};
   const overrideFresh = override.reliability?.watchdog?.fresh ?? {};
   const overrideResume = override.reliability?.watchdog?.resume ?? {};
+  const overrideOutputLimits = override.reliability?.outputLimits ?? {};
   return {
     ...base,
     ...override,
@@ -153,6 +166,10 @@ function mergeBackendConfig(base: CliBackendConfig, override?: CliBackendConfig)
     reliability: {
       ...base.reliability,
       ...override.reliability,
+      outputLimits: {
+        ...baseOutputLimits,
+        ...overrideOutputLimits,
+      },
       watchdog: {
         ...base.reliability?.watchdog,
         ...override.reliability?.watchdog,
@@ -226,7 +243,10 @@ export function resolveCliBackendConfig(
       textTransforms: mergePluginTextTransforms(runtimeTextTransforms, registered.textTransforms),
       defaultAuthProfileId: registered.defaultAuthProfileId,
       authEpochMode: registered.authEpochMode,
+      contextEngineHostCapabilities: registered.contextEngineHostCapabilities,
       prepareExecution: registered.prepareExecution,
+      resolveExecutionArgs: registered.resolveExecutionArgs,
+      nativeToolMode: registered.nativeToolMode,
     };
   }
 
@@ -254,7 +274,10 @@ export function resolveCliBackendConfig(
       ),
       defaultAuthProfileId: fallbackPolicy.defaultAuthProfileId,
       authEpochMode: fallbackPolicy.authEpochMode,
+      contextEngineHostCapabilities: fallbackPolicy.contextEngineHostCapabilities,
       prepareExecution: fallbackPolicy.prepareExecution,
+      resolveExecutionArgs: fallbackPolicy.resolveExecutionArgs,
+      nativeToolMode: fallbackPolicy.nativeToolMode,
     };
   }
   const mergedFallback = fallbackPolicy?.baseConfig
@@ -279,11 +302,14 @@ export function resolveCliBackendConfig(
     ),
     defaultAuthProfileId: fallbackPolicy?.defaultAuthProfileId,
     authEpochMode: fallbackPolicy?.authEpochMode,
+    contextEngineHostCapabilities: fallbackPolicy?.contextEngineHostCapabilities,
     prepareExecution: fallbackPolicy?.prepareExecution,
+    resolveExecutionArgs: fallbackPolicy?.resolveExecutionArgs,
+    nativeToolMode: fallbackPolicy?.nativeToolMode,
   };
 }
 
-export const __testing = {
+export const testing = {
   resetDepsForTest(): void {
     cliBackendsDeps = defaultCliBackendsDeps;
   },
@@ -294,3 +320,4 @@ export const __testing = {
     };
   },
 } as const;
+export { testing as __testing };

@@ -12,8 +12,9 @@ import {
   resolveSessionTranscriptPathInDir,
 } from "../config/sessions/paths.js";
 import { resolveRequiredHomeDir } from "../infra/home-dir.js";
+import { emitSessionTranscriptUpdate } from "../sessions/transcript-events.js";
 
-export type ArchiveFileReason = SessionArchiveReason;
+type ArchiveFileReason = SessionArchiveReason;
 export type ArchivedSessionTranscript = {
   sourcePath: string;
   archivedPath: string;
@@ -127,6 +128,16 @@ export function archiveFileOnDisk(filePath: string, reason: ArchiveFileReason): 
   const ts = formatSessionArchiveTimestamp();
   const archived = `${filePath}.${reason}.${ts}`;
   fs.renameSync(filePath, archived);
+  // Notify the session transcript subscribers (memory index, sessions-history
+  // HTTP, etc.) that a mutation landed on a session-owned path. Without this
+  // emit the memory sync's incremental path never learns the new archive
+  // exists: chokidar does not watch the sessions directory, and the event bus
+  // is the only channel gateway code uses to signal session-file mutations.
+  // All other in-process mutations (append, compaction, tool-result rewrite,
+  // chat inject, command execution) already emit here; archive was the sole
+  // remaining gap, which is why `.jsonl.reset.<iso>` / `.jsonl.deleted.<iso>`
+  // files only surfaced in the index after a full reindex.
+  emitSessionTranscriptUpdate({ sessionFile: archived });
   return archived;
 }
 
@@ -141,6 +152,7 @@ export function archiveSessionTranscripts(opts: {
    * This prevents maintenance operations from mutating paths outside the agent sessions dir.
    */
   restrictToStoreDir?: boolean;
+  onArchiveError?: (err: unknown, sourcePath: string) => void;
 }): string[] {
   return archiveSessionTranscriptsDetailed(opts).map((entry) => entry.archivedPath);
 }
@@ -156,6 +168,11 @@ export function archiveSessionTranscriptsDetailed(opts: {
    * This prevents maintenance operations from mutating paths outside the agent sessions dir.
    */
   restrictToStoreDir?: boolean;
+  /**
+   * Invoked when an individual transcript candidate fails to archive. The
+   * caller decides whether to log, warn-deliver, or escalate.
+   */
+  onArchiveError?: (err: unknown, sourcePath: string) => void;
 }): ArchivedSessionTranscript[] {
   const archived: ArchivedSessionTranscript[] = [];
   const storeDir =
@@ -183,8 +200,8 @@ export function archiveSessionTranscriptsDetailed(opts: {
         sourcePath: candidatePath,
         archivedPath: archiveFileOnDisk(candidatePath, opts.reason),
       });
-    } catch {
-      // Best-effort.
+    } catch (err) {
+      opts.onArchiveError?.(err, candidatePath);
     }
   }
   return archived;

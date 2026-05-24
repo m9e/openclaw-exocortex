@@ -11,9 +11,9 @@ import {
 } from "../status.js";
 import { buildThreadingToolContext } from "./agent-runner-utils.js";
 import { resolveChannelAccountId } from "./channel-context.js";
-import { rejectNonOwnerCommand, rejectUnauthorizedCommand } from "./command-gates.js";
+import { rejectUnauthorizedCommand } from "./command-gates.js";
 import { buildExportSessionReply } from "./commands-export-session.js";
-import { buildExportTrajectoryReply } from "./commands-export-trajectory.js";
+import { buildExportTrajectoryCommandReply } from "./commands-export-trajectory.js";
 import { buildStatusReply } from "./commands-status.js";
 import type { CommandHandler } from "./commands-types.js";
 import { extractExplicitGroupId } from "./group-id.js";
@@ -136,7 +136,6 @@ export const handleToolsCommand: CommandHandler = async (params, allowTextComman
       modelProvider: params.provider,
       modelId: params.model,
       messageProvider: params.command.channel,
-      senderIsOwner: params.command.senderIsOwner,
       senderId: params.command.senderId,
       senderName: params.ctx.SenderName,
       senderUsername: params.ctx.SenderUsername,
@@ -203,6 +202,7 @@ export const handleStatusCommand: CommandHandler = async (params, allowTextComma
     provider: params.provider,
     model: params.model,
     contextTokens: params.contextTokens,
+    workspaceDir: params.workspaceDir,
     resolvedThinkLevel: params.resolvedThinkLevel,
     resolvedFastMode: params.resolvedFastMode,
     resolvedVerboseLevel: params.resolvedVerboseLevel,
@@ -255,9 +255,5 @@ export const handleExportTrajectoryCommand: CommandHandler = async (params, allo
   if (unauthorized) {
     return unauthorized;
   }
-  const nonOwner = rejectNonOwnerCommand(params, "/export-trajectory");
-  if (nonOwner) {
-    return nonOwner;
-  }
-  return { shouldContinue: false, reply: await buildExportTrajectoryReply(params) };
+  return { shouldContinue: false, reply: await buildExportTrajectoryCommandReply(params) };
 };

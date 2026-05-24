@@ -1,8 +1,11 @@
 import { beforeEach, describe, expect, it, vi } from "vitest";
-import { ensureConfigReady, __test__ } from "./config-guard.js";
+import { note } from "../../terminal/note.js";
+import { formatCliCommand } from "../command-format.js";
+import { ensureConfigReady, testApi } from "./config-guard.js";
 
 const loadAndMaybeMigrateDoctorConfigMock = vi.hoisted(() => vi.fn());
 const readConfigFileSnapshotMock = vi.hoisted(() => vi.fn());
+const setRuntimeConfigSnapshotMock = vi.hoisted(() => vi.fn());
 
 vi.mock("../../commands/doctor-config-preflight.js", () => ({
   runDoctorConfigPreflight: loadAndMaybeMigrateDoctorConfigMock,
@@ -10,6 +13,7 @@ vi.mock("../../commands/doctor-config-preflight.js", () => ({
 
 vi.mock("../../config/config.js", () => ({
   readConfigFileSnapshot: readConfigFileSnapshotMock,
+  setRuntimeConfigSnapshot: setRuntimeConfigSnapshotMock,
 }));
 
 function makeSnapshot() {
@@ -29,10 +33,21 @@ function makeRuntime() {
   };
 }
 
+function plainErrorCalls(runtime: ReturnType<typeof makeRuntime>): string[] {
+  const ansiPattern = new RegExp(String.raw`\u001b\[[0-9;]*m`, "g");
+  return runtime.error.mock.calls.map((call) => String(call[0]).replace(ansiPattern, ""));
+}
+
 async function withCapturedStdout(run: () => Promise<void>): Promise<string> {
   const writes: string[] = [];
-  const writeSpy = vi.spyOn(process.stdout, "write").mockImplementation(((chunk: unknown) => {
+  const writeSpy = vi.spyOn(process.stdout, "write").mockImplementation(((
+    chunk: unknown,
+    encodingOrCallback?: BufferEncoding | ((error?: Error | null) => void),
+    callback?: (error?: Error | null) => void,
+  ) => {
     writes.push(String(chunk));
+    const done = typeof encodingOrCallback === "function" ? encodingOrCallback : callback;
+    done?.();
     return true;
   }) as typeof process.stdout.write);
   try {
@@ -44,7 +59,7 @@ async function withCapturedStdout(run: () => Promise<void>): Promise<string> {
 }
 
 describe("ensureConfigReady", () => {
-  const resetConfigGuardStateForTests = __test__.resetConfigGuardStateForTests;
+  const resetConfigGuardStateForTests = testApi.resetConfigGuardStateForTests;
 
   async function runEnsureConfigReady(commandPath: string[], suppressDoctorStdout = false) {
     const runtime = makeRuntime();
@@ -105,12 +120,62 @@ describe("ensureConfigReady", () => {
     }
   });
 
+  it("pins a valid preflight snapshot for command code reuse", async () => {
+    const snapshot = {
+      ...makeSnapshot(),
+      config: { runtime: true },
+      runtimeConfig: { runtime: true, materialized: true },
+      sourceConfig: { source: true },
+    };
+    readConfigFileSnapshotMock.mockResolvedValue(snapshot);
+
+    await runEnsureConfigReady(["status"]);
+
+    expect(setRuntimeConfigSnapshotMock).toHaveBeenCalledWith(
+      snapshot.runtimeConfig,
+      snapshot.sourceConfig,
+    );
+  });
+
+  it("retries the cached config snapshot after a read rejection", async () => {
+    const originalVitest = process.env.VITEST;
+    process.env.VITEST = "false";
+    const transientError = new Error("temporary config read failure");
+    const recoveredSnapshot = makeSnapshot();
+    readConfigFileSnapshotMock
+      .mockRejectedValueOnce(transientError)
+      .mockResolvedValueOnce(recoveredSnapshot);
+
+    try {
+      await expect(runEnsureConfigReady(["status"])).rejects.toThrow(transientError);
+      await expect(runEnsureConfigReady(["status"])).resolves.toBeDefined();
+      await expect(runEnsureConfigReady(["status"])).resolves.toBeDefined();
+    } finally {
+      if (originalVitest === undefined) {
+        delete process.env.VITEST;
+      } else {
+        process.env.VITEST = originalVitest;
+      }
+    }
+
+    expect(readConfigFileSnapshotMock).toHaveBeenCalledTimes(2);
+    expect(setRuntimeConfigSnapshotMock).toHaveBeenCalledWith(undefined, undefined);
+  });
+
   it("exits for invalid config on non-allowlisted commands", async () => {
     setInvalidSnapshot();
     const runtime = await runEnsureConfigReady(["message"]);
 
-    expect(runtime.error).toHaveBeenCalledWith(expect.stringContaining("Config invalid"));
-    expect(runtime.error).toHaveBeenCalledWith(expect.stringContaining("doctor --fix"));
+    expect(plainErrorCalls(runtime)).toEqual([
+      "OpenClaw config is invalid",
+      "File: /tmp/openclaw.json",
+      "Problem:",
+      "  - channels.quietchat: invalid",
+      "",
+      `Fix: ${formatCliCommand("openclaw doctor --fix")}`,
+      `Inspect: ${formatCliCommand("openclaw config validate")}`,
+      "Status, health, logs, and doctor commands still run with invalid config.",
+    ]);
     expect(runtime.exit).toHaveBeenCalledWith(1);
   });
 
@@ -154,9 +219,9 @@ describe("ensureConfigReady", () => {
     expect(loadAndMaybeMigrateDoctorConfigMock).toHaveBeenCalledTimes(1);
   });
 
-  it("prevents preflight stdout noise when suppression is enabled", async () => {
+  it("prevents preflight note noise when suppression is enabled", async () => {
     loadAndMaybeMigrateDoctorConfigMock.mockImplementation(async () => {
-      process.stdout.write("Doctor warnings\n");
+      note("Doctor warnings", "Config warnings");
       return {
         snapshot: makeSnapshot(),
         baseConfig: {},
@@ -168,9 +233,9 @@ describe("ensureConfigReady", () => {
     expect(output).not.toContain("Doctor warnings");
   });
 
-  it("allows preflight stdout noise when suppression is not enabled", async () => {
+  it("allows preflight note noise when suppression is not enabled", async () => {
     loadAndMaybeMigrateDoctorConfigMock.mockImplementation(async () => {
-      process.stdout.write("Doctor warnings\n");
+      note("Doctor warnings", "Config warnings");
       return {
         snapshot: makeSnapshot(),
         baseConfig: {},
@@ -180,5 +245,40 @@ describe("ensureConfigReady", () => {
       await runEnsureConfigReady(["message"], false);
     });
     expect(output).toContain("Doctor warnings");
+  });
+
+  it("does not suppress unrelated concurrent stdout writes while suppressing preflight notes", async () => {
+    let releasePreflight: (() => void) | undefined;
+    let preflightStarted: (() => void) | undefined;
+    const preflightStartedPromise = new Promise<void>((resolve) => {
+      preflightStarted = resolve;
+    });
+    const releasePreflightPromise = new Promise<void>((resolve) => {
+      releasePreflight = resolve;
+    });
+    loadAndMaybeMigrateDoctorConfigMock.mockImplementation(async () => {
+      note("Doctor warnings", "Config warnings");
+      preflightStarted?.();
+      await releasePreflightPromise;
+      return {
+        snapshot: makeSnapshot(),
+        baseConfig: {},
+      };
+    });
+
+    let callbackCalled = false;
+    const output = await withCapturedStdout(async () => {
+      const ready = runEnsureConfigReady(["message"], true);
+      await preflightStartedPromise;
+      process.stdout.write("Concurrent output\n", () => {
+        callbackCalled = true;
+      });
+      releasePreflight?.();
+      await ready;
+    });
+
+    expect(output).toContain("Concurrent output");
+    expect(output).not.toContain("Doctor warnings");
+    expect(callbackCalled).toBe(true);
   });
 });
