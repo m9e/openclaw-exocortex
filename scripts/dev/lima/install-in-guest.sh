@@ -19,6 +19,24 @@ run_sudo() {
   sudo "$@"
 }
 
+run_without_proxy() {
+  env \
+    -u http_proxy -u https_proxy -u HTTP_PROXY -u HTTPS_PROXY \
+    -u all_proxy -u ALL_PROXY \
+    "$@"
+}
+
+apt_get_direct() {
+  run_sudo env \
+    -u http_proxy -u https_proxy -u HTTP_PROXY -u HTTPS_PROXY \
+    -u all_proxy -u ALL_PROXY \
+    DEBIAN_FRONTEND=noninteractive \
+    apt-get \
+    -o Acquire::http::Proxy=false \
+    -o Acquire::https::Proxy=false \
+    "$@"
+}
+
 version_ge() {
   local actual="$1"
   local required="$2"
@@ -54,15 +72,20 @@ install_system_packages() {
   command -v apt-get >/dev/null 2>&1 || die "this installer currently expects an apt-based guest"
 
   log "installing system packages"
-  run_sudo apt-get update
-  run_sudo env DEBIAN_FRONTEND=noninteractive apt-get install -y \
+  apt_get_direct update
+  apt_get_direct install -y \
     build-essential \
     ca-certificates \
+    cargo \
+    cmake \
     curl \
     git \
     jq \
+    libsqlite3-dev \
     libpam0g-dev \
+    ninja-build \
     openssl \
+    perl \
     pkg-config \
     python3
 }
@@ -75,12 +98,15 @@ install_node() {
 
   log "installing Node 24 from NodeSource"
   if [[ "$(id -u)" -eq 0 ]]; then
-    curl -fsSL https://deb.nodesource.com/setup_24.x | bash -
+    run_without_proxy curl -fsSL https://deb.nodesource.com/setup_24.x | run_without_proxy bash -
   else
     command -v sudo >/dev/null 2>&1 || die "sudo is required when not running as root"
-    curl -fsSL https://deb.nodesource.com/setup_24.x | sudo -E bash -
+    run_without_proxy curl -fsSL https://deb.nodesource.com/setup_24.x | sudo env \
+      -u http_proxy -u https_proxy -u HTTP_PROXY -u HTTPS_PROXY \
+      -u all_proxy -u ALL_PROXY \
+      bash -
   fi
-  run_sudo env DEBIAN_FRONTEND=noninteractive apt-get install -y nodejs
+  apt_get_direct install -y nodejs
 }
 
 install_pnpm() {
@@ -192,33 +218,44 @@ EOF
 
 install_locksmith() {
   local install_dir="$1"
+  local source_repo="$2"
   if [[ "${OPENCLAW_GUEST_INSTALL_LOCKSMITH:-1}" == "0" ]]; then
     log "skipping Locksmith install (OPENCLAW_GUEST_INSTALL_LOCKSMITH=0)"
     return
   fi
 
-  local installer="$install_dir/scripts/dev/lima/install-locksmith-in-guest.sh"
+  local installer="${OPENCLAW_GUEST_LOCKSMITH_INSTALLER:-$source_repo/scripts/dev/lima/install-locksmith-in-guest.sh}"
   [[ -f "$installer" ]] || die "Locksmith installer not found at $installer"
 
   log "installing required Locksmith sidecar"
-  OPENCLAW_CLI="$HOME/bin/openclaw" bash "$installer"
+  local proxy_port="${OPENCLAW_PIPELOCK_GUEST_PORT:-8888}"
+  local locksmith_source_repo="${OPENCLAW_GUEST_LOCKSMITH_SOURCE_REPO:-}"
+  if [[ -z "$locksmith_source_repo" ]]; then
+    locksmith_source_repo="$(cd "$source_repo/.." && pwd)/deps/exocortex-agent-locksmith"
+  fi
+  OPENCLAW_CLI="$HOME/bin/openclaw" \
+    LOCKSMITH_SOURCE_REPO="$locksmith_source_repo" \
+    LOCKSMITH_EGRESS_PROXY="${LOCKSMITH_EGRESS_PROXY:-http://127.0.0.1:$proxy_port}" \
+    bash "$installer"
 }
 
 install_pipelock() {
   local install_dir="$1"
+  local source_repo="$2"
   if [[ "${OPENCLAW_GUEST_INSTALL_PIPELOCK:-1}" == "0" ]]; then
     log "skipping Pipelock install (OPENCLAW_GUEST_INSTALL_PIPELOCK=0)"
     return
   fi
 
-  local installer="$install_dir/scripts/dev/lima/install-pipelock-in-guest.sh"
+  local installer="${OPENCLAW_GUEST_PIPELOCK_INSTALLER:-$source_repo/scripts/dev/lima/install-pipelock-in-guest.sh}"
   [[ -f "$installer" ]] || die "Pipelock installer not found at $installer"
 
   log "installing required Pipelock egress proxy"
+  local proxy_port="${OPENCLAW_PIPELOCK_GUEST_PORT:-8888}"
   PIPELOCK_PROFILE="${PIPELOCK_PROFILE:-gateway}" \
-    PIPELOCK_LISTEN="${PIPELOCK_LISTEN:-0.0.0.0:8888}" \
-    PIPELOCK_HEALTH_ADDR="${PIPELOCK_HEALTH_ADDR:-127.0.0.1:8888}" \
-    PIPELOCK_PROXY_URL="${PIPELOCK_PROXY_URL:-http://127.0.0.1:8888}" \
+    PIPELOCK_LISTEN="${PIPELOCK_LISTEN:-0.0.0.0:$proxy_port}" \
+    PIPELOCK_HEALTH_ADDR="${PIPELOCK_HEALTH_ADDR:-127.0.0.1:$proxy_port}" \
+    PIPELOCK_PROXY_URL="${PIPELOCK_PROXY_URL:-http://127.0.0.1:$proxy_port}" \
     bash "$installer"
 }
 
@@ -246,15 +283,15 @@ main() {
   write_cli_helper "$install_dir"
   write_run_helper "$install_dir"
   ensure_user_bin_on_path
-  install_pipelock "$install_dir"
-  install_locksmith "$install_dir"
+  install_pipelock "$install_dir" "$source_repo"
+  install_locksmith "$install_dir" "$source_repo"
 
   log "installed checkout: $install_dir"
   log "gateway token: $HOME/.openclaw/gateway.token"
   log "CLI helper: $HOME/bin/openclaw"
   log "start gateway inside the guest with: $HOME/bin/openclaw-gateway-dev"
   log "new guest shells can run OpenClaw CLI commands as: openclaw <command>"
-  log "from the Mac host, reach it at: http://127.0.0.1:29789/"
+  log "from the Mac host, reach it at: http://127.0.0.1:${OPENCLAW_GATEWAY_HOST_PORT:-29789}/"
 }
 
 main "$@"

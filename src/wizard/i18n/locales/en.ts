@@ -145,6 +145,7 @@ export const en = {
       downloadFromNpm: "Download from npm ({spec})",
       enableFailed: "Cannot enable {plugin}: {reason}.",
       fieldsCount: "{count} field{plural}",
+      keepSensitiveField: "{label} is already configured. Keep the existing value?",
       installFailed: "Failed to install {spec}: {error}",
       installFailedShort: "Install failed: {plugin}",
       installPluginPrompt: "Install {plugin} plugin?",

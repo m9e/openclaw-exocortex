@@ -144,6 +144,7 @@ export const zh_TW = {
       downloadFromNpm: "從 npm 下載（{spec}）",
       enableFailed: "無法啟用 {plugin}：{reason}。",
       fieldsCount: "{count} 個欄位",
+      keepSensitiveField: "{label} 已設定。保留現有值？",
       installFailed: "安裝 {spec} 失敗：{error}",
       installFailedShort: "安裝失敗：{plugin}",
       installPluginPrompt: "安裝 {plugin} 插件？",

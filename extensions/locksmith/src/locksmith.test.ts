@@ -468,11 +468,66 @@ describe("locksmith projection / prompt-cache stability", () => {
     expect(renderedA).toBe(renderedB);
   });
 
-  it("dynamic catalog is skipped when projected tools are configured", async () => {
-    const fetchMock = vi.spyOn(globalThis, "fetch");
+  it("dynamic catalog does not warn when all active tools are projected", async () => {
+    const fetchMock = vi.spyOn(globalThis, "fetch").mockResolvedValueOnce(
+      new Response(JSON.stringify({ tools: [{ name: "github" }] }), {
+        status: 200,
+        headers: { "content-type": "application/json" },
+      }),
+    );
     const cfg = buildConfigWithProjectedTools({ github: { enabled: true } });
     await expect(buildLocksmithDynamicCatalogGuidance(cfg)).resolves.toBeUndefined();
-    expect(fetchMock).not.toHaveBeenCalled();
+    expect(fetchMock).toHaveBeenCalledTimes(1);
+  });
+
+  it("dynamic catalog warns about active tools missing first-class projections", async () => {
+    vi.spyOn(globalThis, "fetch").mockResolvedValueOnce(
+      new Response(
+        JSON.stringify({
+          tools: [
+            { name: "github", description: "GitHub REST API" },
+            {
+              name: "kamiwaza_tool_z_19607be6_search",
+              description: "Search via Kamiwaza",
+            },
+          ],
+        }),
+        {
+          status: 200,
+          headers: { "content-type": "application/json" },
+        },
+      ),
+    );
+    const cfg = buildConfigWithProjectedTools({ github: { enabled: true } });
+    const guidance = await buildLocksmithDynamicCatalogGuidance(cfg);
+    expect(guidance).toContain("not projected as first-class OpenClaw tools");
+    expect(guidance).toContain("kamiwaza_tool_z_19607be6_search: Search via Kamiwaza");
+    expect(guidance).toContain("callable through `locksmith_call` now");
+  });
+
+  it("dynamic catalog restart warning reflects disabled generic bridge", async () => {
+    vi.spyOn(globalThis, "fetch").mockResolvedValueOnce(
+      new Response(JSON.stringify({ tools: [{ name: "tavily" }, { name: "github" }] }), {
+        status: 200,
+        headers: { "content-type": "application/json" },
+      }),
+    );
+    const cfg = {
+      plugins: {
+        entries: {
+          locksmith: {
+            config: {
+              baseUrl: "http://127.0.0.1:9200",
+              genericTool: false,
+              tools: { github: { enabled: true } },
+            },
+          },
+        },
+      },
+    } as OpenClawConfig;
+    const guidance = await buildLocksmithDynamicCatalogGuidance(cfg);
+    expect(guidance).toContain("restart the OpenClaw gateway");
+    expect(guidance).not.toContain("callable through `locksmith_call` now");
   });
 });
 

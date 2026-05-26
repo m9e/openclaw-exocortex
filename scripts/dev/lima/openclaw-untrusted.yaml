@@ -22,34 +22,11 @@ networks:
 env:
   OPENCLAW_VM_ROLE: untrusted
 
-provision:
-  - mode: system
-    script: |
-      #!/bin/bash
-      set -eux -o pipefail
-      export DEBIAN_FRONTEND=noninteractive
-      apt-get update
-      apt-get install -y \
-        ca-certificates \
-        curl \
-        dnsutils \
-        git \
-        iproute2 \
-        iptables \
-        jq \
-        net-tools \
-        nftables \
-        python3 \
-        socat \
-        tcpdump
-
 message: |
   openclaw-untrusted is an isolated Lima VM for untrusted content and tool execution.
   No host directories are mounted into this guest.
-  Guest localhost ports are not auto-forwarded; only these host forwards are enabled:
-    host 127.0.0.1:39789 -> guest 127.0.0.1:18789
-    host 127.0.0.1:39790 -> guest 127.0.0.1:18790
-  These forwards are host-loopback only.
+  Guest localhost ports are not auto-forwarded; only start-openclaw-vms.sh
+  configured host-loopback forwards are enabled.
 
 portForwards:
   - guestPort: 18789

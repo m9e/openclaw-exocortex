@@ -144,6 +144,7 @@ export const zh_CN = {
       downloadFromNpm: "从 npm 下载（{spec}）",
       enableFailed: "无法启用 {plugin}：{reason}。",
       fieldsCount: "{count} 个字段",
+      keepSensitiveField: "{label} 已配置。保留现有值？",
       installFailed: "安装 {spec} 失败：{error}",
       installFailedShort: "安装失败：{plugin}",
       installPluginPrompt: "安装 {plugin} 插件？",

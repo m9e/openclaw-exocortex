@@ -1,0 +1,96 @@
+{
+  "id": "kamiwaza",
+  "name": "Kamiwaza",
+  "description": "Direct Kamiwaza MCP tool bridge for local platform deployments.",
+  "activation": {
+    "onStartup": false
+  },
+  "contracts": {
+    "tools": ["kamiwaza_call"]
+  },
+  "commandAliases": [{ "name": "kamiwaza" }],
+  "uiHints": {
+    "apiUrl": {
+      "label": "Kamiwaza API URL",
+      "help": "Kamiwaza platform API base URL, for example https://host.lima.internal/api."
+    },
+    "apiToken": {
+      "label": "Kamiwaza PAT",
+      "help": "Kamiwaza personal access token. Fallbacks: KAMIWAZA_API_KEY, then the local Kamiwaza PAT credential store.",
+      "sensitive": true
+    },
+    "credentialStorePath": {
+      "label": "Kamiwaza PAT Store",
+      "help": "Optional OpenClaw-side PAT store written by sync-kamiwaza-pat-credentials.sh, or a raw pdash-pat-store-v1 export.",
+      "sensitive": true,
+      "advanced": true
+    },
+    "genericTool": {
+      "label": "Expose Generic Kamiwaza Tool",
+      "help": "When true, registers kamiwaza_call as a direct fallback bridge.",
+      "advanced": true
+    },
+    "verifyTls": {
+      "label": "Verify Kamiwaza TLS",
+      "help": "When false, direct Kamiwaza calls accept the local platform gateway's self-signed certificate.",
+      "advanced": true
+    },
+    "delegation.signingSecret": {
+      "label": "Delegation Signing Secret",
+      "help": "Optional secret for signed delegated agent identity headers on Kamiwaza tool calls.",
+      "sensitive": true,
+      "advanced": true
+    },
+    "delegation.required": {
+      "label": "Require Delegated Identity",
+      "help": "When true, direct Kamiwaza calls fail closed unless a signed agent identity can be attached.",
+      "advanced": true
+    }
+  },
+  "configSchema": {
+    "type": "object",
+    "additionalProperties": false,
+    "properties": {
+      "apiUrl": { "type": "string" },
+      "apiUrlCandidates": {
+        "type": "array",
+        "items": { "type": "string" }
+      },
+      "apiToken": { "type": ["string", "object"] },
+      "credentialStorePath": { "type": "string" },
+      "credentialHost": { "type": "string" },
+      "toolPrefix": { "type": "string" },
+      "includeTypes": {
+        "type": "array",
+        "items": { "type": "string" }
+      },
+      "genericTool": { "type": "boolean" },
+      "promptCatalog": { "type": "boolean" },
+      "verifyTls": { "type": "boolean" },
+      "catalogTtlSeconds": {
+        "type": "number",
+        "minimum": 1
+      },
+      "timeoutSeconds": {
+        "type": "number",
+        "minimum": 1
+      },
+      "delegation": {
+        "type": "object",
+        "additionalProperties": false,
+        "properties": {
+          "enabled": { "type": "boolean" },
+          "required": { "type": "boolean" },
+          "signingSecret": { "type": ["string", "object"] },
+          "header": { "type": "string" },
+          "issuer": { "type": "string" },
+          "audience": { "type": "string" },
+          "ttlSeconds": {
+            "type": "number",
+            "minimum": 1
+          }
+        }
+      }
+    }
+  }
+}

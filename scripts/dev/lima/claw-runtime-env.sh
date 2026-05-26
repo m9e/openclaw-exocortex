@@ -1,0 +1,94 @@
+#!/usr/bin/env bash
+
+# Shared host-side runtime defaults for the OpenClaw Lima pair.
+# Source this file from other scripts; do not execute it directly.
+
+openclaw_runtime_die() {
+  printf '[openclaw claw-runtime] error: %s\n' "$*" >&2
+  return 1 2>/dev/null || exit 1
+}
+
+OPENCLAW_LIMA_SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+OPENCLAW_REPO_ROOT="$(cd "$OPENCLAW_LIMA_SCRIPT_DIR/../../.." && pwd)"
+OPENCLAW_WORKSPACE_ROOT="$(cd "$OPENCLAW_REPO_ROOT/.." && pwd)"
+
+OPENCLAW_RUNTIME_NAME="${OPENCLAW_RUNTIME_NAME:-openclaw}"
+[[ "$OPENCLAW_RUNTIME_NAME" =~ ^[a-z][a-z0-9-]{0,47}$ ]] ||
+  openclaw_runtime_die "OPENCLAW_RUNTIME_NAME must match ^[a-z][a-z0-9-]{0,47}$"
+
+OPENCLAW_RUNTIME_DIR="${OPENCLAW_RUNTIME_DIR:-$OPENCLAW_WORKSPACE_ROOT/claw-runtime/$OPENCLAW_RUNTIME_NAME}"
+OPENCLAW_RUNTIME_DEPS_DIR="${OPENCLAW_RUNTIME_DEPS_DIR:-$OPENCLAW_RUNTIME_DIR/deps}"
+OPENCLAW_LIMA_HOME="${OPENCLAW_LIMA_HOME:-$OPENCLAW_RUNTIME_DIR/lima}"
+export LIMA_HOME="${LIMA_HOME:-$OPENCLAW_LIMA_HOME}"
+
+OPENCLAW_RUNTIME_PORT_OFFSET="${OPENCLAW_RUNTIME_PORT_OFFSET:-0}"
+[[ "$OPENCLAW_RUNTIME_PORT_OFFSET" =~ ^[0-9]+$ ]] ||
+  openclaw_runtime_die "OPENCLAW_RUNTIME_PORT_OFFSET must be numeric"
+
+openclaw_runtime_port() {
+  local base="$1"
+  printf '%s\n' "$((base + OPENCLAW_RUNTIME_PORT_OFFSET))"
+}
+
+if [[ "$OPENCLAW_RUNTIME_NAME" == "openclaw" ]]; then
+  OPENCLAW_DEFAULT_GATEWAY_INSTANCE="openclaw-gateway"
+  OPENCLAW_DEFAULT_UNTRUSTED_INSTANCE="openclaw-untrusted"
+  OPENCLAW_DEFAULT_PF_ANCHOR_NAME="openclaw-lima-egress"
+else
+  OPENCLAW_DEFAULT_GATEWAY_INSTANCE="$OPENCLAW_RUNTIME_NAME-gateway"
+  OPENCLAW_DEFAULT_UNTRUSTED_INSTANCE="$OPENCLAW_RUNTIME_NAME-untrusted"
+  OPENCLAW_DEFAULT_PF_ANCHOR_NAME="$OPENCLAW_RUNTIME_NAME-openclaw-lima-egress"
+fi
+
+OPENCLAW_GATEWAY_INSTANCE="${OPENCLAW_GATEWAY_INSTANCE:-$OPENCLAW_DEFAULT_GATEWAY_INSTANCE}"
+OPENCLAW_UNTRUSTED_INSTANCE="${OPENCLAW_UNTRUSTED_INSTANCE:-$OPENCLAW_DEFAULT_UNTRUSTED_INSTANCE}"
+OPENCLAW_PF_ANCHOR_NAME="${OPENCLAW_PF_ANCHOR_NAME:-$OPENCLAW_DEFAULT_PF_ANCHOR_NAME}"
+
+OPENCLAW_GATEWAY_HOST_PORT="${OPENCLAW_GATEWAY_HOST_PORT:-$(openclaw_runtime_port 29789)}"
+OPENCLAW_GATEWAY_ALT_HOST_PORT="${OPENCLAW_GATEWAY_ALT_HOST_PORT:-$(openclaw_runtime_port 29790)}"
+OPENCLAW_UNTRUSTED_HOST_PORT="${OPENCLAW_UNTRUSTED_HOST_PORT:-$(openclaw_runtime_port 39789)}"
+OPENCLAW_UNTRUSTED_ALT_HOST_PORT="${OPENCLAW_UNTRUSTED_ALT_HOST_PORT:-$(openclaw_runtime_port 39790)}"
+OPENCLAW_PIPELOCK_GUEST_PORT="${OPENCLAW_PIPELOCK_GUEST_PORT:-8888}"
+OPENCLAW_PIPELOCK_PORT="${OPENCLAW_PIPELOCK_PORT:-$(openclaw_runtime_port 29888)}"
+
+openclaw_prepare_runtime_dirs() {
+  mkdir -p \
+    "$OPENCLAW_RUNTIME_DIR/logs" \
+    "$OPENCLAW_RUNTIME_DIR/metadata" \
+    "$OPENCLAW_RUNTIME_DIR/templates" \
+    "$OPENCLAW_RUNTIME_DEPS_DIR" \
+    "$LIMA_HOME"
+
+  ln -sfn "$OPENCLAW_REPO_ROOT" "$OPENCLAW_RUNTIME_DIR/openclaw-exocortex"
+
+  local dep
+  for dep in exocortex-agent-locksmith exocortex-openclaw-hardened exocortex-untrusted-content; do
+    if [[ -d "$OPENCLAW_WORKSPACE_ROOT/deps/$dep" ]]; then
+      ln -sfn "$OPENCLAW_WORKSPACE_ROOT/deps/$dep" "$OPENCLAW_RUNTIME_DEPS_DIR/$dep"
+    fi
+  done
+
+  {
+    printf 'OPENCLAW_RUNTIME_NAME=%q\n' "$OPENCLAW_RUNTIME_NAME"
+    printf 'OPENCLAW_RUNTIME_DIR=%q\n' "$OPENCLAW_RUNTIME_DIR"
+    printf 'LIMA_HOME=%q\n' "$LIMA_HOME"
+    printf 'OPENCLAW_GATEWAY_INSTANCE=%q\n' "$OPENCLAW_GATEWAY_INSTANCE"
+    printf 'OPENCLAW_UNTRUSTED_INSTANCE=%q\n' "$OPENCLAW_UNTRUSTED_INSTANCE"
+    printf 'OPENCLAW_GATEWAY_HOST_PORT=%q\n' "$OPENCLAW_GATEWAY_HOST_PORT"
+    printf 'OPENCLAW_GATEWAY_ALT_HOST_PORT=%q\n' "$OPENCLAW_GATEWAY_ALT_HOST_PORT"
+    printf 'OPENCLAW_UNTRUSTED_HOST_PORT=%q\n' "$OPENCLAW_UNTRUSTED_HOST_PORT"
+    printf 'OPENCLAW_UNTRUSTED_ALT_HOST_PORT=%q\n' "$OPENCLAW_UNTRUSTED_ALT_HOST_PORT"
+    printf 'OPENCLAW_PIPELOCK_GUEST_PORT=%q\n' "$OPENCLAW_PIPELOCK_GUEST_PORT"
+    printf 'OPENCLAW_PIPELOCK_PORT=%q\n' "$OPENCLAW_PIPELOCK_PORT"
+    printf 'OPENCLAW_PF_ANCHOR_NAME=%q\n' "$OPENCLAW_PF_ANCHOR_NAME"
+  } >"$OPENCLAW_RUNTIME_DIR/runtime.env"
+  chmod 600 "$OPENCLAW_RUNTIME_DIR/runtime.env"
+}
+
+openclaw_runtime_summary() {
+  printf 'runtime:  %s\n' "$OPENCLAW_RUNTIME_DIR"
+  printf 'lima:     %s\n' "$LIMA_HOME"
+  printf 'gateway:  %s -> 127.0.0.1:%s\n' "$OPENCLAW_GATEWAY_INSTANCE" "$OPENCLAW_GATEWAY_HOST_PORT"
+  printf 'untrusted:%s -> 127.0.0.1:%s\n' "$OPENCLAW_UNTRUSTED_INSTANCE" "$OPENCLAW_UNTRUSTED_HOST_PORT"
+  printf 'pipelock: host 0.0.0.0:%s -> gateway guest :%s\n' "$OPENCLAW_PIPELOCK_PORT" "$OPENCLAW_PIPELOCK_GUEST_PORT"
+}

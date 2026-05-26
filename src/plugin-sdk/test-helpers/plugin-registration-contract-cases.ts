@@ -67,6 +67,10 @@ export const pluginRegistrationContractCases = {
     pluginId: "groq",
     mediaUnderstandingProviderIds: ["groq"],
   },
+  kamiwaza: {
+    pluginId: "kamiwaza",
+    toolNames: ["kamiwaza_call"],
+  },
   locksmith: {
     pluginId: "locksmith",
     toolNames: ["locksmith_call"],

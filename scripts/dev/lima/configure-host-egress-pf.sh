@@ -1,6 +1,10 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
+SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+source "$SCRIPT_DIR/claw-runtime-env.sh"
+openclaw_prepare_runtime_dirs
+
 log() {
   printf '[openclaw host egress pf] %s\n' "$*"
 }
@@ -49,9 +53,9 @@ main() {
   command -v limactl >/dev/null 2>&1 || die "limactl is required"
   command -v pfctl >/dev/null 2>&1 || die "pfctl is required"
 
-  local gateway_instance="${OPENCLAW_GATEWAY_INSTANCE:-openclaw-gateway}"
-  local untrusted_instance="${OPENCLAW_UNTRUSTED_INSTANCE:-openclaw-untrusted}"
-  local proxy_port="${OPENCLAW_PIPELOCK_PORT:-8888}"
+  local gateway_instance="$OPENCLAW_GATEWAY_INSTANCE"
+  local untrusted_instance="$OPENCLAW_UNTRUSTED_INSTANCE"
+  local proxy_port="$OPENCLAW_PIPELOCK_PORT"
   [[ "$proxy_port" =~ ^[0-9]+$ ]] || die "OPENCLAW_PIPELOCK_PORT must be numeric"
 
   local dhcp_gateway gateway_ip untrusted_ip
@@ -66,7 +70,7 @@ main() {
   [[ "$gateway_ip" != "$untrusted_ip" ]] ||
     die "$gateway_instance and $untrusted_instance resolved the same IP ($gateway_ip); strict host egress requires distinct VZ NAT addresses"
 
-  local anchor_name="openclaw-lima-egress"
+  local anchor_name="$OPENCLAW_PF_ANCHOR_NAME"
   local anchor_file="/etc/pf.anchors/$anchor_name"
   local tmp_anchor
   tmp_anchor="$(mktemp)"

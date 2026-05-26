@@ -48,9 +48,9 @@ export function buildLocksmithStaticPromptGuidance(cfg?: OpenClawConfig): string
  *
  * Lives below the cached prefix, so live service state, errors, and TTL-driven
  * catalog refreshes can change here without invalidating the prompt cache.
- * Returns `undefined` when the operator has either configured projected tools
- * (the catalog is operator-declared, not service-discovered) or disabled the
- * `promptCatalog` flag.
+ * When projected tools are configured, this still checks live Locksmith state
+ * below the cache boundary and warns about active tools that have not been
+ * projected as first-class OpenClaw tools.
  */
 export async function buildLocksmithDynamicCatalogGuidance(
   cfg?: OpenClawConfig,
@@ -58,11 +58,24 @@ export async function buildLocksmithDynamicCatalogGuidance(
   if (!resolveLocksmithPromptCatalogEnabled(cfg)) {
     return undefined;
   }
-  if (resolveLocksmithProjectedTools(cfg).length > 0) {
-    return undefined;
-  }
   try {
     const tools = sortLocksmithTools(await listLocksmithTools(cfg));
+    const projected = resolveLocksmithProjectedTools(cfg);
+    if (projected.length > 0) {
+      const projectedSlugs = new Set(projected.map((entry) => entry.slug));
+      const unprojected = tools.filter((tool) => !projectedSlugs.has(tool.name));
+      if (unprojected.length === 0) {
+        return undefined;
+      }
+      const lines = unprojected.map((tool) => {
+        const description = tool.description?.trim();
+        return description ? `- ${tool.name}: ${description}` : `- ${tool.name}`;
+      });
+      const bridgeGuidance = resolveLocksmithGenericToolEnabled(cfg)
+        ? "They are callable through `locksmith_call` now, but first-class OpenClaw tool names require updating the Locksmith tool projection config and restarting the gateway."
+        : "Update the Locksmith tool projection config and restart the OpenClaw gateway to expose them as first-class tools.";
+      return `Locksmith has active tools that are not projected as first-class OpenClaw tools:\n${lines.join("\n")}\n${bridgeGuidance}`;
+    }
     if (tools.length === 0) {
       return `No Locksmith tools are currently active at ${resolveLocksmithBaseUrl(cfg)}.`;
     }

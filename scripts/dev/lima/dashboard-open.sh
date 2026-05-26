@@ -1,8 +1,11 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
-INSTANCE="${OPENCLAW_GATEWAY_LIMA_INSTANCE:-openclaw-gateway}"
-HOST_PORT="${OPENCLAW_GATEWAY_HOST_PORT:-29789}"
+SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+source "$SCRIPT_DIR/claw-runtime-env.sh"
+
+INSTANCE="${OPENCLAW_GATEWAY_LIMA_INSTANCE:-$OPENCLAW_GATEWAY_INSTANCE}"
+HOST_PORT="$OPENCLAW_GATEWAY_HOST_PORT"
 URL="${OPENCLAW_GATEWAY_DASHBOARD_URL:-http://127.0.0.1:${HOST_PORT}/}"
 
 token="$(

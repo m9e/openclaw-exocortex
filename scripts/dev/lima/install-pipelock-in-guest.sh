@@ -19,6 +19,13 @@ run_sudo() {
   sudo "$@"
 }
 
+run_without_proxy() {
+  env \
+    -u http_proxy -u https_proxy -u HTTP_PROXY -u HTTPS_PROXY \
+    -u all_proxy -u ALL_PROXY \
+    "$@"
+}
+
 assert_guest_context() {
   [[ "$(uname -s)" == "Linux" ]] || die "run this inside the Lima Linux guest"
 }
@@ -51,8 +58,8 @@ download_pipelock() {
   trap 'rm -rf "$tmpdir"' RETURN
 
   log "downloading Pipelock $version for linux-$arch"
-  curl -fsSLo "$tmpdir/$asset" "$base_url/$asset"
-  curl -fsSLo "$tmpdir/checksums.txt" "$base_url/checksums.txt"
+  run_without_proxy curl -fsSLo "$tmpdir/$asset" "$base_url/$asset"
+  run_without_proxy curl -fsSLo "$tmpdir/checksums.txt" "$base_url/checksums.txt"
   (cd "$tmpdir" && grep -F "  $asset" checksums.txt | sha256sum -c -)
   tar -xzf "$tmpdir/$asset" -C "$tmpdir"
   [[ -x "$tmpdir/pipelock" ]] || die "downloaded archive did not contain executable pipelock"

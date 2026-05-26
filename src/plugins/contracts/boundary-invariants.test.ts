@@ -18,6 +18,7 @@ const BUNDLED_TYPED_HOOK_REGISTRATION_FILES = [
   "extensions/diffs/src/plugin.ts",
   "extensions/discord/subagent-hooks-api.ts",
   "extensions/feishu/subagent-hooks-api.ts",
+  "extensions/kamiwaza/index.ts",
   "extensions/locksmith/index.ts",
   "extensions/matrix/subagent-hooks-api.ts",
   "extensions/memory-core/src/dreaming.ts",
@@ -41,6 +42,7 @@ const BUNDLED_TYPED_HOOK_REGISTRATION_GUARDS = {
     "subagent_ended",
     "subagent_spawning",
   ],
+  "extensions/kamiwaza/index.ts": ["before_prompt_build"],
   "extensions/locksmith/index.ts": ["before_prompt_build"],
   "extensions/matrix/subagent-hooks-api.ts": [
     "subagent_delivery_target",

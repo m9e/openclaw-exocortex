@@ -3,6 +3,7 @@ import type { OpenClawConfig } from "../config/config.js";
 import type { PluginConfigUiHint } from "../plugins/types.js";
 import type { WizardPrompter } from "./prompts.js";
 import {
+  configurePluginConfig,
   discoverConfigurablePlugins,
   discoverUnconfiguredPlugins,
   setupPluginConfig,
@@ -75,7 +76,7 @@ describe("discoverConfigurablePlugins", () => {
     expect(result).toHaveLength(0);
   });
 
-  it("excludes sensitive fields from promptable hints", () => {
+  it("keeps sensitive fields promptable", () => {
     const plugins = [
       makeManifestPlugin("secret-plugin", {
         endpoint: { label: "Endpoint" },
@@ -404,5 +405,114 @@ describe("setupPluginConfig", () => {
     expect(result.plugins?.entries?.["retry-plugin"]?.config).toEqual({
       retries: 3,
     });
+  });
+
+  it("prompts sensitive plugin fields with masked text input", async () => {
+    loadPluginManifestRegistry.mockReturnValue({
+      plugins: [
+        makeManifestPlugin(
+          "kamiwaza",
+          {
+            apiUrl: { label: "Kamiwaza API URL" },
+            apiToken: { label: "Kamiwaza PAT", sensitive: true },
+          },
+          {
+            type: "object",
+            additionalProperties: false,
+            properties: {
+              apiUrl: { type: "string" },
+              apiToken: { type: ["string", "object"] },
+            },
+          },
+        ),
+      ],
+    });
+
+    const text = vi
+      .fn<WizardPrompter["text"]>()
+      .mockResolvedValueOnce("http://kamiwaza.local/api")
+      .mockResolvedValueOnce("kamiwaza-pat");
+
+    const result = await setupPluginConfig({
+      config: {
+        plugins: {
+          entries: {
+            kamiwaza: {
+              enabled: true,
+            },
+          },
+        },
+      },
+      prompter: {
+        intro: vi.fn(async () => {}),
+        outro: vi.fn(async () => {}),
+        note: vi.fn(async () => {}),
+        select: vi.fn(async () => "") as unknown as WizardPrompter["select"],
+        multiselect: vi.fn(async () => ["kamiwaza"]) as unknown as WizardPrompter["multiselect"],
+        text,
+        confirm: vi.fn(async () => true),
+        progress: vi.fn(() => ({ update: vi.fn(), stop: vi.fn() })),
+      },
+    });
+
+    expect(result.plugins?.entries?.kamiwaza?.config).toEqual({
+      apiUrl: "http://kamiwaza.local/api",
+      apiToken: "kamiwaza-pat",
+    });
+    expect(text).toHaveBeenLastCalledWith({
+      message: "Kamiwaza PAT",
+      sensitive: true,
+    });
+  });
+});
+
+describe("configurePluginConfig", () => {
+  it("can keep an existing sensitive field without echoing it", async () => {
+    loadPluginManifestRegistry.mockReturnValue({
+      plugins: [
+        makeManifestPlugin("kamiwaza", {
+          apiToken: { label: "Kamiwaza PAT", sensitive: true },
+        }),
+      ],
+    });
+
+    const text = vi.fn(async () => {
+      throw new Error("text should not run when keeping existing sensitive field");
+    });
+    const confirm = vi.fn(async () => true);
+
+    const result = await configurePluginConfig({
+      config: {
+        plugins: {
+          entries: {
+            kamiwaza: {
+              enabled: true,
+              config: {
+                apiToken: "existing-pat",
+              },
+            },
+          },
+        },
+      },
+      prompter: {
+        intro: vi.fn(async () => {}),
+        outro: vi.fn(async () => {}),
+        note: vi.fn(async () => {}),
+        select: vi.fn(async () => "kamiwaza") as unknown as WizardPrompter["select"],
+        multiselect: vi.fn(async () => []) as unknown as WizardPrompter["multiselect"],
+        text,
+        confirm: confirm as unknown as WizardPrompter["confirm"],
+        progress: vi.fn(() => ({ update: vi.fn(), stop: vi.fn() })),
+      },
+    });
+
+    expect(result.plugins?.entries?.kamiwaza?.config).toEqual({
+      apiToken: "existing-pat",
+    });
+    expect(confirm).toHaveBeenCalledWith({
+      message: "Kamiwaza PAT is already configured. Keep the existing value?",
+      initialValue: true,
+    });
+    expect(text).not.toHaveBeenCalled();
   });
 });

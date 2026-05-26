@@ -17,6 +17,47 @@ assert_guest_context() {
   fi
 }
 
+run_without_proxy() {
+  env \
+    -u http_proxy -u https_proxy -u HTTP_PROXY -u HTTPS_PROXY \
+    -u all_proxy -u ALL_PROXY \
+    "$@"
+}
+
+version_ge() {
+  local actual="$1"
+  local required="$2"
+  [[ "$(printf '%s\n%s\n' "$required" "$actual" | sort -V | head -n 1)" == "$required" ]]
+}
+
+rust_version_satisfies() {
+  local required="${LOCKSMITH_MIN_RUST_VERSION:-1.88.0}"
+  command -v rustc >/dev/null 2>&1 || return 1
+  local version
+  version="$(rustc --version | awk '{print $2}' | sed 's/-.*//')"
+  [[ -n "$version" ]] || return 1
+  version_ge "$version" "$required"
+}
+
+ensure_rust_toolchain() {
+  local required="${LOCKSMITH_MIN_RUST_VERSION:-1.88.0}"
+  if rust_version_satisfies; then
+    log "Rust $(rustc --version) satisfies locksmithd build"
+    return
+  fi
+
+  log "installing rustup toolchain for locksmithd build (requires Rust >= $required)"
+  if ! command -v "$HOME/.cargo/bin/rustup" >/dev/null 2>&1; then
+    run_without_proxy curl --proto '=https' --tlsv1.2 -fsSL https://sh.rustup.rs |
+      run_without_proxy sh -s -- -y --profile minimal --default-toolchain stable
+  else
+    "$HOME/.cargo/bin/rustup" toolchain install stable --profile minimal
+  fi
+  export PATH="$HOME/.cargo/bin:$PATH"
+  "$HOME/.cargo/bin/rustup" default stable >/dev/null
+  rust_version_satisfies || die "installed rustc $(rustc --version) does not satisfy >= $required"
+}
+
 resolve_arch() {
   case "$(uname -m)" in
     aarch64 | arm64) printf 'arm64\n' ;;
@@ -38,7 +79,7 @@ download_locksmith() {
   local tmpdir
   tmpdir="$(mktemp -d)"
 
-  log "downloading Locksmith $version for linux-$arch"
+  log "downloading Locksmith CLI $version for linux-$arch"
   curl -fsSLo "$tmpdir/locksmith" "$base_url/locksmith-linux-$arch"
   curl -fsSLo "$tmpdir/SHA256SUMS" "$base_url/SHA256SUMS"
   (cd "$tmpdir" && grep "locksmith-linux-$arch" SHA256SUMS | sed "s/locksmith-linux-$arch/locksmith/" | sha256sum -c -)
@@ -46,6 +87,31 @@ download_locksmith() {
   mkdir -p "$HOME/.local/bin"
   install -m 0755 "$tmpdir/locksmith" "$HOME/.local/bin/locksmith"
   rm -rf "$tmpdir"
+}
+
+install_locksmithd_from_source() {
+  local source_repo="${LOCKSMITH_SOURCE_REPO:-}"
+  [[ -n "$source_repo" ]] || die "LOCKSMITH_SOURCE_REPO is required to build locksmithd"
+  [[ -f "$source_repo/Cargo.toml" ]] || die "Locksmith source repo not found at $source_repo"
+  ensure_rust_toolchain
+  command -v cargo >/dev/null 2>&1 || die "cargo is required to build locksmithd"
+
+  local build_root="${LOCKSMITH_BUILD_ROOT:-$HOME/.cache/openclaw-locksmith-build}"
+  local target_dir="$build_root/target"
+  mkdir -p "$target_dir" "$HOME/.local/bin"
+
+  log "building Locksmith daemon from $source_repo"
+  CARGO_TARGET_DIR="$target_dir" cargo build \
+    --manifest-path "$source_repo/Cargo.toml" \
+    --release \
+    --bin locksmithd
+  install -m 0755 "$target_dir/release/locksmithd" "$HOME/.local/bin/locksmithd"
+}
+
+install_locksmith_binaries() {
+  local arch="$1"
+  download_locksmith "$arch"
+  install_locksmithd_from_source
 }
 
 generate_token() {
@@ -57,6 +123,13 @@ generate_token() {
   printf '\n'
 }
 
+read_locksmith_env_value() {
+  local key="$1"
+  local env_file="$HOME/.config/locksmith/locksmith.env"
+  [[ -f "$env_file" ]] || return 0
+  grep -E "^${key}=" "$env_file" | tail -n 1 | cut -d= -f2- || true
+}
+
 ensure_locksmith_token() {
   local config_dir="$HOME/.config/locksmith"
   mkdir -p "$config_dir"
@@ -64,15 +137,38 @@ ensure_locksmith_token() {
   local env_file="$config_dir/locksmith.env"
   local token="${LOCKSMITH_INBOUND_TOKEN:-}"
   if [[ -z "$token" && -f "$env_file" ]]; then
-    token="$(grep -E '^LOCKSMITH_INBOUND_TOKEN=' "$env_file" | tail -n 1 | cut -d= -f2-)"
+    token="$(read_locksmith_env_value LOCKSMITH_INBOUND_TOKEN)"
   fi
   if [[ -z "$token" ]]; then
     token="$(generate_token)"
   fi
   [[ "$token" =~ ^[A-Za-z0-9._~+-]+$ ]] || die "LOCKSMITH_INBOUND_TOKEN contains unsupported characters"
 
+  local delegation_secret="${KAMIWAZA_DELEGATION_SIGNING_SECRET:-}"
+  if [[ -z "$delegation_secret" && -f "$env_file" ]]; then
+    delegation_secret="$(read_locksmith_env_value KAMIWAZA_DELEGATION_SIGNING_SECRET)"
+  fi
+  if [[ -z "$delegation_secret" ]]; then
+    delegation_secret="$(generate_token)"
+  fi
+  [[ "$delegation_secret" =~ ^[A-Za-z0-9._~+-]+$ ]] || die "KAMIWAZA_DELEGATION_SIGNING_SECRET contains unsupported characters"
+
+  local kamiwaza_api_key="${KAMIWAZA_API_KEY:-}"
+  if [[ -z "$kamiwaza_api_key" && -f "$env_file" ]]; then
+    kamiwaza_api_key="$(read_locksmith_env_value KAMIWAZA_API_KEY)"
+  fi
+  if [[ -n "$kamiwaza_api_key" ]]; then
+    [[ "$kamiwaza_api_key" =~ ^[A-Za-z0-9._~+-]+$ ]] || die "KAMIWAZA_API_KEY contains unsupported characters"
+  fi
+
   umask 077
-  printf 'LOCKSMITH_INBOUND_TOKEN=%s\n' "$token" >"$env_file"
+  {
+    printf 'LOCKSMITH_INBOUND_TOKEN=%s\n' "$token"
+    printf 'KAMIWAZA_DELEGATION_SIGNING_SECRET=%s\n' "$delegation_secret"
+    if [[ -n "$kamiwaza_api_key" ]]; then
+      printf 'KAMIWAZA_API_KEY=%s\n' "$kamiwaza_api_key"
+    fi
+  } >"$env_file"
   chmod 600 "$env_file"
   printf '%s\n' "$token"
 }
@@ -92,6 +188,20 @@ inbound_auth:
   token: "\${LOCKSMITH_INBOUND_TOKEN}"
 
 egress_proxy: "$egress_proxy"
+
+kamiwaza:
+  enabled: true
+  api_url: "https://host.lima.internal/api"
+  api_token: "\${KAMIWAZA_API_KEY}"
+  verify_tls: false
+  delegation:
+    enabled: true
+    required: false
+    signing_secret: "\${KAMIWAZA_DELEGATION_SIGNING_SECRET}"
+    header: "x-kamiwaza-agent-delegation"
+    issuer: "agent-locksmith"
+    audience: "kamiwaza-tools"
+    ttl_seconds: 60
 
 logging:
   level: "info"
@@ -119,7 +229,7 @@ Wants=network-online.target
 [Service]
 Type=simple
 EnvironmentFile=%h/.config/locksmith/locksmith.env
-ExecStart=%h/.local/bin/locksmith --config %h/.config/locksmith/config.yaml
+ExecStart=%h/.local/bin/locksmithd --config %h/.config/locksmith/config.yaml
 Restart=on-failure
 RestartSec=3
 
@@ -150,6 +260,11 @@ openclaw_cli() {
 
 configure_openclaw_hardened_config() {
   local token="$1"
+  local delegation_secret="${KAMIWAZA_DELEGATION_SIGNING_SECRET:-}"
+  if [[ -z "$delegation_secret" ]]; then
+    delegation_secret="$(read_locksmith_env_value KAMIWAZA_DELEGATION_SIGNING_SECRET)"
+  fi
+  [[ -n "$delegation_secret" ]] || die "KAMIWAZA_DELEGATION_SIGNING_SECRET is missing"
   local ssh_target="${OPENCLAW_UNTRUSTED_SSH_TARGET:-}"
   local ssh_identity="${OPENCLAW_UNTRUSTED_SSH_IDENTITY:-$HOME/.ssh/openclaw_untrusted_ed25519}"
   local ssh_known_hosts="${OPENCLAW_UNTRUSTED_SSH_KNOWN_HOSTS_FILE:-}"
@@ -161,6 +276,7 @@ configure_openclaw_hardened_config() {
   log "writing required Locksmith and per-agent tool policy"
   CONFIG_PATH="$config_path" \
   LOCKSMITH_TOKEN="$token" \
+  KAMIWAZA_DELEGATION_SIGNING_SECRET="$delegation_secret" \
   OPENCLAW_UNTRUSTED_SSH_TARGET="$ssh_target" \
   OPENCLAW_UNTRUSTED_SSH_IDENTITY="$ssh_identity" \
   OPENCLAW_UNTRUSTED_SSH_KNOWN_HOSTS_FILE="$ssh_known_hosts" \
@@ -171,6 +287,8 @@ const os = require("os");
 
 const configPath = (process.env.CONFIG_PATH || "").replace(/^~(?=$|\/)/, os.homedir());
 const locksmithToken = process.env.LOCKSMITH_TOKEN || "";
+const kamiwazaDelegationSigningSecret = process.env.KAMIWAZA_DELEGATION_SIGNING_SECRET || "";
+const kamiwazaCredentialHost = (process.env.OPENCLAW_KAMIWAZA_CREDENTIAL_HOST || "").trim();
 const untrustedSshTarget = (process.env.OPENCLAW_UNTRUSTED_SSH_TARGET || "").trim();
 const untrustedSshIdentity = process.env.OPENCLAW_UNTRUSTED_SSH_IDENTITY || "";
 const untrustedSshKnownHostsFile =
@@ -196,6 +314,8 @@ const trustedAllow = [
   "sessions_yield",
   "subagents",
   "agents_list",
+  "locksmith_github",
+  "kamiwaza_call",
 ];
 
 const trustedDeny = [
@@ -211,7 +331,6 @@ const trustedDeny = [
   "sessions_list",
   "sessions_history",
   "locksmith_call",
-  "locksmith_github",
 ];
 
 const untrustedReadAllow = [
@@ -261,6 +380,7 @@ const untrustedReadDeny = [
   "video_generate",
   "locksmith_call",
   "locksmith_github",
+  "kamiwaza_call",
 ];
 
 const untrustedWriteDeny = [
@@ -292,6 +412,7 @@ const untrustedWriteDeny = [
   "video_generate",
   "locksmith_call",
   "locksmith_github",
+  "kamiwaza_call",
 ];
 
 function isRecord(value) {
@@ -355,6 +476,22 @@ const locksmithTools = ensureRecord(locksmithConfig, "tools");
 const githubTool = ensureRecord(locksmithTools, "github");
 githubTool.enabled = true;
 githubTool.description = "GitHub REST API exposed through required local Locksmith";
+
+const kamiwaza = ensureRecord(pluginEntries, "kamiwaza");
+kamiwaza.enabled = true;
+const kamiwazaConfig = ensureRecord(kamiwaza, "config");
+kamiwazaConfig.apiUrl = "https://host.lima.internal/api";
+kamiwazaConfig.credentialStorePath = "~/.openclaw/credentials/kamiwaza-pat-store.json";
+if (kamiwazaCredentialHost) {
+  kamiwazaConfig.credentialHost = kamiwazaCredentialHost;
+}
+kamiwazaConfig.genericTool = true;
+kamiwazaConfig.promptCatalog = true;
+kamiwazaConfig.verifyTls = false;
+const kamiwazaDelegation = ensureRecord(kamiwazaConfig, "delegation");
+kamiwazaDelegation.enabled = true;
+kamiwazaDelegation.required = true;
+kamiwazaDelegation.signingSecret = kamiwazaDelegationSigningSecret;
 
 const tools = ensureRecord(cfg, "tools");
 delete tools.allow;
@@ -508,7 +645,7 @@ verify_install() {
 
 main() {
   assert_guest_context
-  download_locksmith "$(resolve_arch)"
+  install_locksmith_binaries "$(resolve_arch)"
   local token
   token="$(ensure_locksmith_token)"
   write_locksmith_config

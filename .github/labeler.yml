@@ -36,6 +36,11 @@
       - any-glob-to-any-file:
           - "extensions/google-meet/**"
           - "docs/plugins/google-meet.md"
+"plugin: kamiwaza":
+  - changed-files:
+      - any-glob-to-any-file:
+          - "extensions/kamiwaza/**"
+          - "docs/plugins/kamiwaza.md"
 "plugin: meeting-notes":
   - changed-files:
       - any-glob-to-any-file:

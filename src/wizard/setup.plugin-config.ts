@@ -189,17 +189,28 @@ async function promptPluginFields(params: {
     const label = hint.label ?? key;
     const helpSuffix = hint.help ? ` — ${hint.help}` : "";
 
-    // Skip sensitive fields — WizardPrompter has no masked input;
-    // direct users to openclaw config set or the Web UI instead.
     if (hint.sensitive) {
-      await prompter.note(
-        t("wizard.plugins.sensitiveField", {
-          label,
-          plugin: plugin.id,
-          field: key,
-        }),
-        t("wizard.plugins.sensitiveTitle"),
-      );
+      if (hasValue && params.showConfigured) {
+        const keep = await prompter.confirm({
+          message: t("wizard.plugins.keepSensitiveField", { label }),
+          initialValue: true,
+        });
+        if (keep) {
+          continue;
+        }
+      }
+      const input = await prompter.text({
+        message: `${label}${helpSuffix}`,
+        sensitive: true,
+      });
+      const trimmed = input.trim();
+      if (trimmed !== "") {
+        setPathCreateStrict(updatedConfig, pathSegments, trimmed);
+        changed = true;
+      } else if (hasValue) {
+        setPathCreateStrict(updatedConfig, pathSegments, undefined);
+        changed = true;
+      }
       continue;
     }
 

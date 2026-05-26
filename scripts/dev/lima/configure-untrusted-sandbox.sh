@@ -1,7 +1,10 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
-ROOT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/../../.." && pwd)"
+SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+source "$SCRIPT_DIR/claw-runtime-env.sh"
+openclaw_prepare_runtime_dirs
+ROOT_DIR="$OPENCLAW_REPO_ROOT"
 
 log() {
   printf '[openclaw untrusted sandbox] %s\n' "$*"
@@ -48,7 +51,7 @@ require_running_instance() {
 
 append_authorized_key() {
   local pubkey="$1"
-  limactl shell openclaw-untrusted -- bash -s -- "$pubkey" <<'REMOTE'
+  limactl shell "$OPENCLAW_UNTRUSTED_INSTANCE" -- bash -s -- "$pubkey" <<'REMOTE'
 set -euo pipefail
 pubkey="$1"
 mkdir -p "$HOME/.ssh"
@@ -63,7 +66,7 @@ REMOTE
 
 clear_legacy_untrusted_egress_guard() {
   log "clearing any legacy untrusted blanket egress guard"
-  limactl shell openclaw-untrusted -- sudo bash -s <<'REMOTE'
+  limactl shell "$OPENCLAW_UNTRUSTED_INSTANCE" -- sudo bash -s <<'REMOTE'
 set -euo pipefail
 
 systemctl stop openclaw-untrusted-egress-guard.service 2>/dev/null || true
@@ -89,8 +92,8 @@ REMOTE
 install_pipelock_on_instance() {
   local name="$1"
   local profile="$2"
-  local listen="${3:-127.0.0.1:8888}"
-  local proxy_url="${4:-http://127.0.0.1:8888}"
+  local listen="${3:-127.0.0.1:${OPENCLAW_PIPELOCK_GUEST_PORT:-8888}}"
+  local proxy_url="${4:-http://127.0.0.1:${OPENCLAW_PIPELOCK_GUEST_PORT:-8888}}"
   local installer="$ROOT_DIR/scripts/dev/lima/install-pipelock-in-guest.sh"
   [[ -f "$installer" ]] || die "Pipelock installer not found at $installer"
 
@@ -98,14 +101,14 @@ install_pipelock_on_instance() {
   limactl shell "$name" -- sudo env \
     "PIPELOCK_PROFILE=$profile" \
     "PIPELOCK_LISTEN=$listen" \
-    "PIPELOCK_HEALTH_ADDR=127.0.0.1:8888" \
+    "PIPELOCK_HEALTH_ADDR=${listen/0.0.0.0/127.0.0.1}" \
     "PIPELOCK_PROXY_URL=$proxy_url" \
     bash -s <"$installer"
 }
 
 configure_gateway_egress_route() {
   log "preferring gateway slirp egress for Pipelock upstream traffic"
-  limactl shell openclaw-gateway -- sudo bash -s <<'REMOTE'
+  limactl shell "$OPENCLAW_GATEWAY_INSTANCE" -- sudo bash -s <<'REMOTE'
 set -euo pipefail
 slirp_gateway="$(ip route show default dev eth0 | awk '{ print $3; exit }')"
 if [[ -n "$slirp_gateway" ]]; then
@@ -120,17 +123,19 @@ configure_untrusted_proxy_client() {
   local proxy_url="http://$gateway_ip:$proxy_port"
 
   log "configuring untrusted guest proxy client for gateway Pipelock at $proxy_url"
-  limactl shell openclaw-untrusted -- sudo env \
+  limactl shell "$OPENCLAW_UNTRUSTED_INSTANCE" -- sudo env \
     "OPENCLAW_GATEWAY_IP=$gateway_ip" \
+    "OPENCLAW_GATEWAY_INSTANCE=$OPENCLAW_GATEWAY_INSTANCE" \
     "OPENCLAW_PROXY_URL=$proxy_url" \
     bash -s <<'REMOTE'
 set -euo pipefail
 
 systemctl disable --now pipelock.service >/dev/null 2>&1 || true
 
+gateway_alias="lima-${OPENCLAW_GATEWAY_INSTANCE}.internal"
 tmp_hosts="$(mktemp)"
-grep -Ev '(^|[[:space:]])(lima-openclaw-gateway\.internal|openclaw-gateway\.internal)([[:space:]]|$)' /etc/hosts >"$tmp_hosts" || true
-printf '%s lima-openclaw-gateway.internal openclaw-gateway.internal\n' "$OPENCLAW_GATEWAY_IP" >>"$tmp_hosts"
+grep -Ev "(^|[[:space:]])(${gateway_alias}|lima-openclaw-gateway\\.internal|openclaw-gateway\\.internal)([[:space:]]|$)" /etc/hosts >"$tmp_hosts" || true
+printf '%s %s lima-openclaw-gateway.internal openclaw-gateway.internal\n' "$OPENCLAW_GATEWAY_IP" "$gateway_alias" >>"$tmp_hosts"
 install -m 0644 "$tmp_hosts" /etc/hosts
 rm -f "$tmp_hosts"
 
@@ -231,16 +236,21 @@ configure_host_egress_pf() {
   local script="$ROOT_DIR/scripts/dev/lima/configure-host-egress-pf.sh"
   [[ -f "$script" ]] || die "host PF script not found at $script"
   log "installing host-enforced untrusted egress PF anchor"
-  OPENCLAW_PIPELOCK_PORT="${OPENCLAW_PIPELOCK_PORT:-8888}" bash "$script"
+  OPENCLAW_GATEWAY_INSTANCE="$OPENCLAW_GATEWAY_INSTANCE" \
+    OPENCLAW_UNTRUSTED_INSTANCE="$OPENCLAW_UNTRUSTED_INSTANCE" \
+    OPENCLAW_PIPELOCK_GUEST_PORT="$OPENCLAW_PIPELOCK_GUEST_PORT" \
+    OPENCLAW_PIPELOCK_PORT="$OPENCLAW_PIPELOCK_PORT" \
+    OPENCLAW_PF_ANCHOR_NAME="$OPENCLAW_PF_ANCHOR_NAME" \
+    bash "$script"
 }
 
 ensure_agent_workspace_roots() {
   log "creating gateway and untrusted workspace roots"
-  limactl shell openclaw-gateway -- bash -lc '
+  limactl shell "$OPENCLAW_GATEWAY_INSTANCE" -- bash -lc '
     set -euo pipefail
     mkdir -p "$HOME/.openclaw/workspace/untrusted-read" "$HOME/.openclaw/workspace/untrusted-write"
   '
-  limactl shell openclaw-untrusted -- bash -lc '
+  limactl shell "$OPENCLAW_UNTRUSTED_INSTANCE" -- bash -lc '
     set -euo pipefail
     mkdir -p /tmp/openclaw-sandboxes
     chmod 700 /tmp/openclaw-sandboxes
@@ -249,45 +259,47 @@ ensure_agent_workspace_roots() {
 
 main() {
   command -v limactl >/dev/null 2>&1 || die "limactl is required"
-  require_running_instance openclaw-gateway
-  require_running_instance openclaw-untrusted
+  require_running_instance "$OPENCLAW_GATEWAY_INSTANCE"
+  require_running_instance "$OPENCLAW_UNTRUSTED_INSTANCE"
 
-  local gateway_ip untrusted_ip host_gateway proxy_port
-  proxy_port="${OPENCLAW_PIPELOCK_PORT:-8888}"
+  local gateway_ip untrusted_ip host_gateway proxy_port gateway_guest_proxy_port
+  proxy_port="$OPENCLAW_PIPELOCK_PORT"
   [[ "$proxy_port" =~ ^[0-9]+$ ]] || die "OPENCLAW_PIPELOCK_PORT must be numeric"
-  gateway_ip="$(instance_primary_ip openclaw-gateway)"
-  untrusted_ip="$(instance_primary_ip openclaw-untrusted)"
-  host_gateway="$(instance_default_gateway openclaw-untrusted)"
+  gateway_guest_proxy_port="${OPENCLAW_PIPELOCK_GUEST_PORT:-8888}"
+  [[ "$gateway_guest_proxy_port" =~ ^[0-9]+$ ]] || die "OPENCLAW_PIPELOCK_GUEST_PORT must be numeric"
+  gateway_ip="$(instance_primary_ip "$OPENCLAW_GATEWAY_INSTANCE")"
+  untrusted_ip="$(instance_primary_ip "$OPENCLAW_UNTRUSTED_INSTANCE")"
+  host_gateway="$(instance_default_gateway "$OPENCLAW_UNTRUSTED_INSTANCE")"
   [[ -n "$gateway_ip" ]] ||
-    die "failed to resolve openclaw-gateway primary egress IP; strict host egress needs a visible VZ NAT IP"
+    die "failed to resolve $OPENCLAW_GATEWAY_INSTANCE primary egress IP; strict host egress needs a visible VZ NAT IP"
   [[ -n "$untrusted_ip" ]] ||
-    die "failed to resolve openclaw-untrusted primary egress IP; strict host egress needs a visible VZ NAT IP"
+    die "failed to resolve $OPENCLAW_UNTRUSTED_INSTANCE primary egress IP; strict host egress needs a visible VZ NAT IP"
   [[ "$gateway_ip" != "$untrusted_ip" ]] ||
-    die "openclaw-gateway and openclaw-untrusted resolved the same IP ($gateway_ip); strict egress requires distinct VZ NAT addresses"
+    die "$OPENCLAW_GATEWAY_INSTANCE and $OPENCLAW_UNTRUSTED_INSTANCE resolved the same IP ($gateway_ip); strict egress requires distinct VZ NAT addresses"
   [[ -n "$host_gateway" ]] || die "failed to resolve untrusted VM default gateway"
 
   local untrusted_user
-  untrusted_user="$(limactl shell openclaw-untrusted -- whoami | tr -d '\r\n')"
+  untrusted_user="$(limactl shell "$OPENCLAW_UNTRUSTED_INSTANCE" -- whoami | tr -d '\r\n')"
   [[ -n "$untrusted_user" ]] || die "failed to resolve untrusted guest user"
 
   configure_gateway_egress_route
-  install_pipelock_on_instance openclaw-gateway gateway "0.0.0.0:$proxy_port" "http://127.0.0.1:$proxy_port"
+  install_pipelock_on_instance "$OPENCLAW_GATEWAY_INSTANCE" gateway "0.0.0.0:$gateway_guest_proxy_port" "http://127.0.0.1:$gateway_guest_proxy_port"
   clear_legacy_untrusted_egress_guard
   configure_untrusted_proxy_client "$host_gateway" "$proxy_port"
   ensure_agent_workspace_roots
 
-  log "ensuring SSH server is active in openclaw-untrusted"
-  limactl shell openclaw-untrusted -- bash -lc '
+  log "ensuring SSH server is active in $OPENCLAW_UNTRUSTED_INSTANCE"
+  limactl shell "$OPENCLAW_UNTRUSTED_INSTANCE" -- bash -lc '
     set -euo pipefail
-    if ! command -v sshd >/dev/null 2>&1; then
+    if ! command -v sshd >/dev/null 2>&1 || ! command -v curl >/dev/null 2>&1; then
       sudo apt-get update
-      sudo env DEBIAN_FRONTEND=noninteractive apt-get install -y openssh-server tar
+      sudo env DEBIAN_FRONTEND=noninteractive apt-get install -y ca-certificates curl openssh-server tar
     fi
     sudo systemctl enable --now ssh >/dev/null
   '
 
   log "creating gateway SSH identity"
-  limactl shell openclaw-gateway -- bash -lc '
+  limactl shell "$OPENCLAW_GATEWAY_INSTANCE" -- bash -lc '
     set -euo pipefail
     mkdir -p "$HOME/.ssh"
     chmod 700 "$HOME/.ssh"
@@ -299,35 +311,35 @@ main() {
   '
 
   local pubkey
-  pubkey="$(limactl shell openclaw-gateway -- bash -lc 'cat "$HOME/.ssh/openclaw_untrusted_ed25519.pub"' | tr -d '\r')"
+  pubkey="$(limactl shell "$OPENCLAW_GATEWAY_INSTANCE" -- bash -lc 'cat "$HOME/.ssh/openclaw_untrusted_ed25519.pub"' | tr -d '\r')"
   [[ -n "$pubkey" ]] || die "failed to read gateway SSH public key"
   append_authorized_key "$pubkey"
 
   local port target
-  port="$(ssh_local_port openclaw-untrusted)"
-  [[ "$port" =~ ^[0-9]+$ ]] || die "failed to resolve openclaw-untrusted SSH local port"
+  port="$(ssh_local_port "$OPENCLAW_UNTRUSTED_INSTANCE")"
+  [[ "$port" =~ ^[0-9]+$ ]] || die "failed to resolve $OPENCLAW_UNTRUSTED_INSTANCE SSH local port"
   target="${untrusted_user}@host.lima.internal:${port}"
   log "recording untrusted SSH host key"
-  limactl shell openclaw-gateway -- bash -lc \
+  limactl shell "$OPENCLAW_GATEWAY_INSTANCE" -- bash -lc \
     "set -euo pipefail; mkdir -p \"\$HOME/.ssh\"; chmod 700 \"\$HOME/.ssh\"; ssh-keyscan -p '$port' host.lima.internal >\"\$HOME/.ssh/openclaw_untrusted_known_hosts.tmp\" 2>/dev/null; mv \"\$HOME/.ssh/openclaw_untrusted_known_hosts.tmp\" \"\$HOME/.ssh/openclaw_untrusted_known_hosts\"; chmod 644 \"\$HOME/.ssh/openclaw_untrusted_known_hosts\""
 
   log "testing gateway -> untrusted SSH target $target"
-  limactl shell openclaw-gateway -- bash -lc \
+  limactl shell "$OPENCLAW_GATEWAY_INSTANCE" -- bash -lc \
     "ssh -i \"\$HOME/.ssh/openclaw_untrusted_ed25519\" -p '$port' -o BatchMode=yes -o StrictHostKeyChecking=yes -o UserKnownHostsFile=\"\$HOME/.ssh/openclaw_untrusted_known_hosts\" '${untrusted_user}@host.lima.internal' 'printf ok' >/dev/null"
 
   configure_host_egress_pf
 
   log "testing untrusted -> gateway Pipelock proxy path"
-  limactl shell openclaw-untrusted -- bash -lc \
+  limactl shell "$OPENCLAW_UNTRUSTED_INSTANCE" -- bash -lc \
     "timeout 20 curl -fsS --proxy 'http://$host_gateway:$proxy_port' https://api.github.com/zen >/dev/null"
 
   log "re-testing gateway -> untrusted SSH after host PF enforcement"
-  limactl shell openclaw-gateway -- bash -lc \
+  limactl shell "$OPENCLAW_GATEWAY_INSTANCE" -- bash -lc \
     "ssh -i \"\$HOME/.ssh/openclaw_untrusted_ed25519\" -p '$port' -o BatchMode=yes -o StrictHostKeyChecking=yes -o UserKnownHostsFile=\"\$HOME/.ssh/openclaw_untrusted_known_hosts\" '${untrusted_user}@host.lima.internal' 'printf ok' >/dev/null"
 
   log "applying gateway OpenClaw config for the untrusted agent"
-  limactl shell openclaw-gateway -- bash -lc \
-    "OPENCLAW_CLI=\"\$HOME/bin/openclaw\" LOCKSMITH_EGRESS_PROXY=\"http://127.0.0.1:$proxy_port\" OPENCLAW_UNTRUSTED_SSH_TARGET='$target' OPENCLAW_UNTRUSTED_SSH_KNOWN_HOSTS_FILE=\"\$HOME/.ssh/openclaw_untrusted_known_hosts\" bash '$ROOT_DIR/scripts/dev/lima/install-locksmith-in-guest.sh'"
+  limactl shell "$OPENCLAW_GATEWAY_INSTANCE" -- bash -lc \
+    "OPENCLAW_CLI=\"\$HOME/bin/openclaw\" LOCKSMITH_SOURCE_REPO='$OPENCLAW_WORKSPACE_ROOT/deps/exocortex-agent-locksmith' LOCKSMITH_EGRESS_PROXY=\"http://127.0.0.1:$gateway_guest_proxy_port\" OPENCLAW_UNTRUSTED_SSH_TARGET='$target' OPENCLAW_UNTRUSTED_SSH_KNOWN_HOSTS_FILE=\"\$HOME/.ssh/openclaw_untrusted_known_hosts\" bash '$ROOT_DIR/scripts/dev/lima/install-locksmith-in-guest.sh'"
 
   log "configured untrusted sandbox target: $target"
 }
