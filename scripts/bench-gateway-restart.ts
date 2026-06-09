@@ -1,3 +1,4 @@
+// Bench Gateway Restart script supports OpenClaw repository automation.
 import { spawn, spawnSync, type ChildProcessWithoutNullStreams } from "node:child_process";
 import fs from "node:fs";
 import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
@@ -8,6 +9,7 @@ import path from "node:path";
 import { performance } from "node:perf_hooks";
 import { pathToFileURL } from "node:url";
 import { parseStrictIntegerOption } from "./lib/dev-tooling-safety.ts";
+import { delay, stopChild, type StopChildResult } from "./lib/gateway-bench-child.ts";
 
 type GatewayBenchCase = {
   config: Record<string, unknown>;
@@ -98,6 +100,7 @@ type GatewayRestartSample = {
   childExitCode: number | null;
   childSignal: string | null;
   events: BenchmarkEvent[];
+  exitedBeforeTeardown: boolean;
   failureCode: GatewayRestartFailureCode | null;
   firstOutputMs: number | null;
   initialGatewayReadyLogLine: string | null;
@@ -136,6 +139,12 @@ type CaseResult = {
     restartReadyTotalMs: SummaryStats | null;
     restartTrace: Record<string, SummaryStats>;
   };
+};
+
+type BenchmarkEvidenceFailure = {
+  id: string;
+  reason: string;
+  sampleIndex: number | null;
 };
 
 type PluginFixtureResult = {
@@ -215,20 +224,29 @@ const GATEWAY_CASES: readonly GatewayBenchCase[] = [
   },
 ] as const;
 
-function parseFlagValue(flag: string): string | undefined {
-  const index = process.argv.indexOf(flag);
-  if (index === -1) {
-    return undefined;
+function readRequiredFlagValue(argv: string[], index: number, flag: string): string {
+  const value = argv[index + 1];
+  if (!value || value.startsWith("-")) {
+    throw new Error(`${flag} requires a value`);
   }
-  return process.argv[index + 1];
+  return value;
 }
 
-function hasFlag(flag: string): boolean {
-  return process.argv.includes(flag);
+function parseFlagValue(argv: string[], flag: string): string | undefined {
+  for (let index = 0; index < argv.length; index += 1) {
+    if (argv[index] === flag) {
+      return readRequiredFlagValue(argv, index, flag);
+    }
+  }
+  return undefined;
 }
 
-function hasHelpFlag(): boolean {
-  return hasFlag("--help") || hasFlag("-h");
+function hasFlag(argv: string[], flag: string): boolean {
+  return argv.includes(flag);
+}
+
+function hasHelpFlag(argv: string[]): boolean {
+  return hasFlag(argv, "--help") || hasFlag(argv, "-h");
 }
 
 function ensureSupportedRestartPlatform(platform: NodeJS.Platform = process.platform): void {
@@ -239,11 +257,12 @@ function ensureSupportedRestartPlatform(platform: NodeJS.Platform = process.plat
   }
 }
 
-function parseRepeatableFlag(flag: string): string[] {
+function parseRepeatableFlag(argv: string[], flag: string): string[] {
   const values: string[] = [];
-  for (let index = 0; index < process.argv.length; index += 1) {
-    if (process.argv[index] === flag && process.argv[index + 1]) {
-      values.push(process.argv[index + 1]);
+  for (let index = 0; index < argv.length; index += 1) {
+    if (argv[index] === flag) {
+      values.push(readRequiredFlagValue(argv, index, flag));
+      index += 1;
     }
   }
   return values;
@@ -293,22 +312,26 @@ function resolveCases(caseIds: string[]): GatewayBenchCase[] {
   });
 }
 
-function parseOptions(): CliOptions {
+function parseOptions(argv: string[] = process.argv.slice(2)): CliOptions {
   return {
-    allowFailures: hasFlag("--allow-failures"),
-    cases: resolveCases(parseRepeatableFlag("--case")),
-    entry: resolveEntry(parseFlagValue("--entry")),
-    json: hasFlag("--json"),
-    output: resolveOutputPath(parseFlagValue("--output")),
+    allowFailures: hasFlag(argv, "--allow-failures"),
+    cases: resolveCases(parseRepeatableFlag(argv, "--case")),
+    entry: resolveEntry(parseFlagValue(argv, "--entry")),
+    json: hasFlag(argv, "--json"),
+    output: resolveOutputPath(parseFlagValue(argv, "--output")),
     postReadyDelayMs: parseNonNegativeInt(
-      parseFlagValue("--post-ready-delay-ms"),
+      parseFlagValue(argv, "--post-ready-delay-ms"),
       DEFAULT_POST_READY_DELAY_MS,
       "--post-ready-delay-ms",
     ),
-    restarts: parsePositiveInt(parseFlagValue("--restarts"), DEFAULT_RESTARTS, "--restarts"),
-    runs: parsePositiveInt(parseFlagValue("--runs"), DEFAULT_RUNS, "--runs"),
-    timeoutMs: parsePositiveInt(parseFlagValue("--timeout-ms"), DEFAULT_TIMEOUT_MS, "--timeout-ms"),
-    warmup: parseNonNegativeInt(parseFlagValue("--warmup"), DEFAULT_WARMUP, "--warmup"),
+    restarts: parsePositiveInt(parseFlagValue(argv, "--restarts"), DEFAULT_RESTARTS, "--restarts"),
+    runs: parsePositiveInt(parseFlagValue(argv, "--runs"), DEFAULT_RUNS, "--runs"),
+    timeoutMs: parsePositiveInt(
+      parseFlagValue(argv, "--timeout-ms"),
+      DEFAULT_TIMEOUT_MS,
+      "--timeout-ms",
+    ),
+    warmup: parseNonNegativeInt(parseFlagValue(argv, "--warmup"), DEFAULT_WARMUP, "--warmup"),
   };
 }
 
@@ -757,10 +780,6 @@ function requestStatus(port: number, pathname: string): Promise<number> {
   });
 }
 
-function delay(ms: number): Promise<void> {
-  return new Promise((resolve) => setTimeout(resolve, ms));
-}
-
 function writePluginFixtures(
   root: string,
   count: number,
@@ -867,38 +886,6 @@ function writeRestartIntent(env: NodeJS.ProcessEnv, targetPid: number, reason: s
   } catch {
     return false;
   }
-}
-
-async function stopChild(child: ChildProcessWithoutNullStreams): Promise<{
-  exitCode: number | null;
-  signal: string | null;
-}> {
-  if (child.exitCode != null || child.signalCode != null) {
-    return { exitCode: child.exitCode, signal: child.signalCode };
-  }
-  const exited = new Promise<{ exitCode: number | null; signal: string | null }>((resolve) => {
-    child.once("exit", (exitCode, signal) => resolve({ exitCode, signal }));
-  });
-  killProcessTree(child, "SIGTERM");
-  const timeout = delay(2000).then(() => {
-    if (child.exitCode == null && child.signalCode == null) {
-      killProcessTree(child, "SIGKILL");
-    }
-    return exited;
-  });
-  return Promise.race([exited, timeout]);
-}
-
-function killProcessTree(child: ChildProcessWithoutNullStreams, signal: NodeJS.Signals): void {
-  if (process.platform !== "win32" && child.pid !== undefined) {
-    try {
-      process.kill(-child.pid, signal);
-      return;
-    } catch {
-      // Fall back to the direct child below.
-    }
-  }
-  child.kill(signal);
 }
 
 function readProcessRssMb(pid: number | undefined): number | null {
@@ -1195,6 +1182,15 @@ function hasInitialReadyLogs(params: {
 
 function resolveRestartDeadlineFailure(childExited: boolean): GatewayRestartFailureCode {
   return childExited ? "restart_child_exited" : "restart_deadline_timeout";
+}
+
+function resolveSampleExitFailure(exit: StopChildResult): GatewayRestartFailureCode | null {
+  if (!exit.exitedBeforeTeardown) {
+    return null;
+  }
+  return exit.exitCode !== null && exit.exitCode !== 0
+    ? "child_nonzero_exit"
+    : "restart_child_exited";
 }
 
 function computeResourceSlope(iterations: RestartIteration[]): ResourceSlope {
@@ -1524,13 +1520,12 @@ async function runGatewaySample(options: {
   const exit = await stopChild(child);
   clearInterval(rssTimer);
   sampleRss();
-  await childExitPromise.catch(() => null);
+  // stopChild is the bounded teardown wait; the raw exit promise may never settle.
+  void childExitPromise.catch(() => null);
   flushOutputLineBuffers(outputBuffers, onLine, performance.now() - sampleStartAt, {
     flushPartial: true,
   });
-  if (exit.exitCode !== null && exit.exitCode !== 0 && failureCode === null) {
-    failureCode = "child_nonzero_exit";
-  }
+  failureCode ??= resolveSampleExitFailure(exit);
   try {
     rmSync(root, { force: true, maxRetries: 3, recursive: true, retryDelay: 100 });
   } catch {
@@ -1541,6 +1536,7 @@ async function runGatewaySample(options: {
     childExitCode: exit.exitCode,
     childSignal: exit.signal,
     events,
+    exitedBeforeTeardown: exit.exitedBeforeTeardown,
     failureCode,
     firstOutputMs,
     initialGatewayReadyLogLine,
@@ -1619,18 +1615,108 @@ function hasBenchmarkFailures(results: CaseResult[]): boolean {
   );
 }
 
+function hasPositiveNumber(value: number | null): boolean {
+  return typeof value === "number" && Number.isFinite(value) && value > 0;
+}
+
+function hasFiniteNumber(value: number | null): boolean {
+  return typeof value === "number" && Number.isFinite(value);
+}
+
+function hasIterationRssEvidence(iteration: RestartIteration): boolean {
+  return hasPositiveNumber(
+    traceValue(iteration, "restart.ready.rssMb", "restart.ready.memory.ready.rssMb") ??
+      lastSnapshotValue(iteration, "rssMb"),
+  );
+}
+
+function isFailureFreeSample(sample: GatewayRestartSample): boolean {
+  return (
+    sample.failureCode === null &&
+    sample.iterations.every((iteration) => iteration.failureCode === null)
+  );
+}
+
+function collectBenchmarkEvidenceFailures(results: CaseResult[]): BenchmarkEvidenceFailure[] {
+  const failures: BenchmarkEvidenceFailure[] = [];
+  for (const result of results) {
+    if (result.samples.length === 0) {
+      failures.push({
+        id: result.id,
+        reason: "missing measured samples",
+        sampleIndex: null,
+      });
+      continue;
+    }
+
+    for (const [index, sample] of result.samples.entries()) {
+      if (!isFailureFreeSample(sample)) {
+        continue;
+      }
+      const sampleIndex = index + 1;
+      if (sample.iterations.length === 0) {
+        failures.push({
+          id: result.id,
+          reason: "missing restart iterations",
+          sampleIndex,
+        });
+        continue;
+      }
+      if (!hasPositiveNumber(sample.maxRssMb)) {
+        failures.push({
+          id: result.id,
+          reason: "missing positive RSS sample",
+          sampleIndex,
+        });
+      }
+      if (sample.iterations.some((iteration) => !hasIterationRssEvidence(iteration))) {
+        failures.push({
+          id: result.id,
+          reason: "missing per-restart RSS evidence",
+          sampleIndex,
+        });
+      }
+      if (sample.iterations.length >= 2 && !hasFiniteNumber(sample.resourceSlope.rssMbPerRestart)) {
+        failures.push({
+          id: result.id,
+          reason: "missing RSS slope",
+          sampleIndex,
+        });
+      }
+    }
+  }
+  return failures;
+}
+
+function hasInvalidBenchmarkEvidence(results: CaseResult[]): boolean {
+  return collectBenchmarkEvidenceFailures(results).length > 0;
+}
+
 function shouldFailBenchmark(results: CaseResult[], options: { allowFailures: boolean }): boolean {
-  return !options.allowFailures && hasBenchmarkFailures(results);
+  return (
+    hasInvalidBenchmarkEvidence(results) ||
+    (!options.allowFailures && hasBenchmarkFailures(results))
+  );
+}
+
+function printBenchmarkEvidenceFailures(failures: BenchmarkEvidenceFailure[]): void {
+  for (const failure of failures) {
+    const sample = failure.sampleIndex === null ? "" : ` sample ${failure.sampleIndex}`;
+    console.error(
+      `[gateway-restart-bench] ${failure.id}${sample}: ${failure.reason}; benchmark evidence is incomplete`,
+    );
+  }
 }
 
 async function main() {
-  if (hasHelpFlag()) {
+  const argv = process.argv.slice(2);
+  if (hasHelpFlag(argv)) {
     printUsage();
     return;
   }
 
   ensureSupportedRestartPlatform();
-  const options = parseOptions();
+  const options = parseOptions(argv);
   const results: CaseResult[] = [];
   for (const benchCase of options.cases) {
     results.push(
@@ -1660,6 +1746,10 @@ async function main() {
     mkdirSync(path.dirname(options.output), { recursive: true });
     writeFileSync(options.output, `${JSON.stringify(payload, null, 2)}\n`);
   }
+  const evidenceFailures = collectBenchmarkEvidenceFailures(results);
+  if (evidenceFailures.length > 0) {
+    printBenchmarkEvidenceFailures(evidenceFailures);
+  }
   if (options.json) {
     console.log(JSON.stringify(payload, null, 2));
     if (shouldFailBenchmark(results, options)) {
@@ -1686,15 +1776,20 @@ export const testing = {
   ensureSupportedRestartPlatform,
   finalizeRestartIteration,
   flushOutputLineBuffers,
+  collectBenchmarkEvidenceFailures,
   hasInitialReadyLogs,
   hasBenchmarkFailures,
+  hasInvalidBenchmarkEvidence,
   parseNonNegativeInt,
+  parseOptions,
   parsePositiveInt,
   resolveRestartDeadlineFailure,
   resolveEntry,
   resolvePhaseDeadlineAt,
+  resolveSampleExitFailure,
   sanitizedEnv,
   shouldFailBenchmark,
+  stopChild,
   summarizeCase,
   waitForRestartProbe,
   writeConfig,
@@ -1702,7 +1797,7 @@ export const testing = {
 };
 
 if (import.meta.url === pathToFileURL(process.argv[1] ?? "").href) {
-  main().catch((err) => {
+  main().catch((err: unknown) => {
     console.error(err instanceof Error ? err.stack : String(err));
     process.exitCode = 1;
   });

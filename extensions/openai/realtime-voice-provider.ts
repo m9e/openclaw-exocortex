@@ -1,3 +1,4 @@
+// Openai provider module implements model/runtime integration.
 import { execFileSync } from "node:child_process";
 import { randomUUID } from "node:crypto";
 import {
@@ -90,6 +91,7 @@ const OPENAI_REALTIME_ACTIVE_RESPONSE_ERROR_PREFIX =
   "Conversation already has an active response in progress:";
 const OPENAI_REALTIME_NO_ACTIVE_RESPONSE_CANCEL_ERROR =
   "Cancellation failed: no active response found";
+const OPENAI_REALTIME_MAX_SESSION_DURATION_FRAGMENT = "maximum duration";
 const OPENAI_REALTIME_DEFAULT_MIN_BARGE_IN_AUDIO_END_MS = 250;
 const OPENAI_REALTIME_VOICES = [
   "alloy",
@@ -121,6 +123,7 @@ type RealtimeEvent = {
   text?: string;
   transcript?: string;
   item_id?: string;
+  response_id?: string;
   call_id?: string;
   name?: string;
   arguments?: string;
@@ -208,11 +211,11 @@ function normalizeProviderConfig(
       path: "plugins.entries.voice-call.config.realtime.providers.openai.apiKey",
     }),
     model: trimToUndefined(raw?.model),
-    voice: normalizeOpenAIRealtimeVoice(raw?.voice),
+    voice: normalizeOpenAIRealtimeVoice(raw?.speakerVoice ?? raw?.voice),
     temperature: asFiniteNumber(raw?.temperature),
-    vadThreshold: asFiniteNumber(raw?.vadThreshold),
-    silenceDurationMs: asFiniteNumber(raw?.silenceDurationMs),
-    prefixPaddingMs: asFiniteNumber(raw?.prefixPaddingMs),
+    vadThreshold: asUnitInterval(raw?.vadThreshold),
+    silenceDurationMs: asNonNegativeInteger(raw?.silenceDurationMs),
+    prefixPaddingMs: asNonNegativeInteger(raw?.prefixPaddingMs),
     interruptResponseOnInputAudio:
       typeof raw?.interruptResponseOnInputAudio === "boolean"
         ? raw.interruptResponseOnInputAudio
@@ -227,7 +230,12 @@ function normalizeProviderConfig(
 
 function asNonNegativeInteger(value: unknown): number | undefined {
   const number = asFiniteNumber(value);
-  return number === undefined || number < 0 ? undefined : Math.floor(number);
+  return number !== undefined && Number.isSafeInteger(number) && number >= 0 ? number : undefined;
+}
+
+function asUnitInterval(value: unknown): number | undefined {
+  const number = asFiniteNumber(value);
+  return number !== undefined && number >= 0 && number <= 1 ? number : undefined;
 }
 
 type OpenAIRealtimeApiKeyResolution =
@@ -330,6 +338,14 @@ function prefersCodexOAuthForRealtimeModel(model: string | undefined): boolean {
   return (model ?? OPENAI_REALTIME_DEFAULT_MODEL).trim().toLowerCase().startsWith("gpt-");
 }
 
+function isOpenAIRealtimeMaxSessionDurationError(detail: string): boolean {
+  const normalized = detail.toLowerCase();
+  return (
+    normalized.includes("session") &&
+    normalized.includes(OPENAI_REALTIME_MAX_SESSION_DURATION_FRAGMENT)
+  );
+}
+
 async function resolveOpenAIRealtimeDefaultAuth(params: {
   configuredApiKey: string | undefined;
   cfg: RealtimeVoiceBrowserSessionCreateRequest["cfg"] | undefined;
@@ -347,7 +363,7 @@ async function resolveOpenAIRealtimeDefaultAuth(params: {
 
   if (prefersCodexOAuthForRealtimeModel(params.model)) {
     const codexToken = await resolveProviderAuthProfileApiKey({
-      provider: "openai-codex",
+      provider: "openai",
       cfg: params.cfg,
       includeExternalCliAuth: true,
     });
@@ -386,7 +402,7 @@ function hasOpenAIRealtimeBrowserAuthInput(params: {
   if (prefersCodexOAuthForRealtimeModel(params.model)) {
     return (
       isProviderAuthProfileConfigured({
-        provider: "openai-codex",
+        provider: "openai",
         cfg: params.cfg,
         includeExternalCliAuth: true,
       }) || hasOpenAIRealtimeApiKeyInput(undefined)
@@ -426,6 +442,8 @@ class OpenAIRealtimeVoiceBridge implements RealtimeVoiceBridge {
   private deliveredToolCallKeys = new Set<string>();
   private readonly flowId = randomUUID();
   private sessionReadyFired = false;
+  private reconnectReason: string | undefined;
+  private activeConnectionReason: string | undefined;
   private readonly audioFormat: RealtimeVoiceAudioFormat;
 
   constructor(private readonly config: OpenAIRealtimeVoiceBridgeConfig) {
@@ -521,7 +539,6 @@ class OpenAIRealtimeVoiceBridge implements RealtimeVoiceBridge {
 
   private async doConnect(): Promise<void> {
     await new Promise<void>((resolve, reject) => {
-      let connectTimeout: ReturnType<typeof setTimeout>;
       let settled = false;
       const settleResolve = () => {
         if (settled) {
@@ -539,7 +556,7 @@ class OpenAIRealtimeVoiceBridge implements RealtimeVoiceBridge {
         clearTimeout(connectTimeout);
         reject(error);
       };
-      connectTimeout = setTimeout(() => {
+      const connectTimeout: ReturnType<typeof setTimeout> = setTimeout(() => {
         if (!this.sessionConfigured && !this.intentionallyClosed) {
           this.ws?.terminate();
           settleReject(new Error("OpenAI realtime connection timeout"));
@@ -658,7 +675,9 @@ class OpenAIRealtimeVoiceBridge implements RealtimeVoiceBridge {
             settleReject(new Error("OpenAI realtime connection closed before ready"));
             return;
           }
-          void this.attemptReconnect();
+          const reason = this.reconnectReason ?? "websocket-close";
+          this.reconnectReason = undefined;
+          void this.attemptReconnect(reason);
         });
       };
 
@@ -725,7 +744,7 @@ class OpenAIRealtimeVoiceBridge implements RealtimeVoiceBridge {
 
     if (
       !isProviderAuthProfileConfigured({
-        provider: "openai-codex",
+        provider: "openai",
         cfg: cfg.cfg,
         includeExternalCliAuth: true,
       })
@@ -833,26 +852,43 @@ class OpenAIRealtimeVoiceBridge implements RealtimeVoiceBridge {
     };
   }
 
-  private async attemptReconnect(): Promise<void> {
+  private async attemptReconnect(reason: string): Promise<void> {
     if (this.intentionallyClosed) {
       return;
     }
     if (this.reconnectAttempts >= OpenAIRealtimeVoiceBridge.MAX_RECONNECT_ATTEMPTS) {
+      this.config.onEvent?.({
+        direction: "client",
+        type: "session.reconnect.exhausted",
+        detail: `reason=${reason} attempts=${this.reconnectAttempts}`,
+      });
       this.config.onClose?.("error");
       return;
     }
     this.reconnectAttempts += 1;
-    const delay =
-      OpenAIRealtimeVoiceBridge.BASE_RECONNECT_DELAY_MS * 2 ** (this.reconnectAttempts - 1);
-    await new Promise((resolve) => setTimeout(resolve, delay));
+    const attempt = this.reconnectAttempts;
+    const delay = OpenAIRealtimeVoiceBridge.BASE_RECONNECT_DELAY_MS * 2 ** (attempt - 1);
+    this.config.onEvent?.({
+      direction: "client",
+      type: "session.reconnect.scheduled",
+      detail: `reason=${reason} attempt=${attempt} delayMs=${delay}`,
+    });
+    await new Promise((resolve) => {
+      setTimeout(resolve, delay);
+    });
     if (this.intentionallyClosed) {
       return;
     }
     try {
       await this.doConnect();
+      this.config.onEvent?.({
+        direction: "client",
+        type: "session.reconnect.ready",
+        detail: `reason=${reason} attempt=${attempt}`,
+      });
     } catch (error) {
       this.config.onError?.(error instanceof Error ? error : new Error(String(error)));
-      await this.attemptReconnect();
+      await this.attemptReconnect(reason);
     }
   }
 
@@ -951,11 +987,31 @@ class OpenAIRealtimeVoiceBridge implements RealtimeVoiceBridge {
   }
 
   private handleEvent(event: RealtimeEvent): void {
-    this.config.onEvent?.({
-      direction: "server",
-      type: event.type,
-      detail: this.describeServerEvent(event),
-    });
+    const emitServerEvent = () =>
+      this.config.onEvent?.({
+        direction: "server",
+        type: event.type,
+        detail: this.describeServerEvent(event),
+        ...(event.item_id ? { itemId: event.item_id } : {}),
+        ...((event.response_id ?? event.response?.id)
+          ? { responseId: event.response_id ?? event.response?.id }
+          : {}),
+      });
+    if (
+      event.type === "error" &&
+      isOpenAIRealtimeMaxSessionDurationError(readRealtimeErrorDetail(event.error))
+    ) {
+      this.reconnectReason = "max-duration";
+      this.activeConnectionReason = "max-duration";
+      this.config.onEvent?.({
+        direction: "server",
+        type: "session.rotation",
+        detail: "reason=max-duration",
+      });
+      this.ws?.close(1000, "max-duration rotation");
+      return;
+    }
+    emitServerEvent();
     switch (event.type) {
       case "session.created":
         return;
@@ -964,6 +1020,14 @@ class OpenAIRealtimeVoiceBridge implements RealtimeVoiceBridge {
         this.sessionConfigured = true;
         for (const chunk of this.pendingAudio.splice(0)) {
           this.sendAudio(chunk);
+        }
+        if (this.activeConnectionReason) {
+          this.config.onEvent?.({
+            direction: "server",
+            type: "session.rotation.ready",
+            detail: `reason=${this.activeConnectionReason}`,
+          });
+          this.activeConnectionReason = undefined;
         }
         if (!this.sessionReadyFired) {
           this.sessionReadyFired = true;
@@ -1099,11 +1163,9 @@ class OpenAIRealtimeVoiceBridge implements RealtimeVoiceBridge {
           return;
         }
         this.config.onError?.(new Error(detail));
-        return;
       }
 
       default:
-        return;
     }
   }
 

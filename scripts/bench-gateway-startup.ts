@@ -1,4 +1,5 @@
-import { spawn, spawnSync, type ChildProcessWithoutNullStreams } from "node:child_process";
+// Bench Gateway Startup script supports OpenClaw repository automation.
+import { spawn, spawnSync } from "node:child_process";
 import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { request } from "node:http";
 import { createServer } from "node:net";
@@ -7,6 +8,7 @@ import path from "node:path";
 import { performance } from "node:perf_hooks";
 import { pathToFileURL } from "node:url";
 import { parseStrictIntegerOption } from "./lib/dev-tooling-safety.ts";
+import { delay, stopChild } from "./lib/gateway-bench-child.ts";
 
 type GatewayBenchCase = {
   config: Record<string, unknown>;
@@ -34,6 +36,7 @@ type ProbeTransition = {
 type GatewaySample = {
   cpuCoreRatio: number | null;
   cpuMs: number | null;
+  exitedBeforeTeardown?: boolean;
   exitCode: number | null;
   firstOutputMs: number | null;
   gatewayReadyLogLine: string | null;
@@ -175,27 +178,37 @@ const GATEWAY_CASES: readonly GatewayBenchCase[] = [
   },
 ] as const;
 
-function parseFlagValue(flag: string): string | undefined {
-  const index = process.argv.indexOf(flag);
-  if (index === -1) {
-    return undefined;
+function readRequiredFlagValue(argv: string[], index: number, flag: string): string {
+  const value = argv[index + 1];
+  if (!value || value.startsWith("-")) {
+    throw new Error(`${flag} requires a value`);
   }
-  return process.argv[index + 1];
+  return value;
 }
 
-function hasFlag(flag: string): boolean {
-  return process.argv.includes(flag);
+function parseFlagValue(argv: string[], flag: string): string | undefined {
+  for (let index = 0; index < argv.length; index += 1) {
+    if (argv[index] === flag) {
+      return readRequiredFlagValue(argv, index, flag);
+    }
+  }
+  return undefined;
 }
 
-function hasHelpFlag(): boolean {
-  return hasFlag("--help") || hasFlag("-h");
+function hasFlag(argv: string[], flag: string): boolean {
+  return argv.includes(flag);
 }
 
-function parseRepeatableFlag(flag: string): string[] {
+function hasHelpFlag(argv: string[]): boolean {
+  return hasFlag(argv, "--help") || hasFlag(argv, "-h");
+}
+
+function parseRepeatableFlag(argv: string[], flag: string): string[] {
   const values: string[] = [];
-  for (let index = 0; index < process.argv.length; index += 1) {
-    if (process.argv[index] === flag && process.argv[index + 1]) {
-      values.push(process.argv[index + 1]);
+  for (let index = 0; index < argv.length; index += 1) {
+    if (argv[index] === flag) {
+      values.push(readRequiredFlagValue(argv, index, flag));
+      index += 1;
     }
   }
   return values;
@@ -245,16 +258,20 @@ function resolveCases(caseIds: string[]): GatewayBenchCase[] {
   });
 }
 
-function parseOptions(): CliOptions {
+function parseOptions(argv: string[] = process.argv.slice(2)): CliOptions {
   return {
-    cases: resolveCases(parseRepeatableFlag("--case")),
-    cpuProfDir: parseFlagValue("--cpu-prof-dir"),
-    entry: resolveEntry(parseFlagValue("--entry")),
-    json: hasFlag("--json"),
-    output: resolveOutputPath(parseFlagValue("--output")),
-    runs: parsePositiveInt(parseFlagValue("--runs"), DEFAULT_RUNS, "--runs"),
-    timeoutMs: parsePositiveInt(parseFlagValue("--timeout-ms"), DEFAULT_TIMEOUT_MS, "--timeout-ms"),
-    warmup: parseNonNegativeInt(parseFlagValue("--warmup"), DEFAULT_WARMUP, "--warmup"),
+    cases: resolveCases(parseRepeatableFlag(argv, "--case")),
+    cpuProfDir: parseFlagValue(argv, "--cpu-prof-dir"),
+    entry: resolveEntry(parseFlagValue(argv, "--entry")),
+    json: hasFlag(argv, "--json"),
+    output: resolveOutputPath(parseFlagValue(argv, "--output")),
+    runs: parsePositiveInt(parseFlagValue(argv, "--runs"), DEFAULT_RUNS, "--runs"),
+    timeoutMs: parsePositiveInt(
+      parseFlagValue(argv, "--timeout-ms"),
+      DEFAULT_TIMEOUT_MS,
+      "--timeout-ms",
+    ),
+    warmup: parseNonNegativeInt(parseFlagValue(argv, "--warmup"), DEFAULT_WARMUP, "--warmup"),
   };
 }
 
@@ -405,6 +422,17 @@ function collectResultFailures(
         failures.push({
           id: result.id,
           reason: `missing ${missing.join(", ")}`,
+          sampleIndex: index + 1,
+        });
+        return;
+      }
+      if (sample.exitedBeforeTeardown === true) {
+        failures.push({
+          id: result.id,
+          reason:
+            sample.signal == null
+              ? `child exited ${sample.exitCode ?? "before teardown"}`
+              : `child exited by ${sample.signal}`,
           sampleIndex: index + 1,
         });
       }
@@ -601,10 +629,6 @@ function requestStatus(port: number, pathname: string): Promise<number> {
   });
 }
 
-function delay(ms: number): Promise<void> {
-  return new Promise((resolve) => setTimeout(resolve, ms));
-}
-
 function writePluginFixtures(
   root: string,
   count: number,
@@ -685,38 +709,6 @@ function sanitizedEnv(
     ...benchCase.env,
   };
   return env;
-}
-
-async function stopChild(child: ChildProcessWithoutNullStreams): Promise<{
-  exitCode: number | null;
-  signal: string | null;
-}> {
-  if (child.exitCode != null || child.signalCode != null) {
-    return { exitCode: child.exitCode, signal: child.signalCode };
-  }
-  const exited = new Promise<{ exitCode: number | null; signal: string | null }>((resolve) => {
-    child.once("exit", (exitCode, signal) => resolve({ exitCode, signal }));
-  });
-  killProcessTree(child, "SIGTERM");
-  const timeout = delay(2000).then(() => {
-    if (child.exitCode == null && child.signalCode == null) {
-      killProcessTree(child, "SIGKILL");
-    }
-    return exited;
-  });
-  return Promise.race([exited, timeout]);
-}
-
-function killProcessTree(child: ChildProcessWithoutNullStreams, signal: NodeJS.Signals): void {
-  if (process.platform !== "win32" && child.pid !== undefined) {
-    try {
-      process.kill(-child.pid, signal);
-      return;
-    } catch {
-      // Fall back to the direct child below.
-    }
-  }
-  child.kill(signal);
 }
 
 function collectStartupTrace(line: string, startupTrace: Record<string, number>): void {
@@ -969,12 +961,14 @@ async function runGatewaySample(options: {
   const exit = await stopChild(child);
   clearInterval(rssTimer);
   sampleRss();
-  await childExitPromise.catch(() => null);
+  // stopChild is the bounded teardown wait; the raw exit promise may never settle.
+  void childExitPromise.catch(() => null);
   rmSync(root, { force: true, maxRetries: 3, recursive: true, retryDelay: 100 });
 
   return {
     cpuCoreRatio,
     cpuMs,
+    exitedBeforeTeardown: exit.exitedBeforeTeardown,
     exitCode: exit.exitCode,
     firstOutputMs,
     gatewayReadyLogLine,
@@ -1053,12 +1047,13 @@ function printResult(result: CaseResult): void {
 }
 
 async function main() {
-  if (hasHelpFlag()) {
+  const argv = process.argv.slice(2);
+  if (hasHelpFlag(argv)) {
     printUsage();
     return;
   }
 
-  const options = parseOptions();
+  const options = parseOptions(argv);
   if (options.cpuProfDir) {
     mkdirSync(options.cpuProfDir, { recursive: true });
   }
@@ -1105,17 +1100,19 @@ export const testing = {
   classifyProbeErrorKind,
   collectResultFailures,
   collectStartupTrace,
+  parseOptions,
   parseNonNegativeInt,
   parsePositiveInt,
   resolveEntry,
   sanitizedEnv,
+  stopChild,
   summarizeCase,
   waitForProbe,
   writeConfig,
 };
 
 if (import.meta.url === pathToFileURL(process.argv[1] ?? "").href) {
-  main().catch((err) => {
+  main().catch((err: unknown) => {
     console.error(err instanceof Error ? err.stack : String(err));
     process.exitCode = 1;
   });

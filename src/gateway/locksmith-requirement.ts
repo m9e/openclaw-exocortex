@@ -1,7 +1,7 @@
+import { normalizeOptionalString } from "@openclaw/normalization-core/string-coerce";
 import type { OpenClawConfig } from "../config/types.openclaw.js";
 import { normalizeResolvedSecretInputString } from "../config/types.secrets.js";
 import { isTruthyEnvValue } from "../infra/env.js";
-import { normalizeOptionalString } from "../shared/string-coerce.js";
 import { normalizeSecretInput } from "../utils/normalize-secret-input.js";
 import { isLoopbackHost } from "./net.js";
 

@@ -1,4 +1,4 @@
-import fs from "node:fs";
+import { isRecord } from "@openclaw/normalization-core/record-coerce";
 import { createSubsystemLogger } from "../../logging/subsystem.js";
 import type { ChannelRouteRef } from "../../plugin-sdk/channel-route.js";
 import { isPluginJsonValue, type PluginJsonValue } from "../../plugins/host-hook-json.js";
@@ -8,15 +8,15 @@ import {
   normalizeDeliveryContext,
   normalizeSessionDeliveryFields,
 } from "../../utils/delivery-context.shared.js";
-import { getFileStatSnapshot } from "../cache-utils.js";
+import { hydrateSessionStoreSkillPromptRefs } from "./skill-prompt-blobs.js";
 import {
   cloneSessionStoreRecord,
+  cloneSessionStoreSnapshotEntry,
   cloneSessionStoreSnapshot,
   internSessionEntryLargeStrings,
   isSessionStoreCacheEnabled,
   readSessionStoreCache,
   readSessionStoreSnapshotCache,
-  setSerializedSessionStore,
   writeSessionStoreCache,
   writeSessionStoreSnapshotCache,
   type SessionStoreSnapshot,
@@ -25,6 +25,7 @@ import {
 } from "./store-cache.js";
 import { normalizePersistedSessionEntryShape } from "./store-entry-shape.js";
 import { resolveSessionStoreEntry } from "./store-entry.js";
+import { getSessionStoreFreshnessSnapshot } from "./store-freshness.js";
 import { collectSessionMaintenancePreserveKeys } from "./store-maintenance-preserve.js";
 import { resolveMaintenanceConfig } from "./store-maintenance-runtime.js";
 import {
@@ -34,6 +35,7 @@ import {
   type ResolvedSessionMaintenanceConfig,
 } from "./store-maintenance.js";
 import { applySessionStoreMigrations } from "./store-migrations.js";
+import { loadSqliteSessionStore } from "./store-sqlite.js";
 import { normalizeSessionRuntimeModelFields, type SessionEntry } from "./types.js";
 
 export type LoadSessionStoreOptions = {
@@ -41,16 +43,20 @@ export type LoadSessionStoreOptions = {
   maintenanceConfig?: ResolvedSessionMaintenanceConfig;
   runMaintenance?: boolean;
   clone?: boolean;
+  hydrateSkillPromptRefs?: boolean;
+};
+
+export type ReadSessionEntryOptions = {
+  hydrateSkillPromptRefs?: boolean;
 };
 
 const log = createSubsystemLogger("sessions/store");
 
-function isSessionStoreRecord(value: unknown): value is Record<string, SessionEntry> {
-  return !!value && typeof value === "object" && !Array.isArray(value);
-}
-
-function isRecord(value: unknown): value is Record<string, unknown> {
-  return !!value && typeof value === "object" && !Array.isArray(value);
+function sameSessionStoreFreshnessSnapshot(
+  left: ReturnType<typeof getSessionStoreFreshnessSnapshot> | undefined,
+  right: ReturnType<typeof getSessionStoreFreshnessSnapshot> | undefined,
+): boolean {
+  return left?.mtimeMs === right?.mtimeMs && left?.sizeBytes === right?.sizeBytes;
 }
 
 function normalizeOptionalFiniteNumber(value: unknown): number | undefined {
@@ -66,6 +72,10 @@ function normalizeOptionalStringOrNull(value: unknown): string | null | undefine
     return value;
   }
   return undefined;
+}
+
+function normalizeOptionalString(value: unknown): string | undefined {
+  return typeof value === "string" ? value : undefined;
 }
 
 function normalizeRecordKey(value: string): string | undefined {
@@ -111,6 +121,7 @@ function normalizePendingFinalDeliveryFields(entry: SessionEntry): SessionEntry 
       return;
     }
     if (next === entry) {
+      // Copy-on-write keeps unchanged entries referentially stable for cache reuse.
       next = { ...entry };
     }
     if (value === undefined) {
@@ -148,6 +159,16 @@ function normalizePendingFinalDeliveryFields(entry: SessionEntry): SessionEntry 
     "pendingFinalDeliveryIntentId",
     normalizeOptionalStringOrNull(entry.pendingFinalDeliveryIntentId),
   );
+  const restartRecoveryDeliveryContext = normalizeOptionalDeliveryContext(
+    entry.restartRecoveryDeliveryContext,
+  );
+  if (!sameDeliveryContext(entry.restartRecoveryDeliveryContext, restartRecoveryDeliveryContext)) {
+    assign("restartRecoveryDeliveryContext", restartRecoveryDeliveryContext);
+  }
+  assign(
+    "restartRecoveryDeliveryRunId",
+    normalizeOptionalString(entry.restartRecoveryDeliveryRunId),
+  );
 
   return next;
 }
@@ -164,6 +185,7 @@ function normalizePluginExtensions(entry: SessionEntry): SessionEntry {
 
   let changed = false;
   const normalizedExtensions: Record<string, Record<string, PluginJsonValue>> = {};
+  // Plugin state is an external boundary; only JSON-safe keyed records are persisted back.
   for (const [rawPluginId, rawPluginState] of Object.entries(entry.pluginExtensions)) {
     const pluginId = normalizeRecordKey(rawPluginId);
     if (!pluginId || !isRecord(rawPluginState)) {
@@ -312,10 +334,9 @@ function normalizeSessionEntryDelivery(entry: SessionEntry): SessionEntry {
 
 // resolvedSkills carries the full parsed Skill[] (including each SKILL.md body)
 // and is only used as an in-turn cache by the runtime — see
-// src/agents/pi-embedded-runner/skills-runtime.ts. Persisting it bloats
-// sessions.json by orders of magnitude when many sessions are active. Strip
-// it from every entry that flows through normalize, so neither the in-memory
-// store reloaded from disk nor the JSON serialized back to disk carries it.
+// src/skills/runtime/embedded-run-entries.ts. Persisting it bloats the
+// session metadata store by orders of magnitude when many sessions are active.
+// Strip it from every entry that flows through normalize.
 function stripPersistedSkillsCache(entry: SessionEntry): SessionEntry {
   const snapshot = entry.skillsSnapshot;
   if (!snapshot || snapshot.resolvedSkills === undefined) {
@@ -356,8 +377,13 @@ export function loadSessionStore(
   storePath: string,
   opts: LoadSessionStoreOptions = {},
 ): Record<string, SessionEntry> {
-  if (!opts.skipCache && isSessionStoreCacheEnabled()) {
-    const currentFileStat = getFileStatSnapshot(storePath);
+  const shouldHydrateSkillPromptRefs = opts.hydrateSkillPromptRefs !== false;
+  const canReadSessionStoreCache = !opts.skipCache && isSessionStoreCacheEnabled();
+  const canWriteSessionStoreCache = canReadSessionStoreCache && shouldHydrateSkillPromptRefs;
+  const currentFileStat = canReadSessionStoreCache
+    ? getSessionStoreFreshnessSnapshot(storePath)
+    : undefined;
+  if (canReadSessionStoreCache) {
     const cached = readSessionStoreCache({
       storePath,
       mtimeMs: currentFileStat?.mtimeMs,
@@ -369,43 +395,32 @@ export function loadSessionStore(
     }
   }
 
-  // Retry a few times on Windows because readers can briefly observe empty or
-  // transiently invalid content while another process is swapping the file.
-  let store: Record<string, SessionEntry> = {};
-  let fileStat = getFileStatSnapshot(storePath);
-  let mtimeMs = fileStat?.mtimeMs;
-  let serializedFromDisk: string | undefined;
-  const maxReadAttempts = process.platform === "win32" ? 3 : 1;
-  const retryBuf = maxReadAttempts > 1 ? new Int32Array(new SharedArrayBuffer(4)) : undefined;
-  for (let attempt = 0; attempt < maxReadAttempts; attempt += 1) {
-    try {
-      const raw = fs.readFileSync(storePath, "utf-8");
-      if (raw.length === 0 && attempt < maxReadAttempts - 1) {
-        Atomics.wait(retryBuf!, 0, 0, 50);
-        continue;
-      }
-      const parsed = JSON.parse(raw);
-      if (isSessionStoreRecord(parsed)) {
-        store = parsed;
-        serializedFromDisk = raw;
-      }
-      // Cache with the stat observed before this read. If another process
-      // writes the file after readFileSync returns, a post-read stat could tag
-      // stale content as current and make future cache hits return old data.
-      break;
-    } catch {
-      if (attempt < maxReadAttempts - 1) {
-        Atomics.wait(retryBuf!, 0, 0, 50);
-        continue;
+  let store = loadSqliteSessionStore(storePath);
+  let cacheFileStat = currentFileStat;
+  let canCacheLoadedStore = canWriteSessionStoreCache;
+  if (canWriteSessionStoreCache) {
+    const postReadFileStat = getSessionStoreFreshnessSnapshot(storePath);
+    if (sameSessionStoreFreshnessSnapshot(currentFileStat, postReadFileStat)) {
+      cacheFileStat = postReadFileStat;
+    } else {
+      // Opening SQLite can create/touch sidecar files; another process can also
+      // write between the SELECT and freshness stat. Reload once against the
+      // changed snapshot, and skip caching if the DB keeps moving.
+      store = loadSqliteSessionStore(storePath);
+      const retryFileStat = getSessionStoreFreshnessSnapshot(storePath);
+      if (sameSessionStoreFreshnessSnapshot(postReadFileStat, retryFileStat)) {
+        cacheFileStat = retryFileStat;
+      } else {
+        canCacheLoadedStore = false;
       }
     }
   }
 
+  const hydratedPromptRefs = shouldHydrateSkillPromptRefs
+    ? hydrateSessionStoreSkillPromptRefs({ storePath, store })
+    : false;
   const migrated = applySessionStoreMigrations(store);
   const normalized = normalizeSessionStore(store);
-  if (migrated || normalized) {
-    serializedFromDisk = undefined;
-  }
   if (opts.runMaintenance) {
     const maintenance = opts.maintenanceConfig ?? resolveMaintenanceConfig();
     const beforeCount = Object.keys(store).length;
@@ -430,7 +445,6 @@ export function loadSessionStore(
     }
     const afterCount = Object.keys(store).length;
     if (pruned > 0 || capped > 0) {
-      serializedFromDisk = undefined;
       log.info("applied load-time maintenance to session store", {
         storePath,
         before: beforeCount,
@@ -441,25 +455,25 @@ export function loadSessionStore(
       });
     }
   }
-
-  setSerializedSessionStore(storePath, serializedFromDisk);
-
-  if (!opts.skipCache && isSessionStoreCacheEnabled()) {
+  if (hydratedPromptRefs || migrated || normalized) {
+    // Callers that mutate and save will persist the repaired SQLite shape.
+  }
+  if (canCacheLoadedStore) {
     writeSessionStoreCache({
       storePath,
       store,
-      mtimeMs,
-      sizeBytes: fileStat?.sizeBytes,
-      serialized: serializedFromDisk,
+      mtimeMs: cacheFileStat?.mtimeMs,
+      sizeBytes: cacheFileStat?.sizeBytes,
+      takeOwnership: true,
     });
   }
-
-  return opts.clone === false ? store : cloneSessionStoreRecord(store, serializedFromDisk);
+  return opts.clone === false ? store : cloneSessionStoreRecord(store);
 }
 
 export function readSessionStoreSnapshot(storePath: string): SessionStoreSnapshot {
-  const currentFileStat = getFileStatSnapshot(storePath);
-  if (isSessionStoreCacheEnabled()) {
+  const cacheEnabled = isSessionStoreCacheEnabled();
+  const currentFileStat = cacheEnabled ? getSessionStoreFreshnessSnapshot(storePath) : undefined;
+  if (cacheEnabled) {
     const cached = readSessionStoreSnapshotCache({
       storePath,
       mtimeMs: currentFileStat?.mtimeMs,
@@ -470,8 +484,8 @@ export function readSessionStoreSnapshot(storePath: string): SessionStoreSnapsho
     }
   }
 
-  const store = loadSessionStore(storePath);
-  if (!isSessionStoreCacheEnabled()) {
+  const store = loadSessionStore(storePath, { clone: false });
+  if (!cacheEnabled) {
     return cloneSessionStoreSnapshot(store);
   }
   return writeSessionStoreSnapshotCache({
@@ -485,13 +499,17 @@ export function readSessionStoreSnapshot(storePath: string): SessionStoreSnapsho
 export function readSessionEntry(
   storePath: string,
   sessionKey: string,
+  opts: ReadSessionEntryOptions = {},
 ): SessionStoreSnapshotEntry | undefined {
-  const snapshot = readSessionStoreSnapshot(storePath);
+  const store = loadSessionStore(storePath, {
+    clone: false,
+    ...(opts.hydrateSkillPromptRefs === false ? { hydrateSkillPromptRefs: false } : {}),
+  });
   const resolved = resolveSessionStoreEntry({
-    store: snapshot as Record<string, SessionEntry>,
+    store,
     sessionKey,
   });
-  return resolved.existing as SessionStoreSnapshotEntry | undefined;
+  return resolved.existing ? cloneSessionStoreSnapshotEntry(resolved.existing) : undefined;
 }
 
 export function readSessionEntries(storePath: string): SessionStoreSnapshotEntries {

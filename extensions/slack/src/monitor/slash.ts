@@ -1,6 +1,7 @@
+// Slack plugin module implements slash behavior.
 import type { SlackActionMiddlewareArgs, SlackCommandMiddlewareArgs } from "@slack/bolt";
 import { resolveDefaultModelForAgent } from "openclaw/plugin-sdk/agent-runtime";
-import { createChannelMessageReplyPipeline } from "openclaw/plugin-sdk/channel-message";
+import { createChannelMessageReplyPipeline } from "openclaw/plugin-sdk/channel-outbound";
 import {
   formatCommandArgMenuTitle,
   resolveStoredModelOverride,
@@ -17,11 +18,12 @@ import {
 } from "openclaw/plugin-sdk/native-command-config-runtime";
 import type { ReplyPayload } from "openclaw/plugin-sdk/reply-runtime";
 import type { ResolvedAgentRoute } from "openclaw/plugin-sdk/routing";
-import { danger, logVerbose } from "openclaw/plugin-sdk/runtime-env";
+import { danger, logVerbose, warn } from "openclaw/plugin-sdk/runtime-env";
 import { loadSessionStore, resolveStorePath } from "openclaw/plugin-sdk/session-store-runtime";
 import {
   normalizeLowercaseStringOrEmpty,
   normalizeOptionalString,
+  normalizeStringEntriesLower,
 } from "openclaw/plugin-sdk/string-coerce-runtime";
 import { chunkItems } from "openclaw/plugin-sdk/text-chunking";
 import type { ResolvedSlackAccount } from "../accounts.js";
@@ -796,7 +798,7 @@ export async function registerSlackMonitorSlashCommands(params: {
       provider: "slack",
     });
     const existingNativeNames = new Set(
-      nativeCommands.map((c) => normalizeLowercaseStringOrEmpty(c.name)).filter(Boolean),
+      normalizeStringEntriesLower(nativeCommands.map((command) => command.name)),
     );
     const { listProviderPluginCommandSpecs } = await loadSlackPluginCommandsRuntime();
     for (const pluginCommand of listProviderPluginCommandSpecs("slack")) {
@@ -925,6 +927,11 @@ export async function registerSlackMonitorSlashCommands(params: {
     registerArgOptions();
   } catch (err) {
     supportsExternalArgMenus = false;
+    runtime.log?.(
+      warn(
+        "slack: external arg-menu registration failed; falling back to static slash command menus. Enable verbose logs for details.",
+      ),
+    );
     logVerbose(
       `slack: external arg-menu registration failed, falling back to static menus: ${formatErrorMessage(err)}`,
     );
