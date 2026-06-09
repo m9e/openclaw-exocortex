@@ -1,4 +1,6 @@
 import type { OpenClawConfig } from "openclaw/plugin-sdk/config-runtime";
+import { canResolveEnvSecretRefInReadOnlyPath } from "openclaw/plugin-sdk/extension-shared";
+import { normalizeSecretInput, resolveSecretInputString } from "openclaw/plugin-sdk/secret-input";
 import {
   normalizeOptionalLowercaseString,
   normalizeOptionalString,
@@ -10,6 +12,9 @@ export type UntrustedContentOnErrorMode = "pass" | "quarantine";
 type UntrustedContentPluginConfig = {
   enabled?: boolean;
   baseUrl?: string;
+  apiKey?: unknown;
+  pipelineId?: string;
+  tlsRejectUnauthorized?: boolean;
   toolNames?: unknown;
   trustLevel?: UntrustedContentTrustLevel;
   timeoutSeconds?: number;
@@ -27,6 +32,8 @@ export const DEFAULT_UNTRUSTED_CONTENT_TIMEOUT_SECONDS = 10;
 export const DEFAULT_UNTRUSTED_CONTENT_MAX_CONTENT_CHARS = 50_000;
 export const DEFAULT_UNTRUSTED_CONTENT_ON_ERROR = "pass" as const;
 export const DEFAULT_GUARDED_TOOL_NAMES = ["web_fetch", "browser"] as const;
+export const DEFAULT_UNTRUSTED_CONTENT_PIPELINE_ID = "default";
+const UNTRUSTED_CONTENT_API_KEY_PATH = "plugins.entries.untrusted-content.config.apiKey";
 
 function resolvePluginConfig(cfg?: OpenClawConfig): UntrustedContentPluginConfig | undefined {
   const pluginConfig = cfg?.plugins?.entries?.["untrusted-content"]?.config;
@@ -71,6 +78,45 @@ export function resolveUntrustedContentBaseUrl(cfg?: OpenClawConfig): string {
     normalizeOptionalString(process.env.UNTRUSTED_CONTENT_BASE_URL) ||
     DEFAULT_UNTRUSTED_CONTENT_BASE_URL
   );
+}
+
+export function resolveUntrustedContentApiKey(cfg?: OpenClawConfig): string | undefined {
+  const resolved = resolveSecretInputString({
+    value: resolvePluginConfig(cfg)?.apiKey,
+    path: UNTRUSTED_CONTENT_API_KEY_PATH,
+    defaults: cfg?.secrets?.defaults,
+    mode: "inspect",
+  });
+  if (resolved.status === "available") {
+    return normalizeSecretInput(resolved.value) || undefined;
+  }
+  if (resolved.status === "missing" || resolved.ref.source !== "env") {
+    return undefined;
+  }
+
+  const envVarName = resolved.ref.id.trim();
+  if (
+    !canResolveEnvSecretRefInReadOnlyPath({
+      cfg,
+      provider: resolved.ref.provider,
+      id: envVarName,
+    })
+  ) {
+    return undefined;
+  }
+
+  return normalizeSecretInput(process.env[envVarName]) || undefined;
+}
+
+export function resolveUntrustedContentPipelineId(cfg?: OpenClawConfig): string {
+  return (
+    normalizeOptionalString(resolvePluginConfig(cfg)?.pipelineId) ||
+    DEFAULT_UNTRUSTED_CONTENT_PIPELINE_ID
+  );
+}
+
+export function resolveUntrustedContentTlsRejectUnauthorized(cfg?: OpenClawConfig): boolean {
+  return resolvePluginConfig(cfg)?.tlsRejectUnauthorized !== false;
 }
 
 export function resolveUntrustedContentTimeoutMs(

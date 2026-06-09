@@ -270,7 +270,12 @@ configure_openclaw_hardened_config() {
   local ssh_known_hosts="${OPENCLAW_UNTRUSTED_SSH_KNOWN_HOSTS_FILE:-}"
   local ssh_workspace_root="${OPENCLAW_UNTRUSTED_SSH_WORKSPACE_ROOT:-/tmp/openclaw-sandboxes}"
   local config_path="${OPENCLAW_CONFIG_PATH:-$HOME/.openclaw/openclaw.json}"
+  local main_workspace="${OPENCLAW_MAIN_AGENT_WORKSPACE:-}"
+  local untrusted_content_base_url="${OPENCLAW_UNTRUSTED_CONTENT_BASE_URL:-http://127.0.0.1:8787}"
   mkdir -p "$(dirname "$config_path")"
+  if [[ -n "$main_workspace" ]]; then
+    mkdir -p "$main_workspace"
+  fi
   [[ -f "$config_path" ]] || printf '{}\n' >"$config_path"
 
   log "writing required Locksmith and per-agent tool policy"
@@ -281,6 +286,8 @@ configure_openclaw_hardened_config() {
   OPENCLAW_UNTRUSTED_SSH_IDENTITY="$ssh_identity" \
   OPENCLAW_UNTRUSTED_SSH_KNOWN_HOSTS_FILE="$ssh_known_hosts" \
   OPENCLAW_UNTRUSTED_SSH_WORKSPACE_ROOT="$ssh_workspace_root" \
+  OPENCLAW_MAIN_AGENT_WORKSPACE="$main_workspace" \
+  OPENCLAW_UNTRUSTED_CONTENT_BASE_URL="$untrusted_content_base_url" \
   node <<'NODE'
 const fs = require("fs");
 const os = require("os");
@@ -295,6 +302,9 @@ const untrustedSshKnownHostsFile =
   (process.env.OPENCLAW_UNTRUSTED_SSH_KNOWN_HOSTS_FILE || "").trim();
 const untrustedSshWorkspaceRoot =
   process.env.OPENCLAW_UNTRUSTED_SSH_WORKSPACE_ROOT || "/tmp/openclaw-sandboxes";
+const mainWorkspace = (process.env.OPENCLAW_MAIN_AGENT_WORKSPACE || "").trim();
+const untrustedContentBaseUrl =
+  (process.env.OPENCLAW_UNTRUSTED_CONTENT_BASE_URL || "http://127.0.0.1:8787").trim();
 
 const untrustedAgentIds = ["untrusted", "untrusted-read", "untrusted-write"];
 
@@ -316,6 +326,7 @@ const trustedAllow = [
   "agents_list",
   "locksmith_github",
   "kamiwaza_call",
+  "untrusted_content_scan",
 ];
 
 const trustedDeny = [
@@ -463,6 +474,17 @@ if (!isRecord(cfg)) {
   cfg = {};
 }
 
+const secrets = ensureRecord(cfg, "secrets");
+const secretProviders = ensureRecord(secrets, "providers");
+const defaultSecretProvider = ensureRecord(secretProviders, "default");
+defaultSecretProvider.source = "env";
+defaultSecretProvider.allowlist = mergeList(defaultSecretProvider.allowlist, [
+  "KAMIWAZA_API_KEY",
+  /^[A-Z][A-Z0-9_]{0,127}$/.test(process.env.OPENCLAW_KAMIWAZA_MODEL_API_KEY_ENV || "")
+    ? process.env.OPENCLAW_KAMIWAZA_MODEL_API_KEY_ENV
+    : "OPENCLAW_KAMIWAZA_MODEL_API_KEY",
+]);
+
 const plugins = ensureRecord(cfg, "plugins");
 const pluginEntries = ensureRecord(plugins, "entries");
 const locksmith = ensureRecord(pluginEntries, "locksmith");
@@ -472,6 +494,12 @@ locksmithConfig.baseUrl = "http://127.0.0.1:9200";
 locksmithConfig.inboundToken = locksmithToken;
 locksmithConfig.required = true;
 locksmithConfig.genericTool = false;
+const startupTimeoutMs = Number.parseInt(
+  process.env.OPENCLAW_LOCKSMITH_STARTUP_TIMEOUT_MS || "15000",
+  10,
+);
+locksmithConfig.startupTimeoutMs =
+  Number.isFinite(startupTimeoutMs) && startupTimeoutMs > 0 ? startupTimeoutMs : 15000;
 const locksmithTools = ensureRecord(locksmithConfig, "tools");
 const githubTool = ensureRecord(locksmithTools, "github");
 githubTool.enabled = true;
@@ -492,6 +520,20 @@ const kamiwazaDelegation = ensureRecord(kamiwazaConfig, "delegation");
 kamiwazaDelegation.enabled = true;
 kamiwazaDelegation.required = true;
 kamiwazaDelegation.signingSecret = kamiwazaDelegationSigningSecret;
+
+const untrustedContent = ensureRecord(pluginEntries, "untrusted-content");
+untrustedContent.enabled = true;
+const untrustedContentConfig = ensureRecord(untrustedContent, "config");
+untrustedContentConfig.enabled = true;
+untrustedContentConfig.baseUrl = untrustedContentBaseUrl;
+untrustedContentConfig.apiKey = { source: "env", provider: "default", id: "KAMIWAZA_API_KEY" };
+untrustedContentConfig.tlsRejectUnauthorized = false;
+untrustedContentConfig.onError = "quarantine";
+untrustedContentConfig.toolNames = mergeList(untrustedContentConfig.toolNames, [
+  "kamiwaza_call",
+  "web_fetch",
+  "browser",
+]);
 
 const tools = ensureRecord(cfg, "tools");
 delete tools.allow;
@@ -519,12 +561,19 @@ if (isRecord(tools.web)) {
 }
 
 const agents = ensureRecord(cfg, "agents");
+if (mainWorkspace) {
+  const defaults = ensureRecord(agents, "defaults");
+  defaults.workspace = mainWorkspace;
+}
 const main = upsertAgent(agents, "main");
 if (main.default === undefined) {
   main.default = true;
 }
 if (main.name === undefined) {
   main.name = "Trusted Gateway";
+}
+if (mainWorkspace) {
+  main.workspace = mainWorkspace;
 }
 const mainTools = ensureRecord(main, "tools");
 mainTools.allow = trustedAllow;

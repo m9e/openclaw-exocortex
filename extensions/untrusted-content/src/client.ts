@@ -2,30 +2,28 @@ import type { OpenClawConfig } from "openclaw/plugin-sdk/config-runtime";
 import { fetchWithSsrFGuard } from "openclaw/plugin-sdk/ssrf-runtime";
 import { normalizeOptionalString } from "openclaw/plugin-sdk/text-runtime";
 import {
+  resolveUntrustedContentApiKey,
   resolveUntrustedContentBaseUrl,
   resolveUntrustedContentPipelineOverrides,
+  resolveUntrustedContentPipelineId,
+  resolveUntrustedContentTlsRejectUnauthorized,
   resolveUntrustedContentTimeoutMs,
   type UntrustedContentTrustLevel,
 } from "./config.js";
 
 type ThreatSignal = {
-  stage: string;
-  severity: "info" | "warn" | "critical";
-  message: string;
+  stage?: string;
+  stage_id?: string;
+  type?: string;
+  severity?: "info" | "warn" | "critical";
+  verdict?: "pass" | "flag" | "block";
+  message?: string;
   confidence?: number | null;
   details?: Record<string, unknown>;
 };
 
-type PipelineMetadata = {
-  original_length: number;
-  sanitized_length: number;
-  truncated: boolean;
-  sanitizer_actions: string[];
-  windows_scanned: number;
-  scan_time_ms: number;
-  pipeline_version: string;
-  trust_level: UntrustedContentTrustLevel;
-  storage: Record<string, string | null | undefined>;
+type PipelineMetadata = Record<string, unknown> & {
+  storage?: Record<string, string | null | undefined>;
 };
 
 export type UntrustedContentPipelineResponse = {
@@ -90,6 +88,14 @@ function clearServiceUnavailable(baseUrl: string): void {
   unavailableServices.delete(baseUrl);
 }
 
+function buildPipelineEndpoint(baseUrl: string, pipelineId: string): string {
+  const normalizedBaseUrl = baseUrl.endsWith("/") ? baseUrl : `${baseUrl}/`;
+  return new URL(
+    `v1/pipelines/${encodeURIComponent(pipelineId)}/run`,
+    normalizedBaseUrl,
+  ).toString();
+}
+
 async function readErrorResponse(response: Response): Promise<string> {
   const text = await response.text().catch(() => "");
   const normalized = normalizeOptionalString(text);
@@ -114,8 +120,9 @@ export async function runUntrustedContentPipeline(
     params.timeoutMs > 0
       ? Math.floor(params.timeoutMs)
       : resolveUntrustedContentTimeoutMs(params.cfg);
-  const { trustLevel, sanitize, guardrail, scan, windowSize, windowOverlap } =
-    resolveUntrustedContentPipelineOverrides(params.cfg);
+  // The deployed service owns pipeline policy in /v1/pipelines/{id}/run. Resolve
+  // overrides for forward compatibility, but do not send unsupported fields.
+  resolveUntrustedContentPipelineOverrides(params.cfg);
   const requestBody = {
     input: {
       content: params.content,
@@ -124,25 +131,11 @@ export async function runUntrustedContentPipeline(
       ...(params.contentType ? { content_type: params.contentType } : {}),
       ...(params.contentId ? { content_id: params.contentId } : {}),
     },
-    pipeline: {
-      trust_level: params.trustLevel ?? trustLevel,
-      ...((params.sanitize ?? sanitize) !== undefined
-        ? { sanitize: params.sanitize ?? sanitize }
-        : {}),
-      ...((params.guardrail ?? guardrail) !== undefined
-        ? { guardrail: params.guardrail ?? guardrail }
-        : {}),
-      ...((params.scan ?? scan) !== undefined ? { scan: params.scan ?? scan } : {}),
-      ...((params.windowSize ?? windowSize) !== undefined
-        ? { window_size: params.windowSize ?? windowSize }
-        : {}),
-      ...((params.windowOverlap ?? windowOverlap) !== undefined
-        ? { window_overlap: params.windowOverlap ?? windowOverlap }
-        : {}),
-    },
+    ...(params.contentId ? { request_id: params.contentId } : {}),
   };
 
-  const endpoint = new URL("/v1/pipeline", baseUrl).toString();
+  const endpoint = buildPipelineEndpoint(baseUrl, resolveUntrustedContentPipelineId(params.cfg));
+  const apiKey = resolveUntrustedContentApiKey(params.cfg);
   let guarded: Awaited<ReturnType<typeof fetchWithSsrFGuard>> | undefined;
   try {
     guarded = await fetchWithSsrFGuard({
@@ -151,11 +144,15 @@ export async function runUntrustedContentPipeline(
         method: "POST",
         headers: {
           "content-type": "application/json",
+          ...(apiKey ? { authorization: `Bearer ${apiKey}` } : {}),
         },
         body: JSON.stringify(requestBody),
       },
       timeoutMs,
       policy: LOCAL_SERVICE_FETCH_POLICY,
+      ...(!resolveUntrustedContentTlsRejectUnauthorized(params.cfg)
+        ? { dispatcherPolicy: { mode: "direct" as const, connect: { rejectUnauthorized: false } } }
+        : {}),
       auditContext: "untrusted-content-pipeline",
       capture: false,
     });

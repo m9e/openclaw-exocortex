@@ -87,7 +87,8 @@ install_system_packages() {
     openssl \
     perl \
     pkg-config \
-    python3
+    python3 \
+    rsync
 }
 
 install_node() {
@@ -133,12 +134,33 @@ sync_checkout() {
     log "refreshing existing checkout at $install_dir"
     git -C "$install_dir" fetch --tags "$source_repo" HEAD
     git -C "$install_dir" reset --hard FETCH_HEAD
+    sync_source_worktree "$source_repo" "$install_dir"
     return
   fi
 
   [[ ! -e "$install_dir" ]] || die "$install_dir exists but is not a git checkout"
   log "cloning mounted source repo into $install_dir"
   git clone --no-local "$source_repo" "$install_dir"
+  sync_source_worktree "$source_repo" "$install_dir"
+}
+
+sync_source_worktree() {
+  local source_repo="$1"
+  local install_dir="$2"
+
+  if [[ "${OPENCLAW_GUEST_SYNC_WORKTREE:-1}" == "0" ]]; then
+    return
+  fi
+
+  log "overlaying current source worktree into $install_dir"
+  rsync -a --delete \
+    --exclude '/.git/' \
+    --exclude '/node_modules/' \
+    --exclude '/dist/' \
+    --exclude '/dist-runtime/' \
+    --exclude '/coverage/' \
+    --exclude '/.turbo/' \
+    "$source_repo/" "$install_dir/"
 }
 
 install_workspace_deps() {
@@ -170,6 +192,22 @@ write_cli_helper() {
   cat >"$helper" <<EOF
 #!/usr/bin/env bash
 set -euo pipefail
+
+if [[ -z "\${OPENCLAW_GATEWAY_TOKEN:-}" && -r "\$HOME/.openclaw/gateway.token" ]]; then
+  export OPENCLAW_GATEWAY_TOKEN="\$(cat "\$HOME/.openclaw/gateway.token")"
+fi
+if [[ -r "\$HOME/.config/locksmith/locksmith.env" ]]; then
+  set -a
+  # shellcheck disable=SC1091
+  source "\$HOME/.config/locksmith/locksmith.env"
+  set +a
+fi
+if [[ -r "\$HOME/.openclaw/credentials/kamiwaza-model.env" ]]; then
+  set -a
+  # shellcheck disable=SC1091
+  source "\$HOME/.openclaw/credentials/kamiwaza-model.env"
+  set +a
+fi
 
 cd "$install_dir"
 exec node scripts/run-node.mjs "\$@"
@@ -236,6 +274,8 @@ install_locksmith() {
   OPENCLAW_CLI="$HOME/bin/openclaw" \
     LOCKSMITH_SOURCE_REPO="$locksmith_source_repo" \
     LOCKSMITH_EGRESS_PROXY="${LOCKSMITH_EGRESS_PROXY:-http://127.0.0.1:$proxy_port}" \
+    OPENCLAW_MAIN_AGENT_WORKSPACE="${OPENCLAW_MAIN_AGENT_WORKSPACE:-}" \
+    OPENCLAW_UNTRUSTED_CONTENT_BASE_URL="${OPENCLAW_UNTRUSTED_CONTENT_BASE_URL:-https://host.lima.internal/runtime/tools/tool-untrusted-content-${OPENCLAW_KAMIWAZA_DEPLOYMENT_SUFFIX:-openclaw}}" \
     bash "$installer"
 }
 

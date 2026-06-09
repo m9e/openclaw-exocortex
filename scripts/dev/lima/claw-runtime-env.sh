@@ -85,6 +85,18 @@ openclaw_prepare_runtime_dirs() {
   chmod 600 "$OPENCLAW_RUNTIME_DIR/runtime.env"
 }
 
+openclaw_validate_lima_socket_paths() {
+  local suffix="/ssh.sock.1234567890123456"
+  local max_len=103
+  local name path
+  for name in "$OPENCLAW_GATEWAY_INSTANCE" "$OPENCLAW_UNTRUSTED_INSTANCE"; do
+    path="$LIMA_HOME/$name$suffix"
+    if (( ${#path} > max_len )); then
+      openclaw_runtime_die "Lima socket path is too long for $name (${#path} > $max_len): $path. Use a shorter OPENCLAW_RUNTIME_NAME or OPENCLAW_RUNTIME_DIR."
+    fi
+  done
+}
+
 openclaw_runtime_summary() {
   printf 'runtime:  %s\n' "$OPENCLAW_RUNTIME_DIR"
   printf 'lima:     %s\n' "$LIMA_HOME"

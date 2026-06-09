@@ -41,6 +41,11 @@
       "help": "Default request timeout in seconds for Locksmith discovery and calls.",
       "advanced": true
     },
+    "startupTimeoutMs": {
+      "label": "Startup Check Timeout",
+      "help": "Maximum time in milliseconds for each required Locksmith startup probe before the gateway fails closed.",
+      "advanced": true
+    },
     "maxResponseBytes": {
       "label": "Max Response Bytes",
       "help": "Maximum response payload size to buffer per Locksmith request.",
@@ -88,6 +93,10 @@
         "minimum": 1
       },
       "timeoutSeconds": {
+        "type": "number",
+        "minimum": 1
+      },
+      "startupTimeoutMs": {
         "type": "number",
         "minimum": 1
       },

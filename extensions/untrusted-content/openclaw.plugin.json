@@ -14,6 +14,19 @@
       "label": "Service Base URL",
       "help": "Base URL for the tool-untrusted-content API."
     },
+    "apiKey": {
+      "label": "Service API Key",
+      "help": "Optional bearer token for authenticated tool-untrusted-content endpoints."
+    },
+    "pipelineId": {
+      "label": "Pipeline ID",
+      "help": "Pipeline id passed to /v1/pipelines/{pipelineId}/run."
+    },
+    "tlsRejectUnauthorized": {
+      "label": "Verify TLS",
+      "help": "Reject invalid TLS certificates for the service endpoint.",
+      "advanced": true
+    },
     "toolNames": {
       "label": "Guarded Tools",
       "help": "Tool names whose results should be guarded, for example web_fetch or browser."
@@ -72,6 +85,15 @@
       },
       "baseUrl": {
         "type": "string"
+      },
+      "apiKey": {
+        "type": ["string", "object"]
+      },
+      "pipelineId": {
+        "type": "string"
+      },
+      "tlsRejectUnauthorized": {
+        "type": "boolean"
       },
       "toolNames": {
         "type": "array",

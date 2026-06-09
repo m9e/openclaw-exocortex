@@ -339,7 +339,7 @@ main() {
 
   log "applying gateway OpenClaw config for the untrusted agent"
   limactl shell "$OPENCLAW_GATEWAY_INSTANCE" -- bash -lc \
-    "OPENCLAW_CLI=\"\$HOME/bin/openclaw\" LOCKSMITH_SOURCE_REPO='$OPENCLAW_WORKSPACE_ROOT/deps/exocortex-agent-locksmith' LOCKSMITH_EGRESS_PROXY=\"http://127.0.0.1:$gateway_guest_proxy_port\" OPENCLAW_UNTRUSTED_SSH_TARGET='$target' OPENCLAW_UNTRUSTED_SSH_KNOWN_HOSTS_FILE=\"\$HOME/.ssh/openclaw_untrusted_known_hosts\" bash '$ROOT_DIR/scripts/dev/lima/install-locksmith-in-guest.sh'"
+    "OPENCLAW_CLI=\"\$HOME/bin/openclaw\" LOCKSMITH_SOURCE_REPO='$OPENCLAW_WORKSPACE_ROOT/deps/exocortex-agent-locksmith' LOCKSMITH_EGRESS_PROXY=\"http://127.0.0.1:$gateway_guest_proxy_port\" OPENCLAW_UNTRUSTED_SSH_TARGET='$target' OPENCLAW_UNTRUSTED_SSH_KNOWN_HOSTS_FILE=\"\$HOME/.ssh/openclaw_untrusted_known_hosts\" OPENCLAW_MAIN_AGENT_WORKSPACE='${OPENCLAW_MAIN_AGENT_WORKSPACE:-}' OPENCLAW_UNTRUSTED_CONTENT_BASE_URL='${OPENCLAW_UNTRUSTED_CONTENT_BASE_URL:-https://host.lima.internal/runtime/tools/tool-untrusted-content-${OPENCLAW_KAMIWAZA_DEPLOYMENT_SUFFIX:-openclaw}}' bash '$ROOT_DIR/scripts/dev/lima/install-locksmith-in-guest.sh'"
 
   log "configured untrusted sandbox target: $target"
 }

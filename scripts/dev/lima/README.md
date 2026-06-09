@@ -97,6 +97,124 @@ For VM creation only:
 bash scripts/dev/lima/bootstrap-claw-runtime.sh --no-install
 ```
 
+## Kamiwaza-mode bootstrap
+
+Use `bootstrap-kamiwaza-mode.sh` when the VM pair should come up with the
+local Kamiwaza tool surface ready for agent use:
+
+```bash
+bash scripts/dev/lima/bootstrap-kamiwaza-mode.sh
+```
+
+The wrapper first deploys a configurable set of local Kamiwaza extension repos
+through `~/code/kz/amatt-push-local-extensions.sh`, applies matching active
+`KamiwazaExtension` CRs, then runs `bootstrap-claw-runtime.sh` so OpenClaw,
+Pipelock, Locksmith, the untrusted SSH sandbox, PAT sync, model config, and
+gateway service are all configured in one documented path. It loads
+`~/.api_keys` by default, exports syntactically valid environment assignments
+for helper tools, and logs only key names such as `SERPER_API_KEY`, never secret
+values. Secret env vars required by active tools are written to Kubernetes
+Secrets and referenced from the CR; they are not embedded as literal CR values.
+
+The default extension target set is:
+
+- `~/code/kz/kamiwaza-extensions-serperdev:tool:tool-serperdev`
+- `~/code/kz/kamiwaza-extensions-tool-untrusted:tool:tool-untrusted-content`
+
+Override that set with comma-separated target specs:
+
+```bash
+OPENCLAW_KAMIWAZA_EXTENSION_TARGETS="$HOME/code/kz/kamiwaza-extensions-serperdev:tool:tool-serperdev,$HOME/code/kz/kamiwaza-extensions-tool-untrusted:tool:tool-untrusted-content" \
+  bash scripts/dev/lima/bootstrap-kamiwaza-mode.sh
+```
+
+Target specs are `/repo/path[:tool|app|service[:target-name]]`. When a kind and
+target name are provided, the wrapper validates that
+`<repo>/<kind>s/<target-name>/kamiwaza.json` exists before invoking the deploy
+helper. The helper receives a temporary workspace containing symlinks only to
+the selected repos, so unrelated local extension repos stay outside the deploy
+blast radius.
+
+To include the Telegram tool during local UAT:
+
+```bash
+OPENCLAW_KAMIWAZA_EXTENSION_TARGETS="$HOME/code/kz/kamiwaza-extensions-serperdev:tool:tool-serperdev,$HOME/code/kz/kamiwaza-extensions-tool-untrusted:tool:tool-untrusted-content,$HOME/code/kz/kamiwaza-extensions-telegram:tool:tool-telegram" \
+  bash scripts/dev/lima/bootstrap-kamiwaza-mode.sh
+```
+
+Active CR application is intentionally idempotent and server-side applied. The
+wrapper waits for `kamiwazaextensions.extensions.kamiwaza.io` to be established,
+creates the target namespace if needed, pre-pulls local-registry images into the
+`kamiwaza-k0s` VM with `k0s ctr --plain-http`, then waits for each active
+extension to become `Ready`.
+
+Useful activation knobs:
+
+- `--no-push-extensions` skips the helper/template push but still applies the
+  active CRs. This is useful after a successful image/template push when only CR
+  shape, proxy, or secret wiring changed.
+- `--no-activate-extensions` pushes extension templates but skips active CRs.
+- `--no-wait-extensions` skips the final `Ready` wait.
+- `OPENCLAW_KAMIWAZA_EXTENSION_NAMESPACE` defaults to `kamiwaza-extensions`.
+- `OPENCLAW_KAMIWAZA_DEPLOYMENT_SUFFIX` defaults to `openclaw`, producing ids
+  such as `tool-serperdev-openclaw`.
+- `OPENCLAW_KAMIWAZA_LOCAL_REGISTRY` defaults to
+  `registry.infra.kamiwaza.test:5001`.
+- `OPENCLAW_KAMIWAZA_PREPULL_IMAGES=0` disables the k0s image pre-pull.
+- `OPENCLAW_KAMIWAZA_LIMA_HOME` overrides the Lima home used to find the
+  Kamiwaza k0s VM. By default the pre-pull unsets the OpenClaw runtime
+  `LIMA_HOME`, because the Kamiwaza cluster VM usually lives in the user's
+  normal Lima home rather than the per-runtime OpenClaw Lima directory.
+- `OPENCLAW_KAMIWAZA_TOOL_EGRESS_PROXY` defaults to
+  `http://<kamiwaza-k0s-default-gateway>:$OPENCLAW_PIPELOCK_PORT`, falling back
+  to `host.lima.internal` if the gateway cannot be discovered. Kubernetes pods
+  do not reliably resolve Lima guest helper hostnames, so the discovered gateway
+  IP is the preferred path for tool egress through Pipelock.
+
+For a clean co-existing UAT pair, use a runtime name and port offset:
+
+```bash
+OPENCLAW_RUNTIME_NAME=oc1 OPENCLAW_RUNTIME_PORT_OFFSET=3000 \
+  bash scripts/dev/lima/bootstrap-kamiwaza-mode.sh
+```
+
+If multiple OpenClaw VM pairs should keep independent active Kamiwaza tool CRs,
+also set a unique deployment suffix:
+
+```bash
+OPENCLAW_RUNTIME_NAME=oc2 OPENCLAW_RUNTIME_PORT_OFFSET=6000 \
+  bash scripts/dev/lima/bootstrap-kamiwaza-mode.sh --extension-deployment-suffix oc2
+```
+
+To persist the trusted agent's workspace/memory in a Git-manageable host folder,
+set `OPENCLAW_AGENT_STATE_HOST_DIR`:
+
+```bash
+OPENCLAW_AGENT_STATE_HOST_DIR="$HOME/code/agent-states/oc1" \
+  bash scripts/dev/lima/bootstrap-kamiwaza-mode.sh
+```
+
+That path is mounted writable into the gateway VM only and is written into
+`agents.defaults.workspace` and the `main` agent's `workspace`. The untrusted VM
+still receives no host workspace mount. Lima mounts are fixed at instance
+creation, so set this before first start of a given runtime pair. Keep runtime
+names short or set a short `OPENCLAW_RUNTIME_DIR`; Lima's generated SSH socket
+paths must fit macOS `UNIX_PATH_MAX`.
+
+The model endpoint defaults remain the same as `bootstrap-claw-runtime.sh`:
+`OPENCLAW_KAMIWAZA_BASE_URL=http://host.lima.internal:4000/v1` and
+`OPENCLAW_KAMIWAZA_MODEL_ID=kamiwaza/relic/MiniMax-M2.7-AWQ-4bit`. To test the
+external Tokenator Kimi endpoint that was used for local validation, set:
+
+```bash
+OPENCLAW_KAMIWAZA_BASE_URL="https://tokenator.kamiwaza.ai/runtime/models/5913f08b-05bc-4ff3-8746-8e24760b220e/v1"
+OPENCLAW_KAMIWAZA_MODEL_ID="Kimi-K2.6"
+OPENCLAW_KAMIWAZA_MODEL_API_KEY="$(jq -r '.active_tokens[] | select(.host_name == "tokenator") | .token' ~/code/kzproxy/incoming/pdash-pat-store.json | head -n 1)"
+```
+
+Do not print that token. The bootstrap writes it into a `0600` guest env file
+and configures OpenClaw to read it through an env SecretRef.
+
 ## Install OpenClaw in the gateway guest
 
 The gateway VM sees the host checkout read-only at the same `/Users/...` path.
@@ -165,9 +283,15 @@ The default config:
   added later to the dynamic warning/restart path
 - makes Locksmith reject unauthenticated `/tools`
 - sets `plugins.entries.locksmith.config.required: true`
+- sets `plugins.entries.locksmith.config.startupTimeoutMs: 15000`, because
+  authenticated Locksmith `/tools` can take more than the old 5s guard timeout
+  when this local Locksmith/Pipelock topology is cold
 - hides the generic `locksmith_call` tool
 - enables the direct `kamiwaza_call` fallback bridge for trusted local use with
   required signed delegation
+- enables the `untrusted-content` guard plugin against the active
+  `tool-untrusted-content-<suffix>` route, using the Kamiwaza PAT as an env
+  SecretRef and `tlsRejectUnauthorized: false` for the local self-signed route
 - constrains file tools to the workspace
 - configures a tight `main` agent policy with local workspace edits, memory,
   status, plan, outbound message/TTS, session send/spawn/yield, subagent
@@ -287,6 +411,9 @@ Paste these values into the login gate if prompted:
 ## Isolation model
 
 - `openclaw-gateway` inherits Lima's default read-only home mount so it can inspect the host repo without mutating it.
+- When `OPENCLAW_AGENT_STATE_HOST_DIR` is set before first start, the gateway
+  also receives that one host directory as a writable mount for the trusted
+  `main` agent workspace.
 - `openclaw-untrusted` mounts no host directories.
 - Neither VM auto-forwards random guest localhost ports back onto the host.
 - Both VMs attach to Lima `vzNAT` so macOS PF can distinguish their traffic.

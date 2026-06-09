@@ -23,6 +23,8 @@ Environment:
   OPENCLAW_UNTRUSTED_INSTANCE    Override untrusted Lima instance name.
   OPENCLAW_PIPELOCK_PORT         Override host-forwarded Pipelock port.
   OPENCLAW_PIPELOCK_GUEST_PORT   Override gateway guest Pipelock port.
+  OPENCLAW_AGENT_STATE_HOST_DIR  Optional host dir mounted writable into gateway only.
+  OPENCLAW_MAIN_AGENT_WORKSPACE  Guest workspace path for the trusted main agent.
 
 Options:
   --no-install                   Only create/start VMs.
@@ -139,13 +141,18 @@ install_gateway() {
     "OPENCLAW_GATEWAY_HOST_PORT=$OPENCLAW_GATEWAY_HOST_PORT" \
     "OPENCLAW_PIPELOCK_PORT=$OPENCLAW_PIPELOCK_PORT" \
     "OPENCLAW_PIPELOCK_GUEST_PORT=$OPENCLAW_PIPELOCK_GUEST_PORT" \
+    "OPENCLAW_MAIN_AGENT_WORKSPACE=${OPENCLAW_MAIN_AGENT_WORKSPACE:-${OPENCLAW_AGENT_STATE_HOST_DIR:-}}" \
     "OPENCLAW_KAMIWAZA_CREDENTIAL_HOST=$(default_kamiwaza_credential_host)" \
+    "OPENCLAW_KAMIWAZA_DEPLOYMENT_SUFFIX=${OPENCLAW_KAMIWAZA_DEPLOYMENT_SUFFIX:-openclaw}" \
+    "OPENCLAW_KAMIWAZA_MODEL_API_KEY_ENV=${OPENCLAW_KAMIWAZA_MODEL_API_KEY_ENV:-OPENCLAW_KAMIWAZA_MODEL_API_KEY}" \
+    "OPENCLAW_GUEST_FORCE=${OPENCLAW_GUEST_FORCE:-}" \
     bash "$OPENCLAW_REPO_ROOT/scripts/dev/lima/install-in-guest.sh"
 }
 
 configure_untrusted() {
   log "configuring untrusted sandbox and host egress guard"
-  bash "$SCRIPT_DIR/configure-untrusted-sandbox.sh"
+  OPENCLAW_MAIN_AGENT_WORKSPACE="${OPENCLAW_MAIN_AGENT_WORKSPACE:-${OPENCLAW_AGENT_STATE_HOST_DIR:-}}" \
+    bash "$SCRIPT_DIR/configure-untrusted-sandbox.sh"
 }
 
 sync_kamiwaza_credentials() {
@@ -156,7 +163,12 @@ sync_kamiwaza_credentials() {
 
   local sync_script="$OPENCLAW_WORKSPACE_ROOT/sync-kamiwaza-pat-credentials.sh"
   local source_path="${KAMIWAZA_PAT_STORE_SOURCE:-/Users/yod/code/kzproxy/incoming/pdash-pat-store.json}"
-  if [[ ! -x "$sync_script" || ! -f "$source_path" ]]; then
+  local guest_source_path="$source_path"
+  if [[ -f "$source_path" && "$source_path" != "$OPENCLAW_WORKSPACE_ROOT/"* ]]; then
+    guest_source_path="$OPENCLAW_RUNTIME_DIR/metadata/kamiwaza-pat-store-source.json"
+    install -m 0600 "$source_path" "$guest_source_path"
+  fi
+  if [[ ! -x "$sync_script" || ! -f "$guest_source_path" ]]; then
     log "skipping Kamiwaza credential sync; helper or source file missing"
     return
   fi
@@ -166,8 +178,8 @@ sync_kamiwaza_credentials() {
   local sync_json="$OPENCLAW_RUNTIME_DIR/metadata/kamiwaza-pat-sync.json"
   local sync_tmp="$sync_json.tmp"
   OPENCLAW_GATEWAY_INSTANCE="$OPENCLAW_GATEWAY_INSTANCE" \
-    KAMIWAZA_PAT_STORE_SOURCE="$source_path" \
-    bash "$sync_script" --instance "$OPENCLAW_GATEWAY_INSTANCE" --source "$source_path" |
+    KAMIWAZA_PAT_STORE_SOURCE="$guest_source_path" \
+    bash "$sync_script" --instance "$OPENCLAW_GATEWAY_INSTANCE" --source "$guest_source_path" |
     tee "$sync_log"
   awk 'capture || /^\{/ { capture = 1; print }' "$sync_log" >"$sync_tmp"
   jq . "$sync_tmp" >"$sync_json"
@@ -453,12 +465,14 @@ configure_kamiwaza_provider() {
   local provider_id="${OPENCLAW_KAMIWAZA_PROVIDER_ID:-kamiwaza-local}"
   local model_id="${OPENCLAW_KAMIWAZA_MODEL_ID:-kamiwaza/relic/MiniMax-M2.7-AWQ-4bit}"
   local base_url="${OPENCLAW_KAMIWAZA_BASE_URL:-http://host.lima.internal:4000/v1}"
+  local model_api_key_env="${OPENCLAW_KAMIWAZA_MODEL_API_KEY_ENV:-OPENCLAW_KAMIWAZA_MODEL_API_KEY}"
 
   log "configuring local Kamiwaza provider $provider_id for $model_id"
   run_in_gateway env \
     "OPENCLAW_KAMIWAZA_PROVIDER_ID=$provider_id" \
     "OPENCLAW_KAMIWAZA_MODEL_ID=$model_id" \
     "OPENCLAW_KAMIWAZA_BASE_URL=$base_url" \
+    "OPENCLAW_KAMIWAZA_MODEL_API_KEY_ENV=$model_api_key_env" \
     node <<'NODE'
 const fs = require("fs");
 const os = require("os");
@@ -479,7 +493,37 @@ if (!cfg || typeof cfg !== "object" || Array.isArray(cfg)) {
 const providerId = process.env.OPENCLAW_KAMIWAZA_PROVIDER_ID || "kamiwaza-local";
 const modelId = process.env.OPENCLAW_KAMIWAZA_MODEL_ID || "kamiwaza/relic/MiniMax-M2.7-AWQ-4bit";
 const baseUrl = process.env.OPENCLAW_KAMIWAZA_BASE_URL || "http://host.lima.internal:4000/v1";
+const apiKeyEnv = process.env.OPENCLAW_KAMIWAZA_MODEL_API_KEY_ENV || "";
 const modelRef = `${providerId}/${modelId}`;
+const apiKey = /^[A-Z][A-Z0-9_]{0,127}$/.test(apiKeyEnv)
+  ? { source: "env", provider: "default", id: apiKeyEnv }
+  : "openclaw-local-kamiwaza";
+
+function ensureRecord(parent, key) {
+  if (!parent[key] || typeof parent[key] !== "object" || Array.isArray(parent[key])) {
+    parent[key] = {};
+  }
+  return parent[key];
+}
+
+function mergeList(value, entries) {
+  const list = Array.isArray(value) ? value.filter((entry) => typeof entry === "string") : [];
+  for (const entry of entries) {
+    if (entry && !list.includes(entry)) {
+      list.push(entry);
+    }
+  }
+  return list;
+}
+
+const secrets = ensureRecord(cfg, "secrets");
+const secretProviders = ensureRecord(secrets, "providers");
+const defaultSecretProvider = ensureRecord(secretProviders, "default");
+defaultSecretProvider.source = "env";
+defaultSecretProvider.allowlist = mergeList(defaultSecretProvider.allowlist, [
+  "KAMIWAZA_API_KEY",
+  /^[A-Z][A-Z0-9_]{0,127}$/.test(apiKeyEnv) ? apiKeyEnv : "OPENCLAW_KAMIWAZA_MODEL_API_KEY",
+]);
 
 cfg.models = cfg.models && typeof cfg.models === "object" && !Array.isArray(cfg.models)
   ? cfg.models
@@ -492,7 +536,7 @@ cfg.models.providers = cfg.models.providers &&
     : {};
 cfg.models.providers[providerId] = {
   baseUrl,
-  apiKey: "openclaw-local-kamiwaza",
+  apiKey,
   api: "openai-completions",
   models: [
     {
@@ -531,6 +575,46 @@ fs.writeFileSync(configPath, `${JSON.stringify(cfg, null, 2)}\n`, { mode: 0o600 
 NODE
 }
 
+sync_kamiwaza_model_env() {
+  if [[ -z "${OPENCLAW_KAMIWAZA_MODEL_API_KEY:-}" ]]; then
+    return
+  fi
+
+  local model_api_key_env="${OPENCLAW_KAMIWAZA_MODEL_API_KEY_ENV:-OPENCLAW_KAMIWAZA_MODEL_API_KEY}"
+  [[ "$model_api_key_env" =~ ^[A-Z][A-Z0-9_]{0,127}$ ]] ||
+    die "OPENCLAW_KAMIWAZA_MODEL_API_KEY_ENV must be an uppercase env var name"
+
+  log "syncing Kamiwaza model API key into gateway guest env file (value redacted)"
+  local restore_xtrace=0
+  if [[ "$-" == *x* ]]; then
+    restore_xtrace=1
+    set +x
+  fi
+  run_in_gateway env \
+    "OPENCLAW_KAMIWAZA_MODEL_API_KEY_VALUE=$OPENCLAW_KAMIWAZA_MODEL_API_KEY" \
+    "OPENCLAW_KAMIWAZA_MODEL_API_KEY_ENV=$model_api_key_env" \
+    bash -lc '
+set -euo pipefail
+mkdir -p "$HOME/.openclaw/credentials"
+chmod 700 "$HOME/.openclaw" "$HOME/.openclaw/credentials"
+env_name="${OPENCLAW_KAMIWAZA_MODEL_API_KEY_ENV:?missing model api key env name}"
+value="${OPENCLAW_KAMIWAZA_MODEL_API_KEY_VALUE:?missing model api key value}"
+python3 - "$env_name" "$value" >"$HOME/.openclaw/credentials/kamiwaza-model.env.tmp" <<'"'"'PY'"'"'
+import shlex
+import sys
+
+name = sys.argv[1]
+value = sys.argv[2]
+print(f"{name}={shlex.quote(value)}")
+PY
+chmod 600 "$HOME/.openclaw/credentials/kamiwaza-model.env.tmp"
+mv "$HOME/.openclaw/credentials/kamiwaza-model.env.tmp" "$HOME/.openclaw/credentials/kamiwaza-model.env"
+'
+  if [[ "$restore_xtrace" == "1" ]]; then
+    set -x
+  fi
+}
+
 start_gateway_service() {
   if [[ "$RUN_GATEWAY_SERVICE" != "1" ]]; then
     log "skipping gateway service start"
@@ -556,6 +640,7 @@ Type=simple
 Environment=OPENCLAW_GATEWAY_PORT=${OPENCLAW_GATEWAY_PORT:-18789}
 Environment=OPENCLAW_PIPELOCK_GUEST_PORT=${OPENCLAW_PIPELOCK_GUEST_PORT:-8888}
 Environment=OPENCLAW_PIPELOCK_PORT=${OPENCLAW_PIPELOCK_PORT:-29888}
+EnvironmentFile=-%h/.openclaw/credentials/kamiwaza-model.env
 ExecStart=%h/bin/openclaw-gateway-dev
 Restart=on-failure
 RestartSec=3
@@ -581,6 +666,7 @@ verify_runtime() {
     "OPENCLAW_GATEWAY_PORT=18789" \
     "OPENCLAW_KAMIWAZA_PROVIDER_ID=${OPENCLAW_KAMIWAZA_PROVIDER_ID:-kamiwaza-local}" \
     "OPENCLAW_KAMIWAZA_MODEL_ID=${OPENCLAW_KAMIWAZA_MODEL_ID:-kamiwaza/relic/MiniMax-M2.7-AWQ-4bit}" \
+    "OPENCLAW_MAIN_AGENT_WORKSPACE=${OPENCLAW_MAIN_AGENT_WORKSPACE:-${OPENCLAW_AGENT_STATE_HOST_DIR:-}}" \
     bash -lc '
 set -euo pipefail
 for _ in {1..30}; do
@@ -602,6 +688,13 @@ jq -e \
   --arg model "${OPENCLAW_KAMIWAZA_MODEL_ID:-kamiwaza/relic/MiniMax-M2.7-AWQ-4bit}" \
   ".models.providers[\$provider].models[]? | select(.id == \$model)" \
   "$HOME/.openclaw/openclaw.json" >/dev/null
+
+if [[ -n "${OPENCLAW_MAIN_AGENT_WORKSPACE:-}" ]]; then
+  jq -e \
+    --arg workspace "$OPENCLAW_MAIN_AGENT_WORKSPACE" \
+    ".agents.defaults.workspace == \$workspace and (.agents.list[]? | select(.id == \"main\").workspace == \$workspace)" \
+    "$HOME/.openclaw/openclaw.json" >/dev/null
+fi
 '
 }
 
@@ -610,6 +703,7 @@ if [[ "$RUN_INSTALL" == "1" ]]; then
   install_gateway
   configure_untrusted
   sync_kamiwaza_credentials
+  sync_kamiwaza_model_env
   configure_kamiwaza_provider
   start_gateway_service
   verify_runtime

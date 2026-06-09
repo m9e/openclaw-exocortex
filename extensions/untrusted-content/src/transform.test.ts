@@ -1,5 +1,5 @@
 import type { OpenClawConfig } from "openclaw/plugin-sdk/config-runtime";
-import { beforeEach, describe, expect, it, vi } from "vitest";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { maybeTransformToolResult } from "./transform.js";
 
 vi.mock("openclaw/plugin-sdk/security-runtime", () => ({
@@ -11,6 +11,7 @@ vi.mock("openclaw/plugin-sdk/security-runtime", () => ({
 
 function buildConfig(params: {
   baseUrl: string;
+  apiKey?: unknown;
   toolNames?: string[];
   onError?: "pass" | "quarantine";
 }): OpenClawConfig {
@@ -21,6 +22,7 @@ function buildConfig(params: {
           enabled: true,
           config: {
             baseUrl: params.baseUrl,
+            ...(params.apiKey ? { apiKey: params.apiKey } : {}),
             toolNames: params.toolNames ?? ["web_fetch", "browser"],
             ...(params.onError ? { onError: params.onError } : {}),
           },
@@ -69,6 +71,11 @@ function buildPipelineResponse(params: {
 describe("untrusted-content tool result transform", () => {
   beforeEach(() => {
     vi.restoreAllMocks();
+    vi.unstubAllEnvs();
+  });
+
+  afterEach(() => {
+    vi.unstubAllEnvs();
   });
 
   it("sanitizes configured web_fetch text results and rewraps the content", async () => {
@@ -112,7 +119,10 @@ describe("untrusted-content tool result transform", () => {
       threatCount: 0,
     });
     expect(fetchMock).toHaveBeenCalledTimes(1);
-    expect(fetchMock.mock.calls[0]?.[0]).toBe("http://127.0.0.1:8787/v1/pipeline");
+    expect(fetchMock.mock.calls[0]?.[0]).toBe("http://127.0.0.1:8787/v1/pipelines/default/run");
+    expect(
+      (fetchMock.mock.calls[0]?.[1]?.headers as Record<string, string>).authorization,
+    ).toBeUndefined();
     const requestBody = fetchMock.mock.calls[0]?.[1]?.body;
     expect(typeof requestBody).toBe("string");
     expect(JSON.parse(requestBody as string)).toMatchObject({
@@ -122,10 +132,143 @@ describe("untrusted-content tool result transform", () => {
         url: "https://example.com",
         content_id: "call-clean-1",
       },
-      pipeline: {
-        trust_level: "untrusted",
+    });
+  });
+
+  it("sends a bearer token when the untrusted-content endpoint is authenticated", async () => {
+    const fetchMock = vi.spyOn(globalThis, "fetch").mockResolvedValue(
+      new Response(
+        JSON.stringify(
+          buildPipelineResponse({
+            id: "scan-auth-1",
+            clean: true,
+            quarantined: false,
+            content: "authenticated sanitized body",
+          }),
+        ),
+        {
+          status: 200,
+          headers: { "content-type": "application/json" },
+        },
+      ),
+    );
+
+    await maybeTransformToolResult({
+      cfg: buildConfig({
+        baseUrl: "https://yod.local/runtime/tools/tool-untrusted",
+        apiKey: "pat-value",
+      }),
+      toolName: "web_fetch",
+      params: { url: "https://example.com" },
+      toolCallId: "call-auth-1",
+      result: {
+        text: "unsafe body",
+        finalUrl: "https://example.com",
       },
     });
+
+    expect((fetchMock.mock.calls[0]?.[1]?.headers as Record<string, string>).authorization).toBe(
+      "Bearer pat-value",
+    );
+    expect(fetchMock.mock.calls[0]?.[0]).toBe(
+      "https://yod.local/runtime/tools/tool-untrusted/v1/pipelines/default/run",
+    );
+  });
+
+  it("resolves an allowlisted env SecretRef for authenticated Kamiwaza endpoints", async () => {
+    vi.stubEnv("KAMIWAZA_API_KEY", "kamiwaza-env-key");
+    const fetchMock = vi.spyOn(globalThis, "fetch").mockResolvedValue(
+      new Response(
+        JSON.stringify(
+          buildPipelineResponse({
+            id: "scan-env-auth-1",
+            clean: true,
+            quarantined: false,
+            content: "env authenticated sanitized body",
+          }),
+        ),
+        {
+          status: 200,
+          headers: { "content-type": "application/json" },
+        },
+      ),
+    );
+
+    await maybeTransformToolResult({
+      cfg: {
+        secrets: {
+          providers: {
+            default: {
+              source: "env",
+              allowlist: ["KAMIWAZA_API_KEY"],
+            },
+          },
+        },
+        ...buildConfig({
+          baseUrl: "https://yod.local/runtime/tools/tool-untrusted",
+          apiKey: { source: "env", provider: "default", id: "KAMIWAZA_API_KEY" },
+        }),
+      } as OpenClawConfig,
+      toolName: "web_fetch",
+      params: { url: "https://example.com" },
+      toolCallId: "call-env-auth-1",
+      result: {
+        text: "unsafe body",
+        finalUrl: "https://example.com",
+      },
+    });
+
+    expect((fetchMock.mock.calls[0]?.[1]?.headers as Record<string, string>).authorization).toBe(
+      "Bearer kamiwaza-env-key",
+    );
+  });
+
+  it("does not resolve env SecretRefs excluded by the provider allowlist", async () => {
+    vi.stubEnv("KAMIWAZA_API_KEY", "blocked-env-key");
+    const fetchMock = vi.spyOn(globalThis, "fetch").mockResolvedValue(
+      new Response(
+        JSON.stringify(
+          buildPipelineResponse({
+            id: "scan-blocked-auth-1",
+            clean: true,
+            quarantined: false,
+            content: "blocked auth sanitized body",
+          }),
+        ),
+        {
+          status: 200,
+          headers: { "content-type": "application/json" },
+        },
+      ),
+    );
+
+    await maybeTransformToolResult({
+      cfg: {
+        secrets: {
+          providers: {
+            default: {
+              source: "env",
+              allowlist: ["OTHER_KAMIWAZA_API_KEY"],
+            },
+          },
+        },
+        ...buildConfig({
+          baseUrl: "https://yod.local/runtime/tools/tool-untrusted",
+          apiKey: { source: "env", provider: "default", id: "KAMIWAZA_API_KEY" },
+        }),
+      } as OpenClawConfig,
+      toolName: "web_fetch",
+      params: { url: "https://example.com" },
+      toolCallId: "call-blocked-auth-1",
+      result: {
+        text: "unsafe body",
+        finalUrl: "https://example.com",
+      },
+    });
+
+    expect(
+      (fetchMock.mock.calls[0]?.[1]?.headers as Record<string, string>).authorization,
+    ).toBeUndefined();
   });
 
   it("quarantines browser content blocks and drops the original block list", async () => {

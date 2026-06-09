@@ -170,7 +170,7 @@ function mcpUrlForExtension(extension: ExtensionResponse): string | undefined {
   if (!endpoint) {
     return undefined;
   }
-  return `${endpoint.replace(/\/+$/u, "")}/mcp/`;
+  return `${endpoint.replace(/\/+$/u, "")}/mcp`;
 }
 
 function isUnreachableNetworkError(error: unknown): boolean {

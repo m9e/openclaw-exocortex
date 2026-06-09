@@ -18,6 +18,7 @@ type LocksmithPluginConfig = {
   inboundToken?: unknown;
   required?: boolean;
   genericTool?: boolean;
+  startupTimeoutMs?: unknown;
   tools?: Record<string, LocksmithToolConfig>;
 };
 
@@ -86,6 +87,19 @@ function parseRequiredBaseUrl(raw: string): string {
     );
   }
   return normalizeBaseUrl(parsed.toString());
+}
+
+function normalizeStartupTimeoutMs(value: unknown): number | undefined {
+  const parsed =
+    typeof value === "number"
+      ? value
+      : typeof value === "string" && value.trim().length > 0
+        ? Number(value.trim())
+        : undefined;
+  if (parsed === undefined || !Number.isFinite(parsed) || parsed <= 0) {
+    return undefined;
+  }
+  return Math.floor(parsed);
 }
 
 function resolveProjectedToolSlugs(pluginConfig?: LocksmithPluginConfig): string[] {
@@ -158,12 +172,16 @@ export function resolveRequiredLocksmithStartupConfig(
     normalizeOptionalString(pluginConfig?.baseUrl) ||
     normalizeSecretInput(env.LOCKSMITH_BASE_URL) ||
     DEFAULT_LOCKSMITH_BASE_URL;
+  const timeoutMs =
+    normalizeStartupTimeoutMs(pluginConfig?.startupTimeoutMs) ??
+    normalizeStartupTimeoutMs(env.OPENCLAW_LOCKSMITH_STARTUP_TIMEOUT_MS) ??
+    DEFAULT_LOCKSMITH_STARTUP_TIMEOUT_MS;
 
   return {
     baseUrl: parseRequiredBaseUrl(baseUrl),
     inboundToken,
     projectedTools,
-    timeoutMs: DEFAULT_LOCKSMITH_STARTUP_TIMEOUT_MS,
+    timeoutMs,
   };
 }
 

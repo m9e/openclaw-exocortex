@@ -12,7 +12,7 @@ import {
 import { resetKamiwazaCredentialStoreCacheForTest, resolveKamiwazaApiToken } from "./config.js";
 import { buildKamiwazaDynamicCatalogGuidance } from "./prompt-guidance.js";
 
-const EXTENSION_PATH = "/runtime/tools/tool-z-19607be6/mcp/";
+const EXTENSION_PATH = "/runtime/tools/tool-z-19607be6/mcp";
 
 function cfg(config: Record<string, unknown>): OpenClawConfig {
   return {

@@ -67,6 +67,19 @@ describe("required Locksmith startup config", () => {
       resolveRequiredLocksmithStartupConfig(requiredConfig({ inboundToken: "" }), {}),
     ).toThrow("no inboundToken");
   });
+
+  it("allows the required startup timeout to be configured", () => {
+    expect(
+      resolveRequiredLocksmithStartupConfig(requiredConfig({ startupTimeoutMs: 15000 }), {})
+        ?.timeoutMs,
+    ).toBe(15000);
+
+    expect(
+      resolveRequiredLocksmithStartupConfig(requiredConfig(), {
+        OPENCLAW_LOCKSMITH_STARTUP_TIMEOUT_MS: "12000",
+      })?.timeoutMs,
+    ).toBe(12000);
+  });
 });
 
 describe("required Locksmith startup check", () => {
