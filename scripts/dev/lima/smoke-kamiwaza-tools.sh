@@ -58,7 +58,10 @@ OPENCLAW_CLI="${OPENCLAW_CLI:-openclaw}"
 REQUIRE_TOOLS="${OPENCLAW_KAMIWAZA_REQUIRE_TOOLS:-1}"
 REQUIRE_LOCKSMITH="${OPENCLAW_KAMIWAZA_REQUIRE_LOCKSMITH:-1}"
 SMOKE_TOOL="${OPENCLAW_KAMIWAZA_SMOKE_TOOL:-}"
-SMOKE_ARGS="${OPENCLAW_KAMIWAZA_SMOKE_ARGS:-{}}"
+# Not ${VAR:-{}}: bash closes the expansion at the first }, which appends a
+# stray literal } to any provided JSON value.
+SMOKE_ARGS="${OPENCLAW_KAMIWAZA_SMOKE_ARGS:-}"
+[[ -n "$SMOKE_ARGS" ]] || SMOKE_ARGS="{}"
 SMOKE_AGENT_ID="${OPENCLAW_KAMIWAZA_SMOKE_AGENT_ID:-openclaw-smoke}"
 
 command -v "$OPENCLAW_CLI" >/dev/null 2>&1 || die "OpenClaw CLI not found: $OPENCLAW_CLI"

@@ -330,7 +330,9 @@ PY
 
 refresh_locksmith_kamiwaza_projections() {
   log "refreshing first-class Locksmith projections for active Kamiwaza tools"
-  run_in_gateway python3 - <<'PY'
+  run_in_gateway env \
+    "OPENCLAW_KAMIWAZA_DEPLOYMENT_SUFFIX=${OPENCLAW_KAMIWAZA_DEPLOYMENT_SUFFIX:-}" \
+    python3 - <<'PY'
 from __future__ import annotations
 
 import json
@@ -407,6 +409,15 @@ active_tools = [
     for tool in fetch_locksmith_tools(token)
     if isinstance(tool.get("name"), str) and tool["name"].startswith("kamiwaza_")
 ]
+
+# Sibling runtimes deploy their own extension copies into the same cluster;
+# without this filter every runtime projects every sibling's tools and the
+# agent tool surface fills with foreign duplicates.
+suffix = os.environ.get("OPENCLAW_KAMIWAZA_DEPLOYMENT_SUFFIX", "").strip().lower()
+if suffix:
+    marker = f"_{suffix}_"
+    active_tools = [tool for tool in active_tools if marker in tool["name"].lower()]
+
 if not active_tools:
     print("no active Kamiwaza Locksmith tools to project")
     raise SystemExit(0)
