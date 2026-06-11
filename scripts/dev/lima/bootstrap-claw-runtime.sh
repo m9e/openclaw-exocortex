@@ -580,6 +580,17 @@ cfg.agents.defaults.models[modelRef] = {
   agentRuntime: { id: "pi" },
 };
 
+// Catalog entries alone do not select the agent's runtime model; the primary
+// ref is what makes agents actually run on the configured Kamiwaza model.
+const existingModel =
+  cfg.agents.defaults.model && typeof cfg.agents.defaults.model === "object" &&
+  !Array.isArray(cfg.agents.defaults.model)
+    ? cfg.agents.defaults.model
+    : typeof cfg.agents.defaults.model === "string"
+      ? { primary: cfg.agents.defaults.model }
+      : {};
+cfg.agents.defaults.model = { ...existingModel, primary: modelRef };
+
 fs.writeFileSync(configPath, `${JSON.stringify(cfg, null, 2)}\n`, { mode: 0o600 });
 NODE
 }
@@ -712,6 +723,11 @@ jq -e \
   --arg provider "${OPENCLAW_KAMIWAZA_PROVIDER_ID:-kamiwaza-local}" \
   --arg model "${OPENCLAW_KAMIWAZA_MODEL_ID:-kamiwaza/relic/MiniMax-M2.7-AWQ-4bit}" \
   ".models.providers[\$provider].models[]? | select(.id == \$model)" \
+  "$HOME/.openclaw/openclaw.json" >/dev/null
+
+jq -e \
+  --arg ref "${OPENCLAW_KAMIWAZA_PROVIDER_ID:-kamiwaza-local}/${OPENCLAW_KAMIWAZA_MODEL_ID:-kamiwaza/relic/MiniMax-M2.7-AWQ-4bit}" \
+  ".agents.defaults.model.primary == \$ref" \
   "$HOME/.openclaw/openclaw.json" >/dev/null
 
 if [[ -n "${OPENCLAW_MAIN_AGENT_WORKSPACE:-}" ]]; then
