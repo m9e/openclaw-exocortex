@@ -3,7 +3,7 @@
   "name": "Locksmith",
   "description": "Optional tool bridge for Agent Locksmith credential-proxy deployments.",
   "contracts": {
-    "tools": ["locksmith_call"]
+    "tools": ["locksmith_call", "locksmith_*"]
   },
   "commandAliases": [{ "name": "locksmith" }],
   "uiHints": {

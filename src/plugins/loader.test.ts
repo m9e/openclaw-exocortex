@@ -3813,6 +3813,53 @@ module.exports = { id: "throws-after-import", register() {} };`,
     ).toBe(true);
   });
 
+  it("accepts tool names covered by a manifest tool contract prefix wildcard", () => {
+    useNoBundledPlugins();
+    const plugin = writePlugin({
+      id: "wildcard-tool-owner",
+      filename: "wildcard-tool-owner.cjs",
+      body: `module.exports = {
+        id: "wildcard-tool-owner",
+        register(api) {
+          api.registerTool(() => null, {
+            names: ["wildcard_github", "wildcard_kamiwaza_search"],
+            optional: true,
+          });
+          api.registerTool({
+            name: "outside_contract",
+            description: "Not covered by the wildcard",
+            parameters: {},
+            execute: async () => ({ content: [{ type: "text", text: "ok" }] }),
+          });
+        },
+      };`,
+    });
+    updatePluginManifest(plugin, { contracts: { tools: ["wildcard_*"] } });
+
+    const registry = loadOpenClawPlugins({
+      activate: false,
+      cache: false,
+      workspaceDir: plugin.dir,
+      config: {
+        plugins: {
+          load: { paths: [plugin.file] },
+          allow: ["wildcard-tool-owner"],
+        },
+      },
+    });
+
+    expect(registry.tools.map((entry) => entry.names)).toStrictEqual([
+      ["wildcard_github", "wildcard_kamiwaza_search"],
+    ]);
+    expect(
+      registry.diagnostics.some(
+        (entry) =>
+          entry.pluginId === "wildcard-tool-owner" &&
+          entry.message === "plugin must declare contracts.tools for: outside_contract",
+      ),
+    ).toBe(true);
+  });
+
   it("caches non-activating snapshots without restoring global side effects", () => {
     useNoBundledPlugins();
     clearPluginCommands();

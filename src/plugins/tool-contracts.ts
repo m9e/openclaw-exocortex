@@ -22,6 +22,19 @@ export function findUndeclaredPluginToolNames(params: {
   declaredNames: readonly string[];
   toolNames: readonly string[];
 }): string[] {
-  const declared = new Set(normalizePluginToolNames(params.declaredNames));
-  return normalizePluginToolNames(params.toolNames).filter((name) => !declared.has(name));
+  const declared = new Set<string>();
+  const declaredPrefixes: string[] = [];
+  for (const name of normalizePluginToolNames(params.declaredNames)) {
+    // A contract entry like "locksmith_*" declares ownership of every tool
+    // sharing that prefix, so plugins that project operator-configured tool
+    // names (unknowable at manifest time) still pass the contract gate.
+    if (name.endsWith("*") && name.length > 1) {
+      declaredPrefixes.push(name.slice(0, -1));
+    } else {
+      declared.add(name);
+    }
+  }
+  return normalizePluginToolNames(params.toolNames).filter(
+    (name) => !declared.has(name) && !declaredPrefixes.some((prefix) => name.startsWith(prefix)),
+  );
 }
