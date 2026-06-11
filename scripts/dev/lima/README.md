@@ -310,9 +310,10 @@ The default config:
   added later to the dynamic warning/restart path
 - makes Locksmith reject unauthenticated `/tools`
 - sets `plugins.entries.locksmith.config.required: true`
-- sets `plugins.entries.locksmith.config.startupTimeoutMs: 15000`, because
-  authenticated Locksmith `/tools` can take more than the old 5s guard timeout
-  when this local Locksmith/Pipelock topology is cold
+- sets `plugins.entries.locksmith.config.startupTimeoutMs: 120000`, because
+  authenticated Locksmith `/tools` performs live Kamiwaza MCP discovery across
+  every active extension and can take tens of seconds when the catalog is large
+  or cold
 - hides the generic `locksmith_call` tool
 - enables the direct `kamiwaza_call` fallback bridge for trusted local use with
   required signed delegation

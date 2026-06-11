@@ -497,11 +497,11 @@ locksmithConfig.inboundToken = locksmithToken;
 locksmithConfig.required = true;
 locksmithConfig.genericTool = false;
 const startupTimeoutMs = Number.parseInt(
-  process.env.OPENCLAW_LOCKSMITH_STARTUP_TIMEOUT_MS || "15000",
+  process.env.OPENCLAW_LOCKSMITH_STARTUP_TIMEOUT_MS || "120000",
   10,
 );
 locksmithConfig.startupTimeoutMs =
-  Number.isFinite(startupTimeoutMs) && startupTimeoutMs > 0 ? startupTimeoutMs : 15000;
+  Number.isFinite(startupTimeoutMs) && startupTimeoutMs > 0 ? startupTimeoutMs : 120000;
 const locksmithTools = ensureRecord(locksmithConfig, "tools");
 const githubTool = ensureRecord(locksmithTools, "github");
 githubTool.enabled = true;

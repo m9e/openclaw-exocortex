@@ -379,9 +379,12 @@ def fetch_locksmith_tools(token: str) -> list[dict]:
         headers={"Authorization": f"Bearer {token}"},
     )
     last_error: Exception | None = None
-    for _ in range(20):
+    # /tools performs live Kamiwaza MCP discovery across every extension and
+    # can take tens of seconds cold; a short per-request timeout here made the
+    # refresh abort and silently project zero tools.
+    for _ in range(5):
         try:
-            with urllib.request.urlopen(request, timeout=3) as response:
+            with urllib.request.urlopen(request, timeout=90) as response:
                 payload = json.loads(response.read().decode("utf-8"))
             tools = payload.get("tools") if isinstance(payload, dict) else None
             return [tool for tool in tools if isinstance(tool, dict)] if isinstance(tools, list) else []
