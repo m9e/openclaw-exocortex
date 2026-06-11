@@ -163,7 +163,14 @@ export function shouldGuardToolResult(cfg: OpenClawConfig | undefined, toolName:
   if (!normalized || !resolveUntrustedContentEnabled(cfg)) {
     return false;
   }
-  return resolveUntrustedContentGuardedToolNames(cfg).includes(normalized);
+  // Entries ending in "*" guard every tool sharing the prefix, so dynamically
+  // projected tools (kamiwaza_*, locksmith_kamiwaza_*) stay guarded without
+  // config edits when new upstream tools appear.
+  return resolveUntrustedContentGuardedToolNames(cfg).some((entry) =>
+    entry.endsWith("*") && entry.length > 1
+      ? normalized.startsWith(entry.slice(0, -1))
+      : normalized === entry,
+  );
 }
 
 export function resolveUntrustedContentPipelineOverrides(cfg?: OpenClawConfig): {
@@ -199,10 +206,7 @@ export function isUntrustedContentGuardConfigured(
   if (cfg.plugins?.entries?.["untrusted-content"]?.enabled === false) {
     return false;
   }
-  if (
-    cfg.plugins?.entries &&
-    Object.prototype.hasOwnProperty.call(cfg.plugins.entries, "untrusted-content")
-  ) {
+  if (cfg.plugins?.entries && Object.hasOwn(cfg.plugins.entries, "untrusted-content")) {
     return true;
   }
   return Boolean(normalizeOptionalString(env?.UNTRUSTED_CONTENT_BASE_URL));

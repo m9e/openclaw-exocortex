@@ -120,9 +120,10 @@ describe("untrusted-content tool result transform", () => {
     });
     expect(fetchMock).toHaveBeenCalledTimes(1);
     expect(fetchMock.mock.calls[0]?.[0]).toBe("http://127.0.0.1:8787/v1/pipelines/default/run");
-    expect(
-      (fetchMock.mock.calls[0]?.[1]?.headers as Record<string, string>).authorization,
-    ).toBeUndefined();
+    const cleanHeaders = fetchMock.mock.calls[0]?.[1]?.headers as
+      | Record<string, string>
+      | undefined;
+    expect(cleanHeaders?.authorization).toBeUndefined();
     const requestBody = fetchMock.mock.calls[0]?.[1]?.body;
     expect(typeof requestBody).toBe("string");
     expect(JSON.parse(requestBody as string)).toMatchObject({
@@ -167,9 +168,10 @@ describe("untrusted-content tool result transform", () => {
       },
     });
 
-    expect((fetchMock.mock.calls[0]?.[1]?.headers as Record<string, string>).authorization).toBe(
-      "Bearer pat-value",
-    );
+    const bearerHeaders = fetchMock.mock.calls[0]?.[1]?.headers as
+      | Record<string, string>
+      | undefined;
+    expect(bearerHeaders?.authorization).toBe("Bearer pat-value");
     expect(fetchMock.mock.calls[0]?.[0]).toBe(
       "https://yod.local/runtime/tools/tool-untrusted/v1/pipelines/default/run",
     );
@@ -218,9 +220,10 @@ describe("untrusted-content tool result transform", () => {
       },
     });
 
-    expect((fetchMock.mock.calls[0]?.[1]?.headers as Record<string, string>).authorization).toBe(
-      "Bearer kamiwaza-env-key",
-    );
+    const envKeyHeaders = fetchMock.mock.calls[0]?.[1]?.headers as
+      | Record<string, string>
+      | undefined;
+    expect(envKeyHeaders?.authorization).toBe("Bearer kamiwaza-env-key");
   });
 
   it("does not resolve env SecretRefs excluded by the provider allowlist", async () => {
@@ -266,9 +269,10 @@ describe("untrusted-content tool result transform", () => {
       },
     });
 
-    expect(
-      (fetchMock.mock.calls[0]?.[1]?.headers as Record<string, string>).authorization,
-    ).toBeUndefined();
+    const excludedHeaders = fetchMock.mock.calls[0]?.[1]?.headers as
+      | Record<string, string>
+      | undefined;
+    expect(excludedHeaders?.authorization).toBeUndefined();
   });
 
   it("quarantines browser content blocks and drops the original block list", async () => {
@@ -379,5 +383,62 @@ describe("untrusted-content tool result transform", () => {
       quarantined: true,
       error: "service offline",
     });
+  });
+
+  it("guards dynamically projected tools matched by a prefix wildcard", async () => {
+    const fetchMock = vi.spyOn(globalThis, "fetch").mockResolvedValue(
+      new Response(
+        JSON.stringify(
+          buildPipelineResponse({
+            id: "scan-prefix-1",
+            clean: true,
+            quarantined: false,
+            content: "sanitized search results",
+          }),
+        ),
+        {
+          status: 200,
+          headers: { "content-type": "application/json" },
+        },
+      ),
+    );
+
+    const result = (await maybeTransformToolResult({
+      cfg: buildConfig({
+        baseUrl: "http://127.0.0.1:8787",
+        toolNames: ["kamiwaza_*", "locksmith_kamiwaza_*"],
+      }),
+      toolName: "kamiwaza_tool_z_19607be6_search",
+      params: { query: "openclaw" },
+      toolCallId: "call-prefix-1",
+      result: { text: "raw search results" },
+    })) as Record<string, unknown>;
+
+    expect(result.text).toContain("sanitized search results");
+    expect(result.untrustedContentGuard).toMatchObject({
+      guard: "untrusted-content",
+      toolName: "kamiwaza_tool_z_19607be6_search",
+      clean: true,
+    });
+    expect(fetchMock).toHaveBeenCalledTimes(1);
+  });
+
+  it("does not guard tools outside the configured prefixes", async () => {
+    const fetchMock = vi.spyOn(globalThis, "fetch").mockResolvedValue(new Response("{}"));
+    const originalResult = { text: "internal status" };
+
+    const result = await maybeTransformToolResult({
+      cfg: buildConfig({
+        baseUrl: "http://127.0.0.1:8787",
+        toolNames: ["kamiwaza_*"],
+      }),
+      toolName: "session_status",
+      params: {},
+      toolCallId: "call-prefix-2",
+      result: originalResult,
+    });
+
+    expect(result).toBe(originalResult);
+    expect(fetchMock).not.toHaveBeenCalled();
   });
 });

@@ -29,7 +29,7 @@
     },
     "toolNames": {
       "label": "Guarded Tools",
-      "help": "Tool names whose results should be guarded, for example web_fetch or browser."
+      "help": "Tool names whose results should be guarded, for example web_fetch or browser. A trailing * guards every tool sharing that prefix, for example kamiwaza_*."
     },
     "trustLevel": {
       "label": "Trust Level",

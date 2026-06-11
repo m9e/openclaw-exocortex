@@ -10,7 +10,6 @@ import {
   resolveKamiwazaTimeoutMs,
   resolveKamiwazaToolPrefix,
   resolveKamiwazaVerifyTls,
-  type KamiwazaDelegationRuntimeConfig,
 } from "./config.js";
 
 const MCP_PROTOCOL_VERSION = "2025-03-26";

@@ -325,7 +325,9 @@ const trustedAllow = [
   "subagents",
   "agents_list",
   "locksmith_github",
+  "locksmith_kamiwaza_*",
   "kamiwaza_call",
+  "kamiwaza_*",
   "untrusted_content_scan",
 ];
 
@@ -529,8 +531,13 @@ untrustedContentConfig.baseUrl = untrustedContentBaseUrl;
 untrustedContentConfig.apiKey = { source: "env", provider: "default", id: "KAMIWAZA_API_KEY" };
 untrustedContentConfig.tlsRejectUnauthorized = false;
 untrustedContentConfig.onError = "quarantine";
+// Prefix wildcards keep dynamically projected upstream tools guarded; every
+// tool result that originates outside OpenClaw passes the untrusted-content
+// pipeline before reaching agent context.
 untrustedContentConfig.toolNames = mergeList(untrustedContentConfig.toolNames, [
   "kamiwaza_call",
+  "kamiwaza_*",
+  "locksmith_*",
   "web_fetch",
   "browser",
 ]);
