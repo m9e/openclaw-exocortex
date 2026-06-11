@@ -202,16 +202,24 @@ check_host_prerequisites() {
   fi
 
   # Sibling runtimes sharing a Pipelock port produce PF anchors whose
-  # block rules drop each other's untrusted proxy traffic. Catch it before
-  # any VM or cluster work happens.
-  local env_file other_name other_port
+  # block rules drop each other's untrusted proxy traffic. A loaded anchor
+  # is a hard conflict; a stale runtime.env from a stopped runtime only
+  # becomes one if that runtime is configured again, so it just warns.
+  local other_anchor env_file other_name other_port
+  for other_anchor in /etc/pf.anchors/*openclaw-lima-egress*; do
+    [[ -f "$other_anchor" ]] || continue
+    [[ "$(basename "$other_anchor")" != "$OPENCLAW_PF_ANCHOR_NAME" ]] || continue
+    if grep -q "^openclaw_proxy_port = \"$OPENCLAW_PIPELOCK_PORT\"$" "$other_anchor"; then
+      die "PF anchor $(basename "$other_anchor") already claims Pipelock port $OPENCLAW_PIPELOCK_PORT. Pick a different --port-offset, or remove that anchor if its runtime is gone."
+    fi
+  done
   for env_file in "$OPENCLAW_RUNTIME_DIR/../"*/runtime.env; do
     [[ -f "$env_file" ]] || continue
     other_name="$(basename "$(dirname "$env_file")")"
     [[ "$other_name" != "$OPENCLAW_RUNTIME_NAME" ]] || continue
     other_port="$(grep -E '^OPENCLAW_PIPELOCK_PORT=' "$env_file" | cut -d= -f2 | tr -d "'\"")"
     if [[ "$other_port" == "$OPENCLAW_PIPELOCK_PORT" ]]; then
-      die "runtime $other_name already uses Pipelock port $OPENCLAW_PIPELOCK_PORT. Pick a different --port-offset."
+      warn "runtime $other_name also recorded Pipelock port $OPENCLAW_PIPELOCK_PORT; configuring both runtimes will conflict"
     fi
   done
 }
