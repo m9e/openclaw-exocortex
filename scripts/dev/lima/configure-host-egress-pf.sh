@@ -72,6 +72,19 @@ main() {
 
   local anchor_name="$OPENCLAW_PF_ANCHOR_NAME"
   local anchor_file="/etc/pf.anchors/$anchor_name"
+
+  # Another runtime's anchor claiming the same proxy port ends in a
+  # "block drop in ... port <proxy_port>" that fires before this anchor and
+  # silently drops this runtime's untrusted->Pipelock traffic. Fail loudly
+  # instead; stale anchors from stopped runtimes are still loaded by PF.
+  local other_anchor
+  for other_anchor in /etc/pf.anchors/*openclaw-lima-egress*; do
+    [[ -f "$other_anchor" && "$other_anchor" != "$anchor_file" ]] || continue
+    if grep -q "^openclaw_proxy_port = \"$proxy_port\"$" "$other_anchor"; then
+      die "PF anchor $(basename "$other_anchor") already claims Pipelock port $proxy_port. Use a different OPENCLAW_RUNTIME_PORT_OFFSET, or remove the stale anchor (sudo pfctl -a '$(basename "$other_anchor")' -F rules; sudo rm '$other_anchor' and its /etc/pf.conf lines) if that runtime is gone."
+    fi
+  done
+
   local tmp_anchor
   tmp_anchor="$(mktemp)"
   cat >"$tmp_anchor" <<PF

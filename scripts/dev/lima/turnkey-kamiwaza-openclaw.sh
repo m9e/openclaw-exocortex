@@ -200,6 +200,20 @@ check_host_prerequisites() {
   if ! kubectl get nodes >/dev/null 2>&1; then
     warn "kubectl cannot reach a cluster; Kamiwaza extension deployment will fail without it"
   fi
+
+  # Sibling runtimes sharing a Pipelock port produce PF anchors whose
+  # block rules drop each other's untrusted proxy traffic. Catch it before
+  # any VM or cluster work happens.
+  local env_file other_name other_port
+  for env_file in "$OPENCLAW_RUNTIME_DIR/../"*/runtime.env; do
+    [[ -f "$env_file" ]] || continue
+    other_name="$(basename "$(dirname "$env_file")")"
+    [[ "$other_name" != "$OPENCLAW_RUNTIME_NAME" ]] || continue
+    other_port="$(grep -E '^OPENCLAW_PIPELOCK_PORT=' "$env_file" | cut -d= -f2 | tr -d "'\"")"
+    if [[ "$other_port" == "$OPENCLAW_PIPELOCK_PORT" ]]; then
+      die "runtime $other_name already uses Pipelock port $OPENCLAW_PIPELOCK_PORT. Pick a different --port-offset."
+    fi
+  done
 }
 
 probe_kamiwaza_reachable() {
