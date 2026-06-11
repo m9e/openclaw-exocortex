@@ -473,6 +473,10 @@ configure_kamiwaza_provider() {
     "OPENCLAW_KAMIWAZA_MODEL_ID=$model_id" \
     "OPENCLAW_KAMIWAZA_BASE_URL=$base_url" \
     "OPENCLAW_KAMIWAZA_MODEL_API_KEY_ENV=$model_api_key_env" \
+    "OPENCLAW_KAMIWAZA_MODEL_NAME=${OPENCLAW_KAMIWAZA_MODEL_NAME:-}" \
+    "OPENCLAW_KAMIWAZA_MODEL_ALIAS=${OPENCLAW_KAMIWAZA_MODEL_ALIAS:-}" \
+    "OPENCLAW_KAMIWAZA_MODEL_CONTEXT_WINDOW=${OPENCLAW_KAMIWAZA_MODEL_CONTEXT_WINDOW:-}" \
+    "OPENCLAW_KAMIWAZA_MODEL_MAX_TOKENS=${OPENCLAW_KAMIWAZA_MODEL_MAX_TOKENS:-}" \
     node <<'NODE'
 const fs = require("fs");
 const os = require("os");
@@ -495,6 +499,11 @@ const modelId = process.env.OPENCLAW_KAMIWAZA_MODEL_ID || "kamiwaza/relic/MiniMa
 const baseUrl = process.env.OPENCLAW_KAMIWAZA_BASE_URL || "http://host.lima.internal:4000/v1";
 const apiKeyEnv = process.env.OPENCLAW_KAMIWAZA_MODEL_API_KEY_ENV || "";
 const modelRef = `${providerId}/${modelId}`;
+const modelLeaf = modelId.split("/").filter(Boolean).pop() || modelId;
+const modelName = process.env.OPENCLAW_KAMIWAZA_MODEL_NAME || `Kamiwaza ${modelLeaf}`;
+const modelAlias = process.env.OPENCLAW_KAMIWAZA_MODEL_ALIAS || modelName;
+const contextWindow = Number.parseInt(process.env.OPENCLAW_KAMIWAZA_MODEL_CONTEXT_WINDOW || "", 10);
+const maxTokens = Number.parseInt(process.env.OPENCLAW_KAMIWAZA_MODEL_MAX_TOKENS || "", 10);
 const apiKey = /^[A-Z][A-Z0-9_]{0,127}$/.test(apiKeyEnv)
   ? { source: "env", provider: "default", id: apiKeyEnv }
   : "openclaw-local-kamiwaza";
@@ -541,13 +550,13 @@ cfg.models.providers[providerId] = {
   models: [
     {
       id: modelId,
-      name: "Kamiwaza Relic MiniMax M2.7 AWQ 4-bit",
+      name: modelName,
       api: "openai-completions",
       reasoning: false,
       input: ["text"],
       cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0 },
-      contextWindow: 128000,
-      maxTokens: 8192,
+      contextWindow: Number.isFinite(contextWindow) && contextWindow > 0 ? contextWindow : 128000,
+      maxTokens: Number.isFinite(maxTokens) && maxTokens > 0 ? maxTokens : 8192,
       agentRuntime: { id: "pi" },
     },
   ],
@@ -567,7 +576,7 @@ cfg.agents.defaults.models = cfg.agents.defaults.models &&
     ? cfg.agents.defaults.models
     : {};
 cfg.agents.defaults.models[modelRef] = {
-  alias: "Kamiwaza MiniMax M2.7",
+  alias: modelAlias,
   agentRuntime: { id: "pi" },
 };
 
@@ -582,7 +591,7 @@ sync_kamiwaza_model_env() {
 
   local model_api_key_env="${OPENCLAW_KAMIWAZA_MODEL_API_KEY_ENV:-OPENCLAW_KAMIWAZA_MODEL_API_KEY}"
   [[ "$model_api_key_env" =~ ^[A-Z][A-Z0-9_]{0,127}$ ]] ||
-    die "OPENCLAW_KAMIWAZA_MODEL_API_KEY_ENV must be an uppercase env var name"
+    openclaw_runtime_die "OPENCLAW_KAMIWAZA_MODEL_API_KEY_ENV must be an uppercase env var name"
 
   log "syncing Kamiwaza model API key into gateway guest env file (value redacted)"
   local restore_xtrace=0
@@ -621,14 +630,29 @@ start_gateway_service() {
     return
   fi
 
+  # The local Kamiwaza ingress serves a self-signed certificate. When the
+  # model base URL points at it over https, the gateway process must accept
+  # that certificate; this mirrors verifyTls/tlsRejectUnauthorized handling
+  # elsewhere in this local-dev topology.
+  local insecure_tls="${OPENCLAW_GATEWAY_INSECURE_TLS:-}"
+  if [[ -z "$insecure_tls" && "${OPENCLAW_KAMIWAZA_BASE_URL:-}" == https://host.lima.internal* ]]; then
+    insecure_tls=1
+    log "model endpoint uses the local self-signed ingress; gateway TLS verification disabled for it"
+  fi
+
   log "starting gateway user service in $OPENCLAW_GATEWAY_INSTANCE"
   run_in_gateway env \
     "OPENCLAW_GATEWAY_PORT=18789" \
     "OPENCLAW_PIPELOCK_GUEST_PORT=$OPENCLAW_PIPELOCK_GUEST_PORT" \
     "OPENCLAW_PIPELOCK_PORT=$OPENCLAW_PIPELOCK_PORT" \
+    "OPENCLAW_GATEWAY_INSECURE_TLS=${insecure_tls:-}" \
     bash -lc '
 set -euo pipefail
 mkdir -p "$HOME/.config/systemd/user" "$HOME/.openclaw"
+extra_env=""
+if [[ "${OPENCLAW_GATEWAY_INSECURE_TLS:-}" == "1" ]]; then
+  extra_env="Environment=NODE_TLS_REJECT_UNAUTHORIZED=0"
+fi
 cat >"$HOME/.config/systemd/user/openclaw-gateway-dev.service" <<SERVICE
 [Unit]
 Description=OpenClaw gateway dev runtime
@@ -640,6 +664,7 @@ Type=simple
 Environment=OPENCLAW_GATEWAY_PORT=${OPENCLAW_GATEWAY_PORT:-18789}
 Environment=OPENCLAW_PIPELOCK_GUEST_PORT=${OPENCLAW_PIPELOCK_GUEST_PORT:-8888}
 Environment=OPENCLAW_PIPELOCK_PORT=${OPENCLAW_PIPELOCK_PORT:-29888}
+${extra_env}
 EnvironmentFile=-%h/.openclaw/credentials/kamiwaza-model.env
 ExecStart=%h/bin/openclaw-gateway-dev
 Restart=on-failure

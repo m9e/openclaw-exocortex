@@ -64,6 +64,33 @@ limactl start openclaw-gateway
 limactl start openclaw-untrusted
 ```
 
+## Turnkey install
+
+`turnkey-kamiwaza-openclaw.sh` is the one-command path for a fully
+Kamiwaza-integrated VM pair. It validates host prerequisites and Kamiwaza API
+access, prompts for a Kamiwaza API key or username/password (a password login
+mints a scoped PAT through `POST /api/auth/pats`), checks that a Kamiwaza
+model is `DEPLOYED` (advising the Kamiwaza UI with an explicit bypass when
+none is), derives the model endpoint from the deployment's `access_path`,
+live-verifies it with the resolved credential, writes the PAT store consumed
+by the guest credential sync, then runs `bootstrap-kamiwaza-mode.sh`:
+
+```bash
+bash scripts/dev/lima/turnkey-kamiwaza-openclaw.sh
+```
+
+For a parallel runtime pair:
+
+```bash
+bash scripts/dev/lima/turnkey-kamiwaza-openclaw.sh --runtime-name kz1 --port-offset 7000
+```
+
+Useful knobs: `--model NAME` picks a specific deployed model,
+`--yes`/`OPENCLAW_TURNKEY_ASSUME_YES=1` accepts confirmation prompts,
+`OPENCLAW_KAMIWAZA_ALLOW_NO_MODEL=1` proceeds without a deployed model, and
+`KAMIWAZA_API_URL` overrides the default `https://localhost/api`. Arguments
+after `--` pass through to `bootstrap-kamiwaza-mode.sh` unchanged.
+
 ## Usage
 
 ```bash
