@@ -15,7 +15,10 @@ set -euo pipefail
 #      bootstraps the trusted/untrusted VM pair.
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
-source "$SCRIPT_DIR/claw-runtime-env.sh"
+
+# claw-runtime-env.sh is sourced after argument parsing: it derives runtime
+# paths, ports, and LIMA_HOME from OPENCLAW_RUNTIME_NAME, and sourcing it
+# before --runtime-name/--port-offset are known would lock in the defaults.
 
 log() {
   printf '[openclaw turnkey] %s\n' "$*"
@@ -108,8 +111,6 @@ while [[ $# -gt 0 ]]; do
   esac
 done
 
-# Changing OPENCLAW_RUNTIME_NAME after claw-runtime-env.sh ran requires
-# re-sourcing so derived paths and instance names match the requested runtime.
 source "$SCRIPT_DIR/claw-runtime-env.sh"
 
 # This script handles raw Kamiwaza credentials; never trace it.

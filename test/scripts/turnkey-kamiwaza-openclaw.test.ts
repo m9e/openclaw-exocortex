@@ -154,7 +154,7 @@ describe("turnkey-kamiwaza-openclaw.sh", () => {
       const stub = makeStubBootstrap(root);
 
       const result = runScript(
-        [],
+        ["--runtime-name", "kztest", "--port-offset", "7000"],
         {
           KAMIWAZA_API_KEY: "env-api-key-value",
           OPENCLAW_TURNKEY_BOOTSTRAP_SCRIPT: stub,
@@ -166,6 +166,10 @@ describe("turnkey-kamiwaza-openclaw.sh", () => {
       expect(result.status).toBe(0);
       expect(result.stdout).toContain("Kamiwaza access validated as admin");
       expect(result.stdout).toContain("selected model: Kimi-K2.6");
+      // Runtime env derivation must happen after argument parsing: the
+      // summary reflects the offset ports and runtime-scoped instance names.
+      expect(result.stdout).toContain("gateway (host): http://127.0.0.1:36789/");
+      expect(result.stdout).toContain("limactl shell kztest-gateway");
       expect(result.stdout).toContain(
         "stub OPENCLAW_KAMIWAZA_BASE_URL=https://host.lima.internal/runtime/models/aaaa-bbbb/v1",
       );
