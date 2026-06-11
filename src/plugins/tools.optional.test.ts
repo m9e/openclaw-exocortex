@@ -1397,6 +1397,10 @@ describe("resolvePluginTools optional tools", () => {
       name: "allows optional tools via plugin-scoped allowlist entries",
       toolAllowlist: ["optional_tool", "tavily"],
     },
+    {
+      name: "allows optional tools via glob allowlist entries",
+      toolAllowlist: ["optional_*"],
+    },
   ] as const)("$name", ({ toolAllowlist }) => {
     setOptionalDemoRegistry();
     const tools = resolveOptionalDemoTools(toolAllowlist);

@@ -274,6 +274,21 @@ function isTrustedManifestLocalMediaTool(params: {
   );
 }
 
+function allowlistMatchesToolName(toolName: string, allowlist: Set<string>): boolean {
+  if (allowlist.has(toolName)) {
+    return true;
+  }
+  // Glob allow entries ("locksmith_kamiwaza_*") gate optional tools the same
+  // way the downstream policy pipeline matches them; exact-only matching here
+  // would drop tools the operator explicitly allowed.
+  for (const entry of allowlist) {
+    if (entry.endsWith("*") && entry.length > 1 && toolName.startsWith(entry.slice(0, -1))) {
+      return true;
+    }
+  }
+  return false;
+}
+
 function isOptionalToolAllowed(params: {
   toolName: string;
   pluginId: string;
@@ -285,8 +300,7 @@ function isOptionalToolAllowed(params: {
   if (params.allowlist.has("*")) {
     return true;
   }
-  const toolName = normalizeToolName(params.toolName);
-  if (params.allowlist.has(toolName)) {
+  if (allowlistMatchesToolName(normalizeToolName(params.toolName), params.allowlist)) {
     return true;
   }
   const pluginKey = normalizeToolName(params.pluginId);
@@ -314,7 +328,9 @@ function isOptionalToolEntryPotentiallyAllowed(params: {
   if (params.names.length === 0) {
     return true;
   }
-  return params.names.some((name) => params.allowlist.has(normalizeToolName(name)));
+  return params.names.some((name) =>
+    allowlistMatchesToolName(normalizeToolName(name), params.allowlist),
+  );
 }
 
 function readPluginToolName(tool: unknown): string {
@@ -479,6 +495,26 @@ function pluginToolNamesMatchAllowlist(params: {
   return isOptionalToolEntryPotentiallyAllowed(params);
 }
 
+function contractToolNameMatchesAllowlist(name: string, allowlist: Set<string>): boolean {
+  const normalized = normalizeToolName(name);
+  if (allowlistMatchesToolName(normalized, allowlist)) {
+    return true;
+  }
+  // Contract wildcard entries ("locksmith_*") own every tool under the prefix,
+  // so they match when any allowlist entry falls inside that prefix space;
+  // otherwise plugins projecting operator-configured tool names never load.
+  if (normalized.endsWith("*") && normalized.length > 1) {
+    const prefix = normalized.slice(0, -1);
+    for (const entry of allowlist) {
+      const entryLiteral = entry.endsWith("*") ? entry.slice(0, -1) : entry;
+      if (entryLiteral.startsWith(prefix) || prefix.startsWith(entryLiteral)) {
+        return true;
+      }
+    }
+  }
+  return false;
+}
+
 function listManifestToolNamesForAllowlist(params: {
   plugin: PluginManifestRecord;
   toolNames: readonly string[];
@@ -496,7 +532,7 @@ function listManifestToolNamesForAllowlist(params: {
     return [...params.toolNames];
   }
   const matchedToolNames = params.toolNames.filter((name) =>
-    params.allowlist.has(normalizeToolName(name)),
+    contractToolNameMatchesAllowlist(name, params.allowlist),
   );
   if (!allowlistIncludesDefaultPluginTools(params.allowlist)) {
     return matchedToolNames;
