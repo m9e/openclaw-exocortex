@@ -27,9 +27,16 @@ Usage: clawctl <command> [options]
 Runtime lifecycle:
   deploy --name NAME [--workspace DIR] [--model M] [--mount SPEC]... [--yes] [-- extra]
                                  Turnkey-deploy a claw runtime pair.
+  deploy --local --name NAME [--workspace DIR] [--yes] [-- extra]
+                                 Turnkey-deploy a local runtime (host gateway +
+                                 guard VM) via the localclaw installer.
   list                           All claw runtimes and their VM states.
   status [--name N]              Health, ports, and workspace for one runtime.
   start | stop [--name N]        Start/stop the runtime's VM pair.
+
+Runtime kinds: a pair runtime is a gateway+untrusted VM pair; a local runtime
+runs the OpenClaw gateway on the host and only the untrusted-content guard in a
+single <name>-guard VM.
 
 Talking to the claw:
   agent [--name N] -m MSG [--session KEY]
@@ -98,6 +105,21 @@ runtime_env_value() {
   grep -E "^$key=" "$RUNTIME_DIR/runtime.env" 2>/dev/null | head -1 | cut -d= -f2- | tr -d "'" || true
 }
 
+runtime_kind() {
+  # "local" (host gateway + guard VM) or "pair" (gateway+untrusted VM pair).
+  local runtime_dir="$1"
+  if [[ -f "$runtime_dir/metadata/localclaw.json" ]]; then
+    echo "local"
+  else
+    echo "pair"
+  fi
+}
+
+localclaw_meta() {
+  # localclaw_meta <runtime_dir> <jq filter>
+  jq -r "$2" "$1/metadata/localclaw.json"
+}
+
 gateway_instance() {
   local recorded
   recorded="$(runtime_env_value OPENCLAW_GATEWAY_INSTANCE)"
@@ -131,7 +153,7 @@ gateway_shell() {
 # ---------------------------------------------------------------------------
 
 cmd_deploy() {
-  local name="" workspace="" model="" assume_yes=0 mounts=() passthrough=()
+  local name="" workspace="" model="" assume_yes=0 deploy_local=0 mounts=() passthrough=()
   while [[ $# -gt 0 ]]; do
     case "$1" in
       --name)
@@ -145,6 +167,10 @@ cmd_deploy() {
       --model)
         model="$2"
         shift 2
+        ;;
+      --local)
+        deploy_local=1
+        shift
         ;;
       --mount)
         mounts+=("$2")
@@ -165,6 +191,18 @@ cmd_deploy() {
     esac
   done
   [[ -n "$name" ]] || die "deploy requires --name"
+
+  # Local runtime: host gateway + a single guard VM, owned by the localclaw
+  # turnkey installer. Pass --name/--workspace/--yes and forward any -- extras.
+  if [[ "$deploy_local" == "1" ]]; then
+    local local_cmd=(bash "$SCRIPT_DIR/../localclaw/turnkey-local-claw.sh" --name "$name")
+    [[ -n "$workspace" ]] && local_cmd+=(--workspace "$workspace")
+    [[ "$assume_yes" == "1" ]] && local_cmd+=(--yes)
+    if [[ "${#passthrough[@]}" -gt 0 ]]; then
+      local_cmd+=("${passthrough[@]}")
+    fi
+    exec "${local_cmd[@]}"
+  fi
 
   local cmd=(bash "$SCRIPT_DIR/turnkey-kamiwaza-openclaw.sh" --runtime-name "$name")
   [[ -n "$workspace" ]] && cmd+=(--workspace "$workspace")
@@ -190,14 +228,45 @@ cmd_list() {
   local name found=0
   for name in $(list_runtime_names); do
     found=1
-    printf '== %s (LIMA_HOME=%s/%s/lima)\n' "$name" "$RUNTIME_ROOT" "$name"
-    LIMA_HOME="$RUNTIME_ROOT/$name/lima" limactl list 2>/dev/null | tail -n +1
+    local dir="$RUNTIME_ROOT/$name"
+    if [[ "$(runtime_kind "$dir")" == "local" ]]; then
+      printf '== %s (kind=local, LIMA_HOME=%s/lima)\n' "$name" "$dir"
+      LIMA_HOME="$dir/lima" limactl list --format '{{.Name}} {{.Status}}' 2>/dev/null
+      local gw_port
+      gw_port="$(localclaw_meta "$dir" '.gatewayPort')"
+      if curl -fsS -m 2 "http://127.0.0.1:$gw_port/" >/dev/null 2>&1; then
+        printf 'host gateway 127.0.0.1:%s running\n' "$gw_port"
+      else
+        printf 'host gateway 127.0.0.1:%s down\n' "$gw_port"
+      fi
+    else
+      printf '== %s (LIMA_HOME=%s/lima)\n' "$name" "$dir"
+      LIMA_HOME="$dir/lima" limactl list 2>/dev/null | tail -n +1
+    fi
   done
   [[ "$found" == "1" ]] || log "no claw runtimes under $RUNTIME_ROOT"
 }
 
 cmd_status() {
   resolve_runtime
+  if [[ "$(runtime_kind "$RUNTIME_DIR")" == "local" ]]; then
+    local guard_port gateway_port workspace
+    guard_port="$(localclaw_meta "$RUNTIME_DIR" '.guardPort')"
+    gateway_port="$(localclaw_meta "$RUNTIME_DIR" '.gatewayPort')"
+    workspace="$(localclaw_meta "$RUNTIME_DIR" '.workspace')"
+    printf 'runtime:   %s\n' "$RUNTIME_NAME"
+    printf 'kind:      local (host gateway + guard VM)\n'
+    printf 'dir:       %s\n' "$RUNTIME_DIR"
+    printf 'workspace: %s\n' "$workspace"
+    printf 'gateway:   host 127.0.0.1:%s (shared/singular, not per-runtime)\n' "$gateway_port"
+    lima list --format '{{.Name}} {{.Status}}' 2>/dev/null
+    if curl -fsS -m 3 "http://127.0.0.1:$guard_port/health" 2>/dev/null; then
+      printf '\n <- guard http://127.0.0.1:%s/health\n' "$guard_port"
+    else
+      printf 'guard not answering on 127.0.0.1:%s/health\n' "$guard_port"
+    fi
+    return
+  fi
   printf 'runtime:   %s\n' "$RUNTIME_NAME"
   printf 'dir:       %s\n' "$RUNTIME_DIR"
   printf 'workspace: %s\n' "$(runtime_env_value OPENCLAW_AGENT_STATE_HOST_DIR)"
@@ -220,18 +289,30 @@ cmd_ports() {
 
 cmd_start() {
   resolve_runtime
+  if [[ "$(runtime_kind "$RUNTIME_DIR")" == "local" ]]; then
+    lima start "$RUNTIME_NAME-guard"
+    log "guard VM started; the gateway runs on the host and is shared/singular."
+    log "to start it yourself: openclaw gateway start"
+    return
+  fi
   lima start "$(gateway_instance)"
   lima start "$(untrusted_instance)"
 }
 
 cmd_stop() {
   resolve_runtime
+  if [[ "$(runtime_kind "$RUNTIME_DIR")" == "local" ]]; then
+    lima stop "$RUNTIME_NAME-guard" || true
+    log "guard VM stopped; the gateway runs on the host and is shared/singular."
+    log "to stop it yourself: openclaw gateway stop"
+    return
+  fi
   lima stop "$(untrusted_instance)" || true
   lima stop "$(gateway_instance)"
 }
 
 cmd_shell() {
-  local target="gateway"
+  local target="gateway" target_explicit=0
   local rest=()
   while [[ $# -gt 0 ]]; do
     case "$1" in
@@ -241,6 +322,7 @@ cmd_shell() {
         ;;
       gateway | untrusted)
         target="$1"
+        target_explicit=1
         shift
         ;;
       *)
@@ -252,7 +334,13 @@ cmd_shell() {
   set -- "${rest[@]+"${rest[@]}"}"
   resolve_runtime
   local instance
-  if [[ "$target" == "gateway" ]]; then
+  if [[ "$(runtime_kind "$RUNTIME_DIR")" == "local" ]]; then
+    # Only an explicit `gateway` target is an error; a bare shell lands in the guard.
+    if [[ "$target_explicit" == "1" && "$target" == "gateway" ]]; then
+      die "local runtime: the gateway runs on the host, not in a VM"
+    fi
+    instance="$RUNTIME_NAME-guard"
+  elif [[ "$target" == "gateway" ]]; then
     instance="$(gateway_instance)"
   else
     instance="$(untrusted_instance)"
