@@ -502,6 +502,12 @@ const startupTimeoutMs = Number.parseInt(
 );
 locksmithConfig.startupTimeoutMs =
   Number.isFinite(startupTimeoutMs) && startupTimeoutMs > 0 ? startupTimeoutMs : 120000;
+// kamiwaza_call and Locksmith-projected tools each do a live MCP catalog
+// sweep across every cluster extension before the real call, which can take
+// 40s+ with a large catalog; keep the request timeout and cache TTL above
+// that so tool calls do not time out and re-discovery is not constant.
+locksmithConfig.timeoutSeconds = 120;
+locksmithConfig.catalogTtlSeconds = 600;
 const locksmithTools = ensureRecord(locksmithConfig, "tools");
 const githubTool = ensureRecord(locksmithTools, "github");
 githubTool.enabled = true;
@@ -518,6 +524,8 @@ if (kamiwazaCredentialHost) {
 kamiwazaConfig.genericTool = true;
 kamiwazaConfig.promptCatalog = true;
 kamiwazaConfig.verifyTls = false;
+kamiwazaConfig.timeoutSeconds = 120;
+kamiwazaConfig.catalogTtlSeconds = 600;
 const kamiwazaDelegation = ensureRecord(kamiwazaConfig, "delegation");
 kamiwazaDelegation.enabled = true;
 kamiwazaDelegation.required = true;
@@ -531,6 +539,7 @@ untrustedContentConfig.baseUrl = untrustedContentBaseUrl;
 untrustedContentConfig.apiKey = { source: "env", provider: "default", id: "KAMIWAZA_API_KEY" };
 untrustedContentConfig.tlsRejectUnauthorized = false;
 untrustedContentConfig.onError = "quarantine";
+untrustedContentConfig.timeoutSeconds = 120;
 // Prefix wildcards keep dynamically projected upstream tools guarded; every
 // tool result that originates outside OpenClaw passes the untrusted-content
 // pipeline before reaching agent context.

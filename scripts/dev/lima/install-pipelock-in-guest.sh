@@ -175,6 +175,8 @@ api_allowlist:
   - "*.docker.com"
   - "production.cloudflare.docker.com"
   - "ghcr.io"
+  - "google.serper.dev"
+  - "*.serper.dev"
 
 fetch_proxy:
   listen: "$listen"
