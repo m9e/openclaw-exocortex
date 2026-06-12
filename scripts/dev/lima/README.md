@@ -14,6 +14,11 @@ Default guests:
 - `openclaw-gateway`: trusted VM for the OpenClaw gateway and trusted tools
 - `openclaw-untrusted`: isolated VM for untrusted content and tool execution
 
+For the trusted host-native variant — OpenClaw gateway on macOS, a single guard
+VM instead of the gateway/untrusted pair — see
+`scripts/dev/localclaw/README.md`. That rig contains the _content_ rather than
+the _agent_.
+
 Both instances use the Apple Virtualization.framework backend (`vmType: vz`) on
 Apple Silicon, attach to Lima `vzNAT` networking so macOS can enforce egress by
 guest IP, and disable Lima's catch-all localhost port forwarding. Only explicit
