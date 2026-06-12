@@ -1,0 +1,696 @@
+#!/usr/bin/env bash
+set -euo pipefail
+
+# clawctl — one CLI for OpenClaw claw runtimes (Lima VM pairs).
+#
+# Wraps the turnkey installer and the per-runtime plumbing this directory
+# already owns: deploy, port binds, mounts, Locksmith credentials and
+# upstream tools, and Pipelock outbound policy.
+
+SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+WORKSPACE_ROOT="$(cd "$SCRIPT_DIR/../../../.." && pwd)"
+RUNTIME_ROOT="${CLAWCTL_RUNTIME_ROOT:-$WORKSPACE_ROOT/claw-runtime}"
+
+log() {
+  printf '[clawctl] %s\n' "$*"
+}
+
+die() {
+  printf '[clawctl] error: %s\n' "$*" >&2
+  exit 1
+}
+
+usage() {
+  cat <<'USAGE'
+Usage: clawctl <command> [options]
+
+Runtime lifecycle:
+  deploy --name NAME [--workspace DIR] [--model M] [--mount SPEC]... [--yes] [-- extra]
+                                 Turnkey-deploy a claw runtime pair.
+  list                           All claw runtimes and their VM states.
+  status [--name N]              Health, ports, and workspace for one runtime.
+  start | stop [--name N]        Start/stop the runtime's VM pair.
+
+Talking to the claw:
+  agent [--name N] -m MSG [--session KEY]
+                                 Send the agent one message, print the reply.
+  dashboard [--name N]           Print/open the dashboard URL and token.
+  shell [--name N] [gateway|untrusted] [-- CMD...]
+                                 Shell into a VM.
+
+Plumbing:
+  ports [--name N]               Show the host port binds.
+  mount list [--name N]          Show gateway mounts.
+  mount add SRC [--dest DST] [--rw] [--name N]
+                                 Add a mount (default read-only; relative DST
+                                 lands under the agent workspace). Restarts the
+                                 gateway VM to apply.
+  creds list [--name N]          Locksmith credential env names (values hidden).
+  creds set KEY=VALUE [--name N] Set a Locksmith credential (VALUE=- reads stdin).
+  tool list [--name N]           Locksmith upstream tools.
+  tool add NAME --upstream URL [--auth-header H] [--secret-env ENV]
+           [--description D] [--name N]
+                                 Add a Locksmith upstream tool and project it
+                                 to the agent.
+  egress list [--name N]         Pipelock outbound allowlist.
+  egress allow HOST [--name N]   Allow an outbound host (e.g. *.example.com).
+  egress remove HOST [--name N]  Remove an outbound host.
+
+Mount SPEC for deploy: src[:dst][:rw], e.g. ~/code/kz/kamiwaza:projects/code/kamiwaza
+USAGE
+}
+
+# ---------------------------------------------------------------------------
+# runtime resolution
+# ---------------------------------------------------------------------------
+
+RUNTIME_NAME=""
+RUNTIME_DIR=""
+
+list_runtime_names() {
+  local dir
+  for dir in "$RUNTIME_ROOT"/*/; do
+    [[ -d "$dir/lima" ]] || continue
+    basename "$dir"
+  done
+}
+
+resolve_runtime() {
+  if [[ -z "$RUNTIME_NAME" ]]; then
+    local names=()
+    while IFS= read -r name; do
+      [[ -n "$name" ]] && names+=("$name")
+    done < <(list_runtime_names)
+    if [[ "${#names[@]}" -eq 1 ]]; then
+      RUNTIME_NAME="${names[0]}"
+    elif [[ "${#names[@]}" -eq 0 ]]; then
+      die "no claw runtimes under $RUNTIME_ROOT; run: clawctl deploy --name <name>"
+    else
+      die "multiple runtimes (${names[*]}); pick one with --name"
+    fi
+  fi
+  RUNTIME_DIR="$RUNTIME_ROOT/$RUNTIME_NAME"
+  [[ -d "$RUNTIME_DIR" ]] || die "runtime $RUNTIME_NAME not found under $RUNTIME_ROOT"
+}
+
+runtime_env_value() {
+  local key="$1"
+  grep -E "^$key=" "$RUNTIME_DIR/runtime.env" 2>/dev/null | head -1 | cut -d= -f2- | tr -d "'" || true
+}
+
+gateway_instance() {
+  local recorded
+  recorded="$(runtime_env_value OPENCLAW_GATEWAY_INSTANCE)"
+  printf '%s\n' "${recorded:-$RUNTIME_NAME-gateway}"
+}
+
+untrusted_instance() {
+  local recorded
+  recorded="$(runtime_env_value OPENCLAW_UNTRUSTED_INSTANCE)"
+  printf '%s\n' "${recorded:-$RUNTIME_NAME-untrusted}"
+}
+
+lima() {
+  LIMA_HOME="$RUNTIME_DIR/lima" limactl "$@"
+}
+
+gateway_shell() {
+  # stdin-script execution avoids the multi-layer quoting that limactl
+  # argument passing mangles. Leading KEY=VALUE arguments become guest env;
+  # limactl does not forward host env on its own.
+  local envs=()
+  while [[ $# -gt 0 && "$1" == *=* ]]; do
+    envs+=("$1")
+    shift
+  done
+  lima shell "$(gateway_instance)" -- env "${envs[@]+"${envs[@]}"}" bash -s "$@"
+}
+
+# ---------------------------------------------------------------------------
+# commands
+# ---------------------------------------------------------------------------
+
+cmd_deploy() {
+  local name="" workspace="" model="" assume_yes=0 mounts=() passthrough=()
+  while [[ $# -gt 0 ]]; do
+    case "$1" in
+      --name)
+        name="$2"
+        shift 2
+        ;;
+      --workspace)
+        workspace="$2"
+        shift 2
+        ;;
+      --model)
+        model="$2"
+        shift 2
+        ;;
+      --mount)
+        mounts+=("$2")
+        shift 2
+        ;;
+      --yes)
+        assume_yes=1
+        shift
+        ;;
+      --)
+        shift
+        passthrough=("$@")
+        break
+        ;;
+      *)
+        die "deploy: unknown argument $1"
+        ;;
+    esac
+  done
+  [[ -n "$name" ]] || die "deploy requires --name"
+
+  local cmd=(bash "$SCRIPT_DIR/turnkey-kamiwaza-openclaw.sh" --runtime-name "$name")
+  [[ -n "$workspace" ]] && cmd+=(--workspace "$workspace")
+  [[ -n "$model" ]] && cmd+=(--model "$model")
+  [[ "$assume_yes" == "1" ]] && cmd+=(--yes)
+  if [[ "${#passthrough[@]}" -gt 0 ]]; then
+    cmd+=(-- "${passthrough[@]}")
+  fi
+
+  local extra_mounts=""
+  local spec
+  for spec in "${mounts[@]+"${mounts[@]}"}"; do
+    spec="${spec/#\~/$HOME}"
+    extra_mounts="${extra_mounts:+$extra_mounts,}$spec"
+  done
+
+  OPENCLAW_GATEWAY_EXTRA_MOUNTS="${extra_mounts:-${OPENCLAW_GATEWAY_EXTRA_MOUNTS:-}}" \
+    OPENCLAW_KAMIWAZA_DEPLOYMENT_SUFFIX="${OPENCLAW_KAMIWAZA_DEPLOYMENT_SUFFIX:-$name}" \
+    "${cmd[@]}"
+}
+
+cmd_list() {
+  local name found=0
+  for name in $(list_runtime_names); do
+    found=1
+    printf '== %s (LIMA_HOME=%s/%s/lima)\n' "$name" "$RUNTIME_ROOT" "$name"
+    LIMA_HOME="$RUNTIME_ROOT/$name/lima" limactl list 2>/dev/null | tail -n +1
+  done
+  [[ "$found" == "1" ]] || log "no claw runtimes under $RUNTIME_ROOT"
+}
+
+cmd_status() {
+  resolve_runtime
+  printf 'runtime:   %s\n' "$RUNTIME_NAME"
+  printf 'dir:       %s\n' "$RUNTIME_DIR"
+  printf 'workspace: %s\n' "$(runtime_env_value OPENCLAW_AGENT_STATE_HOST_DIR)"
+  lima list 2>/dev/null
+  local port
+  port="$(runtime_env_value OPENCLAW_GATEWAY_HOST_PORT)"
+  if [[ -n "$port" ]]; then
+    if curl -fsS -m 3 "http://127.0.0.1:$port/health" 2>/dev/null; then
+      printf ' <- gateway http://127.0.0.1:%s/\n' "$port"
+    else
+      printf 'gateway not answering on 127.0.0.1:%s\n' "$port"
+    fi
+  fi
+}
+
+cmd_ports() {
+  resolve_runtime
+  grep -E "PORT=" "$RUNTIME_DIR/runtime.env" 2>/dev/null || die "no runtime.env for $RUNTIME_NAME"
+}
+
+cmd_start() {
+  resolve_runtime
+  lima start "$(gateway_instance)"
+  lima start "$(untrusted_instance)"
+}
+
+cmd_stop() {
+  resolve_runtime
+  lima stop "$(untrusted_instance)" || true
+  lima stop "$(gateway_instance)"
+}
+
+cmd_shell() {
+  local target="gateway"
+  local rest=()
+  while [[ $# -gt 0 ]]; do
+    case "$1" in
+      --name)
+        RUNTIME_NAME="$2"
+        shift 2
+        ;;
+      gateway | untrusted)
+        target="$1"
+        shift
+        ;;
+      *)
+        rest+=("$1")
+        shift
+        ;;
+    esac
+  done
+  set -- "${rest[@]+"${rest[@]}"}"
+  resolve_runtime
+  local instance
+  if [[ "$target" == "gateway" ]]; then
+    instance="$(gateway_instance)"
+  else
+    instance="$(untrusted_instance)"
+  fi
+  if [[ "${1:-}" == "--" ]]; then
+    shift
+    lima shell "$instance" -- "$@"
+  else
+    lima shell "$instance"
+  fi
+}
+
+cmd_agent() {
+  resolve_runtime
+  local message="" session="agent:main:main"
+  while [[ $# -gt 0 ]]; do
+    case "$1" in
+      -m | --message)
+        message="$2"
+        shift 2
+        ;;
+      --session)
+        session="$2"
+        shift 2
+        ;;
+      *)
+        die "agent: unknown argument $1"
+        ;;
+    esac
+  done
+  [[ -n "$message" ]] || die "agent requires -m <message>"
+
+  gateway_shell "CLAWCTL_AGENT_MESSAGE=$message" "CLAWCTL_AGENT_SESSION=$session" <<'EOF'
+set -euo pipefail
+openclaw agent --agent main --session-key "$CLAWCTL_AGENT_SESSION" --message "$CLAWCTL_AGENT_MESSAGE" --json |
+  python3 -c '
+import json, sys
+raw = sys.stdin.read()
+data = json.loads(raw[raw.find("{"):])
+result = data.get("result", data)
+for payload in result.get("payloads") or []:
+    if payload.get("text"):
+        print(payload["text"])
+'
+EOF
+}
+
+cmd_dashboard() {
+  resolve_runtime
+  OPENCLAW_RUNTIME_NAME="$RUNTIME_NAME" \
+    OPENCLAW_RUNTIME_DIR="$RUNTIME_DIR" \
+    bash "$SCRIPT_DIR/dashboard-open.sh"
+}
+
+cmd_mount() {
+  local action="${1:-list}"
+  shift || true
+  case "$action" in
+    list)
+      parse_name_flag "$@"
+      resolve_runtime
+      gateway_shell <<'EOF' || die "gateway VM is not running"
+mount -t virtiofs | while read -r _ _ point _ _ opts; do
+  case "$opts" in
+    "(ro"*) printf '%s (ro)\n' "$point" ;;
+    *) printf '%s (rw)\n' "$point" ;;
+  esac
+done
+EOF
+      ;;
+    add)
+      local src="" dst="" writable=false
+      while [[ $# -gt 0 ]]; do
+        case "$1" in
+          --name)
+            RUNTIME_NAME="$2"
+            shift 2
+            ;;
+          --dest)
+            dst="$2"
+            shift 2
+            ;;
+          --rw)
+            writable=true
+            shift
+            ;;
+          *)
+            [[ -z "$src" ]] || die "mount add: unexpected argument $1"
+            src="$1"
+            shift
+            ;;
+        esac
+      done
+      [[ -n "$src" ]] || die "mount add requires a source directory"
+      resolve_runtime
+      src="${src/#\~/$HOME}"
+      src="$(cd "$src" && pwd)" || die "source directory not found: $src"
+      [[ "$src" != "$HOME" && "$src" != "/" ]] ||
+        die "refusing to mount $src into the agent VM"
+      if [[ -n "$dst" && "$dst" != /* ]]; then
+        local workspace
+        workspace="$(runtime_env_value OPENCLAW_AGENT_STATE_HOST_DIR)"
+        [[ -n "$workspace" ]] || die "relative --dest needs a recorded agent workspace"
+        dst="$workspace/$dst"
+      fi
+
+      local entry
+      entry="$(
+        node -e '
+          const [src, dst, writable] = process.argv.slice(1);
+          const mount = { location: src, writable: writable === "true" };
+          if (dst) mount.mountPoint = dst;
+          process.stdout.write(JSON.stringify(mount));
+        ' "$src" "$dst" "$writable"
+      )"
+      local instance
+      instance="$(gateway_instance)"
+      log "stopping $instance to apply the mount (Lima mounts change at boot)"
+      lima stop "$instance"
+      lima edit --tty=false --set ".mounts += [$entry]" "$instance"
+      lima start "$instance"
+      log "mounted $src -> ${dst:-$src} ($([[ "$writable" == "true" ]] && echo rw || echo ro))"
+      log "gateway services restart with the VM; give it ~60s before talking to the agent"
+      ;;
+    *)
+      die "mount: unknown action $action (list|add)"
+      ;;
+  esac
+}
+
+cmd_creds() {
+  local action="${1:-list}"
+  shift || true
+  case "$action" in
+    list)
+      parse_name_flag "$@"
+      resolve_runtime
+      gateway_shell <<'EOF'
+set -euo pipefail
+cut -d= -f1 ~/.config/locksmith/locksmith.env
+EOF
+      ;;
+    set)
+      local assignment="${1:-}"
+      shift || true
+      parse_name_flag "$@"
+      [[ "$assignment" == *=* ]] || die "creds set requires KEY=VALUE (VALUE=- reads stdin)"
+      local key="${assignment%%=*}"
+      local value="${assignment#*=}"
+      [[ "$key" =~ ^[A-Z][A-Z0-9_]*$ ]] || die "credential names must be UPPER_SNAKE_CASE"
+      if [[ "$value" == "-" ]]; then
+        IFS= read -r value
+      fi
+      [[ -n "$value" ]] || die "empty credential value"
+      resolve_runtime
+      # The secret travels on stdin after the script body, never in argv.
+      {
+        cat <<'EOF'
+set -euo pipefail
+IFS= read -r CLAWCTL_CRED_VALUE
+env_file=~/.config/locksmith/locksmith.env
+umask 077
+touch "$env_file"
+grep -vE "^${CLAWCTL_CRED_KEY}=" "$env_file" >"$env_file.tmp" || true
+printf '%s=%s\n' "$CLAWCTL_CRED_KEY" "$CLAWCTL_CRED_VALUE" >>"$env_file.tmp"
+chmod 600 "$env_file.tmp"
+mv "$env_file.tmp" "$env_file"
+systemctl --user restart locksmith.service
+echo "credential $CLAWCTL_CRED_KEY updated; locksmith restarted"
+EOF
+        printf '%s\n' "$value"
+      } | gateway_shell "CLAWCTL_CRED_KEY=$key"
+      ;;
+    *)
+      die "creds: unknown action $action (list|set)"
+      ;;
+  esac
+}
+
+cmd_tool() {
+  local action="${1:-list}"
+  shift || true
+  case "$action" in
+    list)
+      parse_name_flag "$@"
+      resolve_runtime
+      gateway_shell <<'EOF'
+set -euo pipefail
+source ~/.config/locksmith/locksmith.env
+curl -fsS -m 90 -H "Authorization: Bearer $LOCKSMITH_INBOUND_TOKEN" http://127.0.0.1:9200/tools |
+  python3 -c 'import json,sys; [print(t["name"]) for t in json.load(sys.stdin).get("tools", [])]'
+EOF
+      ;;
+    add)
+      local tool_name="" upstream="" auth_header="" secret_env="" description=""
+      tool_name="${1:-}"
+      shift || true
+      while [[ $# -gt 0 ]]; do
+        case "$1" in
+          --name)
+            RUNTIME_NAME="$2"
+            shift 2
+            ;;
+          --upstream)
+            upstream="$2"
+            shift 2
+            ;;
+          --auth-header)
+            auth_header="$2"
+            shift 2
+            ;;
+          --secret-env)
+            secret_env="$2"
+            shift 2
+            ;;
+          --description)
+            description="$2"
+            shift 2
+            ;;
+          *)
+            die "tool add: unknown argument $1"
+            ;;
+        esac
+      done
+      [[ -n "$tool_name" && -n "$upstream" ]] || die "tool add requires NAME and --upstream URL"
+      [[ "$tool_name" =~ ^[a-z0-9][a-z0-9_-]*$ ]] || die "tool name must be a lowercase slug"
+      if [[ -n "$auth_header" || -n "$secret_env" ]]; then
+        [[ -n "$auth_header" && -n "$secret_env" ]] ||
+          die "tool auth needs both --auth-header and --secret-env"
+        [[ "$secret_env" =~ ^[A-Z][A-Z0-9_]*$ ]] || die "--secret-env must be UPPER_SNAKE_CASE"
+      fi
+      resolve_runtime
+      gateway_shell \
+        "CLAWCTL_TOOL_NAME=$tool_name" \
+        "CLAWCTL_TOOL_UPSTREAM=$upstream" \
+        "CLAWCTL_TOOL_HEADER=$auth_header" \
+        "CLAWCTL_TOOL_SECRET_ENV=$secret_env" \
+        "CLAWCTL_TOOL_DESCRIPTION=${description:-$tool_name upstream via Locksmith}" <<'EOF'
+set -euo pipefail
+config=~/.config/locksmith/config.yaml
+grep -q "  - name: \"$CLAWCTL_TOOL_NAME\"" "$config" && {
+  echo "tool $CLAWCTL_TOOL_NAME already exists in Locksmith config" >&2
+  exit 1
+}
+if [[ -n "$CLAWCTL_TOOL_SECRET_ENV" ]]; then
+  grep -qE "^${CLAWCTL_TOOL_SECRET_ENV}=" ~/.config/locksmith/locksmith.env ||
+    echo "warning: $CLAWCTL_TOOL_SECRET_ENV is not set yet; run clawctl creds set" >&2
+fi
+{
+  printf '  - name: "%s"\n' "$CLAWCTL_TOOL_NAME"
+  printf '    description: "%s"\n' "$CLAWCTL_TOOL_DESCRIPTION"
+  printf '    upstream: "%s"\n' "$CLAWCTL_TOOL_UPSTREAM"
+  printf '    cloud: true\n'
+  printf '    timeout_seconds: 30\n'
+  if [[ -n "$CLAWCTL_TOOL_HEADER" ]]; then
+    printf '    auth:\n'
+    printf '      header: "%s"\n' "$CLAWCTL_TOOL_HEADER"
+    printf '      value: "${%s}"\n' "$CLAWCTL_TOOL_SECRET_ENV"
+  fi
+} >>"$config"
+systemctl --user restart locksmith.service
+sleep 2
+source ~/.config/locksmith/locksmith.env
+curl -fsS -m 90 -H "Authorization: Bearer $LOCKSMITH_INBOUND_TOKEN" http://127.0.0.1:9200/tools |
+  python3 -c "
+import json, sys
+tools = [t['name'] for t in json.load(sys.stdin).get('tools', [])]
+assert '$CLAWCTL_TOOL_NAME' in tools, 'tool did not appear in Locksmith catalog'
+print('locksmith serves $CLAWCTL_TOOL_NAME')
+"
+python3 - <<'PY'
+import json, pathlib
+path = pathlib.Path.home() / ".openclaw/openclaw.json"
+cfg = json.loads(path.read_text())
+tools = cfg["plugins"]["entries"]["locksmith"].setdefault("config", {}).setdefault("tools", {})
+import os
+name = os.environ["CLAWCTL_TOOL_NAME"]
+entry = tools.setdefault(name, {})
+entry["enabled"] = True
+entry.setdefault("description", os.environ["CLAWCTL_TOOL_DESCRIPTION"])
+path.write_text(json.dumps(cfg, indent=2) + "\n")
+print(f"projected locksmith_{name} in openclaw config")
+PY
+systemctl --user restart openclaw-gateway-dev.service
+echo "gateway restarting to register the projected tool"
+EOF
+      ;;
+    *)
+      die "tool: unknown action $action (list|add)"
+      ;;
+  esac
+}
+
+cmd_egress() {
+  local action="${1:-list}"
+  shift || true
+  local host=""
+  if [[ "$action" == "allow" || "$action" == "remove" ]]; then
+    host="${1:-}"
+    shift || true
+    [[ -n "$host" ]] || die "egress $action requires a host pattern"
+    [[ "$host" =~ ^[A-Za-z0-9*][A-Za-z0-9.*-]*$ ]] || die "host pattern looks invalid: $host"
+  fi
+  parse_name_flag "$@"
+  resolve_runtime
+  case "$action" in
+    list)
+      gateway_shell <<'EOF'
+set -euo pipefail
+sudo python3 - <<'PY'
+lines = open("/etc/pipelock/pipelock.yaml").read().splitlines()
+inside = False
+for line in lines:
+    if line.strip() == "api_allowlist:":
+        inside = True
+        continue
+    if inside:
+        if line.startswith("  - "):
+            print(line.strip()[2:].strip().strip('"'))
+        elif line.strip():
+            break
+PY
+EOF
+      ;;
+    allow | remove)
+      gateway_shell "CLAWCTL_EGRESS_HOST=$host" "CLAWCTL_EGRESS_ACTION=$action" <<'EOF'
+set -euo pipefail
+sudo env CLAWCTL_EGRESS_HOST="$CLAWCTL_EGRESS_HOST" CLAWCTL_EGRESS_ACTION="$CLAWCTL_EGRESS_ACTION" python3 - <<'PY'
+import os
+
+path = "/etc/pipelock/pipelock.yaml"
+host = os.environ["CLAWCTL_EGRESS_HOST"]
+action = os.environ["CLAWCTL_EGRESS_ACTION"]
+entry = f'  - "{host}"'
+lines = open(path).read().splitlines()
+out, inside, done, present = [], False, False, False
+for line in lines:
+    if line.strip() == "api_allowlist:":
+        inside = True
+        out.append(line)
+        continue
+    if inside and not done:
+        if line.startswith("  - "):
+            if line.strip() == entry.strip():
+                present = True
+                if action == "remove":
+                    continue
+        else:
+            done = True
+            if action == "allow" and not present:
+                out.append(entry)
+                present = True
+    out.append(line)
+if action == "allow" and not present:
+    raise SystemExit("api_allowlist section not found")
+if action == "remove" and not present:
+    raise SystemExit(f"{host} is not in the allowlist")
+open(path, "w").write("\n".join(out) + "\n")
+print(f"{action}: {host}")
+PY
+sudo /usr/local/bin/pipelock check --config /etc/pipelock/pipelock.yaml >/dev/null
+sudo systemctl restart pipelock.service
+echo "pipelock policy applied and service restarted"
+EOF
+      ;;
+    *)
+      die "egress: unknown action $action (list|allow|remove)"
+      ;;
+  esac
+}
+
+parse_name_flag() {
+  while [[ $# -gt 0 ]]; do
+    case "$1" in
+      --name)
+        RUNTIME_NAME="$2"
+        shift 2
+        ;;
+      *)
+        die "unknown argument: $1"
+        ;;
+    esac
+  done
+}
+
+# ---------------------------------------------------------------------------
+
+main() {
+  local command="${1:-}"
+  shift || true
+  case "$command" in
+    deploy) cmd_deploy "$@" ;;
+    list) cmd_list "$@" ;;
+    status)
+      parse_name_flag "$@"
+      cmd_status
+      ;;
+    ports)
+      parse_name_flag "$@"
+      cmd_ports
+      ;;
+    start)
+      parse_name_flag "$@"
+      cmd_start
+      ;;
+    stop)
+      parse_name_flag "$@"
+      cmd_stop
+      ;;
+    shell) cmd_shell "$@" ;;
+    agent)
+      # --name can appear anywhere; peel it off first.
+      local rest=()
+      while [[ $# -gt 0 ]]; do
+        if [[ "$1" == "--name" ]]; then
+          RUNTIME_NAME="$2"
+          shift 2
+        else
+          rest+=("$1")
+          shift
+        fi
+      done
+      cmd_agent "${rest[@]+"${rest[@]}"}"
+      ;;
+    dashboard)
+      parse_name_flag "$@"
+      cmd_dashboard
+      ;;
+    mount) cmd_mount "$@" ;;
+    creds) cmd_creds "$@" ;;
+    tool) cmd_tool "$@" ;;
+    egress) cmd_egress "$@" ;;
+    -h | --help | help | "") usage ;;
+    *)
+      usage >&2
+      die "unknown command: $command"
+      ;;
+  esac
+}
+
+main "$@"

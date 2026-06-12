@@ -6,9 +6,6 @@ source "$SCRIPT_DIR/claw-runtime-env.sh"
 
 openclaw_prepare_runtime_dirs
 
-GATEWAY_MOUNT_ARGS=()
-GATEWAY_MOUNT_ARGS_SET=0
-
 absolute_host_path() {
   local value="$1"
   if [[ "$value" == "~" || "$value" == "~/"* ]]; then
@@ -21,29 +18,67 @@ absolute_host_path() {
   printf '%s/%s\n' "$PWD" "$value"
 }
 
-configure_gateway_agent_state_mount() {
+GATEWAY_MOUNTS_JSON=""
+
+# The gateway template ships with no mounts so the host home is never
+# readable from the agent VM. Build the explicit narrow set here: repo and
+# deps for the guest installers, runtime metadata for credential sync, the
+# agent workspace writable, plus operator extras (src[:dst][:rw], comma
+# separated, relative dst resolved under the agent workspace).
+build_gateway_mounts() {
   local state_dir="${OPENCLAW_AGENT_STATE_HOST_DIR:-}"
-  if [[ -z "$state_dir" ]]; then
-    return
+  if [[ -n "$state_dir" ]]; then
+    state_dir="$(absolute_host_path "$state_dir")"
+    mkdir -p "$state_dir"
+    export OPENCLAW_AGENT_STATE_HOST_DIR="$state_dir"
+    printf '[openclaw claw-runtime] gateway-only writable workspace mount: %s\n' "$state_dir"
+    printf '[openclaw claw-runtime] untrusted VM keeps no host mounts\n'
   fi
 
-  state_dir="$(absolute_host_path "$state_dir")"
-  mkdir -p "$state_dir"
-  export OPENCLAW_AGENT_STATE_HOST_DIR="$state_dir"
-
-  printf '[openclaw claw-runtime] gateway-only writable Lima mount: %s\n' "$state_dir"
-  printf '[openclaw claw-runtime] untrusted VM keeps no writable host workspace mount\n'
-
-  if [[ -d "$LIMA_HOME/$OPENCLAW_GATEWAY_INSTANCE" ]]; then
-    printf '[openclaw claw-runtime] warning: %s already exists; Lima mount changes only apply at instance creation\n' "$OPENCLAW_GATEWAY_INSTANCE" >&2
-    return
-  fi
-
-  GATEWAY_MOUNT_ARGS=(
-    --mount-only "$OPENCLAW_WORKSPACE_ROOT"
-    --mount-only "$state_dir:w"
-  )
-  GATEWAY_MOUNT_ARGS_SET=1
+  GATEWAY_MOUNTS_JSON="$(
+    OPENCLAW_MOUNT_REPO="$OPENCLAW_REPO_ROOT" \
+      OPENCLAW_MOUNT_DEPS="$OPENCLAW_WORKSPACE_ROOT/deps" \
+      OPENCLAW_MOUNT_METADATA="$OPENCLAW_RUNTIME_DIR/metadata" \
+      OPENCLAW_MOUNT_WORKSPACE="$state_dir" \
+      OPENCLAW_MOUNT_EXTRA="${OPENCLAW_GATEWAY_EXTRA_MOUNTS:-}" \
+      node -e '
+        const mounts = [
+          { location: process.env.OPENCLAW_MOUNT_REPO, writable: false },
+          { location: process.env.OPENCLAW_MOUNT_DEPS, writable: false },
+          { location: process.env.OPENCLAW_MOUNT_METADATA, writable: false },
+        ];
+        const workspace = (process.env.OPENCLAW_MOUNT_WORKSPACE || "").trim();
+        if (workspace) {
+          mounts.push({ location: workspace, writable: true });
+        }
+        for (const raw of (process.env.OPENCLAW_MOUNT_EXTRA || "").split(",")) {
+          const spec = raw.trim();
+          if (!spec) continue;
+          const parts = spec.split(":");
+          const location = parts[0];
+          let mountPoint;
+          let writable = false;
+          for (const part of parts.slice(1)) {
+            if (part === "rw" || part === "w") writable = true;
+            else if (part === "ro" || part === "") continue;
+            else mountPoint = part;
+          }
+          if (!location || !location.startsWith("/")) {
+            console.error(`invalid extra mount spec (absolute src required): ${spec}`);
+            process.exit(1);
+          }
+          if (mountPoint && !mountPoint.startsWith("/")) {
+            if (!workspace) {
+              console.error(`relative mount dst needs an agent workspace: ${spec}`);
+              process.exit(1);
+            }
+            mountPoint = `${workspace}/${mountPoint}`;
+          }
+          mounts.push({ location, ...(mountPoint ? { mountPoint } : {}), writable });
+        }
+        process.stdout.write(JSON.stringify(mounts));
+      '
+  )"
 }
 
 start_instance() {
@@ -60,24 +95,15 @@ start_instance() {
 printf '[openclaw claw-runtime] starting VM pair\n'
 openclaw_runtime_summary
 openclaw_validate_lima_socket_paths
-configure_gateway_agent_state_mount
+build_gateway_mounts
 
-if [[ "$GATEWAY_MOUNT_ARGS_SET" == "1" ]]; then
-  start_instance "$OPENCLAW_GATEWAY_INSTANCE" "$OPENCLAW_REPO_ROOT/scripts/dev/lima/openclaw-gateway.yaml" \
-    "${GATEWAY_MOUNT_ARGS[@]}" \
-    --set ".portForwards[0].hostPort = $OPENCLAW_GATEWAY_HOST_PORT" \
-    --set ".portForwards[1].hostPort = $OPENCLAW_GATEWAY_ALT_HOST_PORT" \
-    --set ".portForwards[2].guestPort = $OPENCLAW_PIPELOCK_GUEST_PORT" \
-    --set ".portForwards[2].hostPort = $OPENCLAW_PIPELOCK_PORT" \
-    --set ".env.OPENCLAW_RUNTIME_NAME = \"$OPENCLAW_RUNTIME_NAME\""
-else
-  start_instance "$OPENCLAW_GATEWAY_INSTANCE" "$OPENCLAW_REPO_ROOT/scripts/dev/lima/openclaw-gateway.yaml" \
-    --set ".portForwards[0].hostPort = $OPENCLAW_GATEWAY_HOST_PORT" \
-    --set ".portForwards[1].hostPort = $OPENCLAW_GATEWAY_ALT_HOST_PORT" \
-    --set ".portForwards[2].guestPort = $OPENCLAW_PIPELOCK_GUEST_PORT" \
-    --set ".portForwards[2].hostPort = $OPENCLAW_PIPELOCK_PORT" \
-    --set ".env.OPENCLAW_RUNTIME_NAME = \"$OPENCLAW_RUNTIME_NAME\""
-fi
+start_instance "$OPENCLAW_GATEWAY_INSTANCE" "$OPENCLAW_REPO_ROOT/scripts/dev/lima/openclaw-gateway.yaml" \
+  --set ".mounts = $GATEWAY_MOUNTS_JSON" \
+  --set ".portForwards[0].hostPort = $OPENCLAW_GATEWAY_HOST_PORT" \
+  --set ".portForwards[1].hostPort = $OPENCLAW_GATEWAY_ALT_HOST_PORT" \
+  --set ".portForwards[2].guestPort = $OPENCLAW_PIPELOCK_GUEST_PORT" \
+  --set ".portForwards[2].hostPort = $OPENCLAW_PIPELOCK_PORT" \
+  --set ".env.OPENCLAW_RUNTIME_NAME = \"$OPENCLAW_RUNTIME_NAME\""
 
 start_instance "$OPENCLAW_UNTRUSTED_INSTANCE" "$OPENCLAW_REPO_ROOT/scripts/dev/lima/openclaw-untrusted.yaml" \
   --set ".portForwards[0].hostPort = $OPENCLAW_UNTRUSTED_HOST_PORT" \

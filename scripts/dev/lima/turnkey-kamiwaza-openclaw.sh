@@ -54,12 +54,19 @@ Environment:
   OPENCLAW_KAMIWAZA_GUEST_API_HOST  Hostname guests use for the Kamiwaza API,
                                   default host.lima.internal.
   OPENCLAW_RUNTIME_NAME           Runtime name, default openclaw.
-  OPENCLAW_RUNTIME_PORT_OFFSET    Numeric port offset for additional VM pairs.
+  OPENCLAW_RUNTIME_PORT_OFFSET    Numeric port offset (legacy port scheme; the
+                                  default is a free-port scan in 31300-31400).
+  OPENCLAW_AGENT_STATE_HOST_DIR   Host dir mounted writable into the gateway as
+                                  the agent workspace, default ~/claws/<runtime>.
+  OPENCLAW_GATEWAY_EXTRA_MOUNTS   Extra gateway mounts: src[:dst][:rw], comma
+                                  separated. Relative dst lands under the agent
+                                  workspace. Mounts apply at VM creation.
   OPENCLAW_TURNKEY_ASSUME_YES     Set 1 to accept all confirmation prompts.
 
 Options:
   --runtime-name NAME             Set OPENCLAW_RUNTIME_NAME.
-  --port-offset N                 Set OPENCLAW_RUNTIME_PORT_OFFSET.
+  --workspace DIR                 Agent workspace host dir (created if missing).
+  --port-offset N                 Set OPENCLAW_RUNTIME_PORT_OFFSET (legacy scheme).
   --model NAME                    Set OPENCLAW_KAMIWAZA_MODEL_NAME.
   --yes                           Accept confirmation prompts (no-model bypass).
   -h, --help                      Show this help.
@@ -80,6 +87,11 @@ while [[ $# -gt 0 ]]; do
     --runtime-name)
       [[ $# -ge 2 ]] || die "--runtime-name requires a value"
       export OPENCLAW_RUNTIME_NAME="$2"
+      shift 2
+      ;;
+    --workspace)
+      [[ $# -ge 2 ]] || die "--workspace requires a value"
+      export OPENCLAW_AGENT_STATE_HOST_DIR="$2"
       shift 2
       ;;
     --port-offset)
@@ -110,6 +122,95 @@ while [[ $# -gt 0 ]]; do
       ;;
   esac
 done
+
+# --- runtime layout, ports, and workspace (before claw-runtime-env.sh locks defaults) ---
+
+TURNKEY_WORKSPACE_ROOT="$(cd "$SCRIPT_DIR/../../../.." && pwd)"
+TURNKEY_RUNTIME_NAME="${OPENCLAW_RUNTIME_NAME:-openclaw}"
+TURNKEY_RUNTIME_DIR="${OPENCLAW_RUNTIME_DIR:-$TURNKEY_WORKSPACE_ROOT/claw-runtime/$TURNKEY_RUNTIME_NAME}"
+
+port_is_free() {
+  local port="$1"
+  # Busy when something listens locally, or another runtime recorded it
+  # (its PF anchor rules survive VM stops).
+  if lsof -nP -iTCP:"$port" -sTCP:LISTEN >/dev/null 2>&1; then
+    return 1
+  fi
+  if grep -hsE "PORT=$port$" "$TURNKEY_RUNTIME_DIR/../"*/runtime.env 2>/dev/null | grep -q .; then
+    return 1
+  fi
+  return 0
+}
+
+allocate_runtime_ports() {
+  # Existing runtimes keep their recorded ports so re-runs stay stable.
+  if [[ -f "$TURNKEY_RUNTIME_DIR/runtime.env" ]]; then
+    local key value
+    while IFS='=' read -r key value; do
+      case "$key" in
+        OPENCLAW_GATEWAY_HOST_PORT | OPENCLAW_GATEWAY_ALT_HOST_PORT | \
+          OPENCLAW_UNTRUSTED_HOST_PORT | OPENCLAW_UNTRUSTED_ALT_HOST_PORT | \
+          OPENCLAW_PIPELOCK_PORT)
+          export "$key=${value//\'/}"
+          ;;
+      esac
+    done <"$TURNKEY_RUNTIME_DIR/runtime.env"
+    log "reusing recorded ports for existing runtime $TURNKEY_RUNTIME_NAME (gateway ${OPENCLAW_GATEWAY_HOST_PORT:-?})"
+    return
+  fi
+
+  # Explicit port or legacy offset requests bypass the scan.
+  if [[ -n "${OPENCLAW_GATEWAY_HOST_PORT:-}" || -n "${OPENCLAW_RUNTIME_PORT_OFFSET:-}" ]]; then
+    return
+  fi
+
+  # Default scheme: one free 5-port block from 31300-31400 covers the
+  # gateway, its alt port, Pipelock, and the untrusted pair. All loopback
+  # except Pipelock, same as the offset scheme.
+  local base
+  for ((base = 31300; base <= 31395; base += 5)); do
+    local candidate ok=1
+    for ((candidate = base; candidate < base + 5; candidate++)); do
+      port_is_free "$candidate" || {
+        ok=0
+        break
+      }
+    done
+    if [[ "$ok" == "1" ]]; then
+      export OPENCLAW_GATEWAY_HOST_PORT="$base"
+      export OPENCLAW_GATEWAY_ALT_HOST_PORT="$((base + 1))"
+      export OPENCLAW_PIPELOCK_PORT="$((base + 2))"
+      export OPENCLAW_UNTRUSTED_HOST_PORT="$((base + 3))"
+      export OPENCLAW_UNTRUSTED_ALT_HOST_PORT="$((base + 4))"
+      log "allocated host ports $base-$((base + 4)) (gateway 127.0.0.1:$base)"
+      return
+    fi
+  done
+  die "no free 5-port block found in 31300-31400; set OPENCLAW_RUNTIME_PORT_OFFSET or free ports"
+}
+
+resolve_agent_workspace() {
+  local workspace="${OPENCLAW_AGENT_STATE_HOST_DIR:-}"
+  if [[ -z "$workspace" && -f "$TURNKEY_RUNTIME_DIR/runtime.env" ]]; then
+    workspace="$(grep -E '^OPENCLAW_AGENT_STATE_HOST_DIR=' "$TURNKEY_RUNTIME_DIR/runtime.env" | cut -d= -f2- | tr -d "'" || true)"
+  fi
+  if [[ -z "$workspace" ]]; then
+    local default_workspace="$HOME/claws/$TURNKEY_RUNTIME_NAME"
+    if [[ -t 0 && "$ASSUME_YES" != "1" ]]; then
+      read -r -p "[openclaw turnkey] Agent workspace host dir [$default_workspace]: " workspace
+    fi
+    workspace="${workspace:-$default_workspace}"
+  fi
+  workspace="${workspace/#\~/$HOME}"
+  [[ "$workspace" != "$HOME" && "$workspace" != "/" ]] ||
+    die "refusing to use $workspace as the agent workspace"
+  mkdir -p "$workspace"
+  export OPENCLAW_AGENT_STATE_HOST_DIR="$workspace"
+  log "agent workspace (host, writable in gateway VM): $workspace"
+}
+
+allocate_runtime_ports
+resolve_agent_workspace
 
 source "$SCRIPT_DIR/claw-runtime-env.sh"
 

@@ -1,8 +1,10 @@
 minimumLimaVersion: "2.0.0"
 
+# No default mounts: the host home must never be readable from the agent VM.
+# start-openclaw-vms.sh supplies an explicit narrow mount set at creation
+# (repo r/o, workspace deps r/o, runtime metadata r/o, agent workspace r/w).
 base:
   - template:_images/ubuntu
-  - template:_default/mounts
 
 vmType: vz
 arch: aarch64

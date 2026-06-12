@@ -125,6 +125,8 @@ function makeStubBootstrap(root: string) {
       "printf 'stub OPENCLAW_KAMIWAZA_MODEL_ID=%s\\n' \"${OPENCLAW_KAMIWAZA_MODEL_ID:-unset}\"",
       "printf 'stub KAMIWAZA_PAT_STORE_SOURCE=%s\\n' \"${KAMIWAZA_PAT_STORE_SOURCE:-unset}\"",
       "printf 'stub model key present=%s\\n' \"${OPENCLAW_KAMIWAZA_MODEL_API_KEY:+yes}\"",
+      "printf 'stub workspace=%s\\n' \"${OPENCLAW_AGENT_STATE_HOST_DIR:-unset}\"",
+      "printf 'stub gateway port=%s\\n' \"${OPENCLAW_GATEWAY_HOST_PORT:-unset}\"",
       "",
     ].join("\n"),
   );
@@ -138,6 +140,7 @@ function runScript(args: string[], env: NodeJS.ProcessEnv, root: string) {
     encoding: "utf8",
     env: {
       ...process.env,
+      HOME: join(root, "home"),
       OPENCLAW_RUNTIME_DIR: join(root, "runtime"),
       OPENCLAW_TURNKEY_SKIP_HOST_CHECK: "1",
       KAMIWAZA_API_URL: "https://kamiwaza.local.test/api",
@@ -212,6 +215,61 @@ describe("turnkey-kamiwaza-openclaw.sh", () => {
       const store = JSON.parse(readFileSync(storePath, "utf8"));
       expect(store.format).toBe("pdash-pat-store-v1");
       expect(store.active_tokens[0].token).toBe(PAT_SECRET);
+    } finally {
+      rmSync(root, { force: true, recursive: true });
+    }
+  });
+
+  it("defaults the agent workspace to ~/claws/<runtime> and scans 31300-31400 for ports", () => {
+    const root = mkdtempSync(join(tmpdir(), "openclaw-turnkey-workspace-"));
+    try {
+      const fakeCurl = makeFakeCurl(root, { validApiKeys: ["env-api-key-value"] });
+      const stub = makeStubBootstrap(root);
+
+      const result = runScript(
+        ["--runtime-name", "kztest"],
+        {
+          KAMIWAZA_API_KEY: "env-api-key-value",
+          OPENCLAW_TURNKEY_BOOTSTRAP_SCRIPT: stub,
+          OPENCLAW_TURNKEY_CURL: fakeCurl,
+        },
+        root,
+      );
+
+      expect(result.status).toBe(0);
+      const workspace = join(root, "home", "claws", "kztest");
+      expect(result.stdout).toContain(`stub workspace=${workspace}`);
+      expect(existsSync(workspace)).toBe(true);
+      const portMatch = result.stdout.match(/stub gateway port=(\d+)/);
+      expect(portMatch).not.toBeNull();
+      const port = Number(portMatch?.[1]);
+      expect(port).toBeGreaterThanOrEqual(31300);
+      expect(port).toBeLessThanOrEqual(31400);
+    } finally {
+      rmSync(root, { force: true, recursive: true });
+    }
+  });
+
+  it("honors --workspace over the default", () => {
+    const root = mkdtempSync(join(tmpdir(), "openclaw-turnkey-workspace-flag-"));
+    try {
+      const fakeCurl = makeFakeCurl(root, { validApiKeys: ["env-api-key-value"] });
+      const stub = makeStubBootstrap(root);
+      const custom = join(root, "custom-claw-home");
+
+      const result = runScript(
+        ["--runtime-name", "kztest", "--workspace", custom],
+        {
+          KAMIWAZA_API_KEY: "env-api-key-value",
+          OPENCLAW_TURNKEY_BOOTSTRAP_SCRIPT: stub,
+          OPENCLAW_TURNKEY_CURL: fakeCurl,
+        },
+        root,
+      );
+
+      expect(result.status).toBe(0);
+      expect(result.stdout).toContain(`stub workspace=${custom}`);
+      expect(existsSync(custom)).toBe(true);
     } finally {
       rmSync(root, { force: true, recursive: true });
     }

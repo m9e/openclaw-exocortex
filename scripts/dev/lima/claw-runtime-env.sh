@@ -81,6 +81,9 @@ openclaw_prepare_runtime_dirs() {
     printf 'OPENCLAW_PIPELOCK_GUEST_PORT=%q\n' "$OPENCLAW_PIPELOCK_GUEST_PORT"
     printf 'OPENCLAW_PIPELOCK_PORT=%q\n' "$OPENCLAW_PIPELOCK_PORT"
     printf 'OPENCLAW_PF_ANCHOR_NAME=%q\n' "$OPENCLAW_PF_ANCHOR_NAME"
+    if [[ -n "${OPENCLAW_AGENT_STATE_HOST_DIR:-}" ]]; then
+      printf 'OPENCLAW_AGENT_STATE_HOST_DIR=%q\n' "$OPENCLAW_AGENT_STATE_HOST_DIR"
+    fi
   } >"$OPENCLAW_RUNTIME_DIR/runtime.env"
   chmod 600 "$OPENCLAW_RUNTIME_DIR/runtime.env"
 }

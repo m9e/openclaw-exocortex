@@ -79,17 +79,52 @@ by the guest credential sync, then runs `bootstrap-kamiwaza-mode.sh`:
 bash scripts/dev/lima/turnkey-kamiwaza-openclaw.sh
 ```
 
+The installer prompts for (or takes `--workspace`) a host directory that is
+mounted writable into the gateway VM as the agent workspace, defaulting to
+`~/claws/<runtime-name>`. The gateway VM gets no host home mount: only the
+repo, the workspace `deps/`, the runtime `metadata/` (all read-only), the
+agent workspace (writable), and any `OPENCLAW_GATEWAY_EXTRA_MOUNTS` entries
+are visible inside the VM. Host ports default to one free five-port block
+scanned from `31300-31400` (gateway, gateway alt, Pipelock, untrusted,
+untrusted alt); existing runtimes keep their recorded ports on re-runs.
+
 For a parallel runtime pair:
 
 ```bash
-bash scripts/dev/lima/turnkey-kamiwaza-openclaw.sh --runtime-name kz1 --port-offset 7000
+bash scripts/dev/lima/turnkey-kamiwaza-openclaw.sh --runtime-name kz2 --workspace ~/claws/kz2
 ```
 
 Useful knobs: `--model NAME` picks a specific deployed model,
 `--yes`/`OPENCLAW_TURNKEY_ASSUME_YES=1` accepts confirmation prompts,
-`OPENCLAW_KAMIWAZA_ALLOW_NO_MODEL=1` proceeds without a deployed model, and
+`OPENCLAW_KAMIWAZA_ALLOW_NO_MODEL=1` proceeds without a deployed model,
+`--port-offset N` keeps the legacy offset port scheme, and
 `KAMIWAZA_API_URL` overrides the default `https://localhost/api`. Arguments
 after `--` pass through to `bootstrap-kamiwaza-mode.sh` unchanged.
+
+## clawctl
+
+`scripts/dev/lima/clawctl` is the one CLI over all of this. It sweeps every
+runtime under `claw-runtime/` (each pair has its own `LIMA_HOME`, so plain
+`limactl list` does not show them):
+
+```bash
+clawctl deploy --name agentzero --workspace ~/claws/agentzero --yes
+clawctl list                          # all runtimes + VM states
+clawctl status --name agentzero      # health, ports, workspace
+clawctl agent --name agentzero -m "hello"
+clawctl dashboard --name agentzero   # URL + token, copies to clipboard
+clawctl mount add ~/code/some-repo --dest projects/some-repo --name agentzero
+clawctl creds set SERPER_API_KEY=... --name agentzero   # VALUE=- reads stdin
+clawctl tool add weather --upstream https://api.example.com \
+  --auth-header X-API-Key --secret-env WEATHER_API_KEY --name agentzero
+clawctl egress allow "*.example.com" --name agentzero   # Pipelock outbound
+```
+
+`mount add` restarts the gateway VM (Lima mounts apply at boot), defaults to
+read-only, refuses to mount `$HOME` or `/` wholesale, and resolves relative
+`--dest` under the agent workspace. `tool add` appends a Locksmith upstream
+tool, verifies it in the catalog, projects it as a first-class
+`locksmith_<name>` agent tool, and restarts the gateway.
 
 ## Usage
 
