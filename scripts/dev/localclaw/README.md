@@ -149,6 +149,17 @@ Logs:
     limactl shell <name>-guard -- sudo journalctl -u untrusted-content
   ```
 
+## Fleet foreman
+
+The trusted claw is also the foreman of the fleet. Because its agent has full
+host `exec`, it drives every other runtime — contained VM pairs and other local
+claws alike — through `clawctl` (`clawctl list/status/start/stop/agent/shell`,
+and `clawctl deploy [--local]` to stand up new ones). The agent is told about
+this in its workspace `TOOLS.md` (the foreman section), so no extra tool surface
+is needed — raw `exec` plus the `clawctl` pointer is the whole mechanism. Keep
+the foreman role on this trusted claw only; the contained worker claws should
+not be given fleet-control reach.
+
 ## The fail-closed drill
 
 Run this periodically as a canary. It proves the guard plugin is still
