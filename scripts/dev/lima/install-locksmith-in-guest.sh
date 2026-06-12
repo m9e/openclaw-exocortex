@@ -178,6 +178,15 @@ write_locksmith_config() {
   local egress_proxy="${LOCKSMITH_EGRESS_PROXY:-http://127.0.0.1:8888}"
   mkdir -p "$config_dir"
 
+  # Scope Locksmith's Kamiwaza discovery to this runtime's own extensions so it
+  # does not sweep (and project) every other runtime's tools on a shared
+  # cluster; discovery latency scales with the number of extensions probed.
+  local extension_names_yaml=""
+  local deployment_suffix="${OPENCLAW_KAMIWAZA_DEPLOYMENT_SUFFIX:-}"
+  if [[ -n "$deployment_suffix" ]]; then
+    extension_names_yaml=$'\n  extension_names:\n    - "*-'"$deployment_suffix"$'"'
+  fi
+
   cat >"$config_dir/config.yaml" <<YAML
 listen:
   host: "127.0.0.1"
@@ -193,7 +202,9 @@ kamiwaza:
   enabled: true
   api_url: "https://host.lima.internal/api"
   api_token: "\${KAMIWAZA_API_KEY}"
-  verify_tls: false
+  verify_tls: false${extension_names_yaml}
+  catalog_ttl_seconds: 600
+  discovery_concurrency: 8
   delegation:
     enabled: true
     required: false
