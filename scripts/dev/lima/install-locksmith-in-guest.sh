@@ -526,6 +526,14 @@ kamiwazaConfig.promptCatalog = true;
 kamiwazaConfig.verifyTls = false;
 kamiwazaConfig.timeoutSeconds = 120;
 kamiwazaConfig.catalogTtlSeconds = 600;
+// One shared cluster hosts every runtime's extensions. Scope discovery to
+// this runtime's own suffix so it does not probe (or project) the other
+// runtimes' tools, which is both the bulk of the discovery latency and a
+// cross-runtime tool-surface leak.
+const kamiwazaDeploymentSuffix = (process.env.OPENCLAW_KAMIWAZA_DEPLOYMENT_SUFFIX || "").trim();
+if (kamiwazaDeploymentSuffix) {
+  kamiwazaConfig.extensionNames = [`*-${kamiwazaDeploymentSuffix}`];
+}
 const kamiwazaDelegation = ensureRecord(kamiwazaConfig, "delegation");
 kamiwazaDelegation.enabled = true;
 kamiwazaDelegation.required = true;

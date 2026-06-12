@@ -64,6 +64,10 @@
         "type": "array",
         "items": { "type": "string" }
       },
+      "extensionNames": {
+        "type": "array",
+        "items": { "type": "string" }
+      },
       "genericTool": { "type": "boolean" },
       "promptCatalog": { "type": "boolean" },
       "verifyTls": { "type": "boolean" },
@@ -72,6 +76,10 @@
         "minimum": 1
       },
       "timeoutSeconds": {
+        "type": "number",
+        "minimum": 1
+      },
+      "discoveryConcurrency": {
         "type": "number",
         "minimum": 1
       },

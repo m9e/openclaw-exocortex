@@ -275,6 +275,7 @@ install_locksmith() {
     LOCKSMITH_SOURCE_REPO="$locksmith_source_repo" \
     LOCKSMITH_EGRESS_PROXY="${LOCKSMITH_EGRESS_PROXY:-http://127.0.0.1:$proxy_port}" \
     OPENCLAW_MAIN_AGENT_WORKSPACE="${OPENCLAW_MAIN_AGENT_WORKSPACE:-}" \
+    OPENCLAW_KAMIWAZA_DEPLOYMENT_SUFFIX="${OPENCLAW_KAMIWAZA_DEPLOYMENT_SUFFIX:-openclaw}" \
     OPENCLAW_UNTRUSTED_CONTENT_BASE_URL="${OPENCLAW_UNTRUSTED_CONTENT_BASE_URL:-https://host.lima.internal/runtime/tools/tool-untrusted-content-${OPENCLAW_KAMIWAZA_DEPLOYMENT_SUFFIX:-openclaw}}" \
     bash "$installer"
 }

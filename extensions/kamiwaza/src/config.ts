@@ -44,11 +44,13 @@ type KamiwazaPluginConfig = {
   credentialHost?: string;
   toolPrefix?: string;
   includeTypes?: string[];
+  extensionNames?: string[];
   genericTool?: boolean;
   promptCatalog?: boolean;
   verifyTls?: boolean;
   catalogTtlSeconds?: number;
   timeoutSeconds?: number;
+  discoveryConcurrency?: number;
   delegation?: KamiwazaDelegationConfig;
 };
 
@@ -145,6 +147,42 @@ export function resolveKamiwazaToolPrefix(cfg?: OpenClawConfig): string {
 export function resolveKamiwazaIncludeTypes(cfg?: OpenClawConfig): string[] {
   const configured = normalizeStringArray(pluginConfig(cfg)?.includeTypes);
   return configured.length > 0 ? configured : ["tool"];
+}
+
+/**
+ * Glob patterns (`*` matches any run of characters) restricting which Kamiwaza
+ * extension names are discovered. A shared cluster hosts every runtime's
+ * extensions, so without this each runtime would discover and project all of
+ * them; setting e.g. `["*-agentzero"]` scopes a runtime to its own tools.
+ */
+export function resolveKamiwazaExtensionNamePatterns(cfg?: OpenClawConfig): string[] {
+  return normalizeStringArray(pluginConfig(cfg)?.extensionNames);
+}
+
+export function kamiwazaExtensionNameMatches(name: string, patterns: string[]): boolean {
+  if (patterns.length === 0) {
+    return true;
+  }
+  const lower = name.toLowerCase();
+  return patterns.some((pattern) => {
+    const regex = new RegExp(
+      `^${pattern
+        .toLowerCase()
+        .split("*")
+        .map((segment) => segment.replace(/[.*+?^${}()|[\]\\]/g, "\\$&"))
+        .join(".*")}$`,
+    );
+    return regex.test(lower);
+  });
+}
+
+/** Bounded fan-out for per-extension MCP discovery; defaults to 8. */
+export function resolveKamiwazaDiscoveryConcurrency(cfg?: OpenClawConfig): number {
+  const configured = pluginConfig(cfg)?.discoveryConcurrency;
+  if (typeof configured === "number" && Number.isFinite(configured) && configured >= 1) {
+    return Math.floor(configured);
+  }
+  return 8;
 }
 
 export function resolveKamiwazaGenericToolEnabled(cfg?: OpenClawConfig): boolean {

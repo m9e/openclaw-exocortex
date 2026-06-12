@@ -9,7 +9,11 @@ import {
   discoverKamiwazaTools,
   resetKamiwazaDiscoveryCacheForTest,
 } from "./client.js";
-import { resetKamiwazaCredentialStoreCacheForTest, resolveKamiwazaApiToken } from "./config.js";
+import {
+  kamiwazaExtensionNameMatches,
+  resetKamiwazaCredentialStoreCacheForTest,
+  resolveKamiwazaApiToken,
+} from "./config.js";
 import { buildKamiwazaDynamicCatalogGuidance } from "./prompt-guidance.js";
 
 const EXTENSION_PATH = "/runtime/tools/tool-z-19607be6/mcp";
@@ -448,5 +452,90 @@ describe("kamiwaza direct plugin", () => {
 
     expect(guidance).toContain("no PAT is available");
     expect(guidance).toContain("plugins.entries.kamiwaza.config.apiToken");
+  });
+
+  it("scopes discovery to extensions matching extensionNames and skips the rest", async () => {
+    const dir = fs.mkdtempSync(path.join(os.tmpdir(), "openclaw-kamiwaza-scope-"));
+    const storePath = path.join(dir, "kamiwaza-pat-store.json");
+    fs.writeFileSync(
+      storePath,
+      JSON.stringify({
+        credentials: [{ host_name: "kamiwaza.local", token: "kamiwaza-token" }],
+      }),
+    );
+
+    const probedMcpPaths: string[] = [];
+    vi.spyOn(globalThis, "fetch").mockImplementation(async (input, init) => {
+      const url = new URL(requestUrl(input));
+      if (url.pathname === "/api/extensions") {
+        return jsonResponse([
+          {
+            name: "tool-serperdev-agentzero",
+            type: "tool",
+            phase: "Running",
+            services: [{ ready: true, available_replicas: 1 }],
+            endpoints: { external: "http://kamiwaza.local/runtime/tools/tool-serperdev-agentzero" },
+          },
+          {
+            name: "tool-serperdev-kz1",
+            type: "tool",
+            phase: "Running",
+            services: [{ ready: true, available_replicas: 1 }],
+            endpoints: { external: "http://kamiwaza.local/runtime/tools/tool-serperdev-kz1" },
+          },
+        ]);
+      }
+      probedMcpPaths.push(url.pathname);
+      const payload = JSON.parse(requestBody(init)) as { method?: string };
+      if (payload.method === "initialize") {
+        return mcpResponse(
+          { jsonrpc: "2.0", id: 1, result: { protocolVersion: "2025-03-26" } },
+          "test-session",
+        );
+      }
+      if (payload.method === "notifications/initialized") {
+        return jsonResponse({}, { status: 202, headers: { "mcp-session-id": "test-session" } });
+      }
+      if (payload.method === "tools/list") {
+        return mcpResponse(
+          { jsonrpc: "2.0", id: 2, result: { tools: [{ name: "search", description: "s" }] } },
+          "test-session",
+        );
+      }
+      return jsonResponse({}, { status: 202, headers: { "mcp-session-id": "test-session" } });
+    });
+
+    const tools = await discoverKamiwazaTools(
+      cfg({
+        apiUrl: "http://kamiwaza.local/api",
+        credentialStorePath: storePath,
+        extensionNames: ["*-agentzero"],
+      }),
+    );
+
+    expect(tools.map((tool) => tool.extensionName)).toEqual(["tool-serperdev-agentzero"]);
+    expect(probedMcpPaths.every((probed) => probed.includes("agentzero"))).toBe(true);
+    expect(probedMcpPaths.some((probed) => probed.includes("kz1"))).toBe(false);
+  });
+
+  describe("kamiwazaExtensionNameMatches", () => {
+    it("returns true for everything when no patterns are configured", () => {
+      expect(kamiwazaExtensionNameMatches("tool-serperdev-kz1", [])).toBe(true);
+    });
+
+    it("matches a trailing suffix wildcard and rejects other runtimes", () => {
+      const patterns = ["*-agentzero"];
+      expect(kamiwazaExtensionNameMatches("tool-serperdev-agentzero", patterns)).toBe(true);
+      expect(kamiwazaExtensionNameMatches("tool-untrusted-content-agentzero", patterns)).toBe(true);
+      expect(kamiwazaExtensionNameMatches("tool-serperdev-kz1", patterns)).toBe(false);
+      expect(kamiwazaExtensionNameMatches("tool-serperdev-agentzero-2", patterns)).toBe(false);
+    });
+
+    it("supports exact names, leading and interior wildcards", () => {
+      expect(kamiwazaExtensionNameMatches("tool-serperdev-kz1", ["tool-serperdev-kz1"])).toBe(true);
+      expect(kamiwazaExtensionNameMatches("tool-serperdev-kz1", ["tool-serperdev-*"])).toBe(true);
+      expect(kamiwazaExtensionNameMatches("tool-serperdev-kz1", ["tool-*-kz1"])).toBe(true);
+      expect(kamiwazaExtensionNameMatches("tool-telegram-kz1", ["tool-serperdev-*"])).toBe(false);
+    });
   });
 });

@@ -2,10 +2,13 @@ import crypto from "node:crypto";
 import type { OpenClawConfig } from "openclaw/plugin-sdk/config-runtime";
 import { fetchWithSsrFGuard } from "openclaw/plugin-sdk/ssrf-runtime";
 import {
+  kamiwazaExtensionNameMatches,
   resolveKamiwazaApiToken,
   resolveKamiwazaApiUrlCandidates,
   resolveKamiwazaCatalogTtlMs,
   resolveKamiwazaDelegationConfig,
+  resolveKamiwazaDiscoveryConcurrency,
+  resolveKamiwazaExtensionNamePatterns,
   resolveKamiwazaIncludeTypes,
   resolveKamiwazaTimeoutMs,
   resolveKamiwazaToolPrefix,
@@ -145,6 +148,13 @@ function extensionIsAllowed(
   if (includeTypes.length > 0) {
     const extensionType = normalizeNonemptyString(extension.type) ?? "";
     if (!includeTypes.some((entry) => entry.toLowerCase() === extensionType.toLowerCase())) {
+      return false;
+    }
+  }
+  const namePatterns = resolveKamiwazaExtensionNamePatterns(cfg);
+  if (namePatterns.length > 0) {
+    const extensionName = normalizeNonemptyString(extension.name) ?? "";
+    if (!kamiwazaExtensionNameMatches(extensionName, namePatterns)) {
       return false;
     }
   }
@@ -492,12 +502,34 @@ function cacheKey(cfg?: OpenClawConfig): string {
     resolveKamiwazaApiUrlCandidates(cfg).join("|"),
     resolveKamiwazaToolPrefix(cfg),
     resolveKamiwazaIncludeTypes(cfg).join("|"),
+    resolveKamiwazaExtensionNamePatterns(cfg).join("|"),
     String(resolveKamiwazaVerifyTls(cfg)),
   ].join("::");
 }
 
 export function resetKamiwazaDiscoveryCacheForTest(): void {
   discoveryCache.clear();
+}
+
+async function mapWithConcurrency<T, R>(
+  items: readonly T[],
+  limit: number,
+  worker: (item: T) => Promise<R>,
+): Promise<R[]> {
+  const results = Array.from<R>({ length: items.length });
+  let next = 0;
+  const runners = Array.from({ length: Math.max(1, Math.min(limit, items.length)) }, async () => {
+    while (true) {
+      const index = next;
+      next += 1;
+      if (index >= items.length) {
+        return;
+      }
+      results[index] = await worker(items[index]);
+    }
+  });
+  await Promise.all(runners);
+  return results;
 }
 
 export async function discoverKamiwazaTools(
@@ -521,22 +553,29 @@ export async function discoverKamiwazaTools(
     const timeoutMs = resolveKamiwazaTimeoutMs(cfg);
     const verifyTls = resolveKamiwazaVerifyTls(cfg);
     const extensions = await fetchExtensions({ cfg, token, timeoutMs });
-    const discovered: KamiwazaDiscoveredTool[] = [];
-    for (const extension of extensions) {
+    const toolPrefix = resolveKamiwazaToolPrefix(cfg);
+    // Each extension costs four serial MCP round-trips (initialize ->
+    // initialized -> tools/list -> close); a shared cluster can host dozens of
+    // them, so discovering serially turns a single tool call into a 40s+ stall.
+    // Fan out the per-extension probes with bounded concurrency instead.
+    const targets = extensions.filter(
+      (extension) => normalizeNonemptyString(extension.name) && extensionIsAllowed(cfg, extension),
+    );
+    const probeExtension = async (
+      extension: (typeof targets)[number],
+    ): Promise<KamiwazaDiscoveredTool[]> => {
       const extensionName = normalizeNonemptyString(extension.name);
-      if (!extensionName || !extensionIsAllowed(cfg, extension)) {
-        continue;
-      }
-      const mcpUrl = mcpUrlForExtension(extension);
-      if (!mcpUrl) {
-        continue;
+      const mcpUrl = extensionName ? mcpUrlForExtension(extension) : undefined;
+      if (!extensionName || !mcpUrl) {
+        return [];
       }
       let tools: unknown[];
       try {
         tools = await listMcpTools({ mcpUrl, token, timeoutMs, verifyTls });
       } catch {
-        continue;
+        return [];
       }
+      const results: KamiwazaDiscoveredTool[] = [];
       for (const tool of tools) {
         if (!tool || typeof tool !== "object" || Array.isArray(tool)) {
           continue;
@@ -546,8 +585,8 @@ export async function discoverKamiwazaTools(
         if (!mcpTool) {
           continue;
         }
-        discovered.push({
-          name: toolSlug(resolveKamiwazaToolPrefix(cfg), extensionName, mcpTool),
+        results.push({
+          name: toolSlug(toolPrefix, extensionName, mcpTool),
           extensionName,
           mcpUrl,
           mcpTool,
@@ -555,8 +594,14 @@ export async function discoverKamiwazaTools(
           inputSchema: toolRecord.inputSchema,
         });
       }
-    }
-    return sortKamiwazaTools(discovered);
+      return results;
+    };
+    const batches = await mapWithConcurrency(
+      targets,
+      resolveKamiwazaDiscoveryConcurrency(cfg),
+      probeExtension,
+    );
+    return sortKamiwazaTools(batches.flat());
   })();
   discoveryCache.set(key, { expiresAt: now + resolveKamiwazaCatalogTtlMs(cfg), promise });
   try {
