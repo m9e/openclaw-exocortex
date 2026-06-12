@@ -1,0 +1,47 @@
+minimumLimaVersion: "2.0.0"
+
+base:
+  - template:_images/ubuntu
+
+vmType: vz
+arch: aarch64
+cpus: 2
+memory: "3GiB"
+disk: "20GiB"
+
+containerd:
+  system: false
+  user: false
+
+hostResolver:
+  enabled: true
+
+networks:
+  - vzNAT: true
+
+env:
+  OPENCLAW_VM_ROLE: guard
+
+# Exactly one mount is added at create time by create-guard-vm.sh via
+# `--set .mounts`: the deps/exocortex-untrusted-content checkout, read-only,
+# so the guest installer can copy source without needing git egress.
+# Never mount the host home or the workspace into this guest: it is the VM
+# that parses raw hostile bytes.
+
+message: |
+  localclaw-guard runs the tool-untrusted-content service for a host-native
+  ("trusted") claw. It mounts only the untrusted-content dep repo read-only.
+  Guest localhost ports are not auto-forwarded; only the explicit loopback
+  forward configured by create-guard-vm.sh is enabled.
+
+portForwards:
+  - guestIP: "127.0.0.1"
+    guestPort: 8787
+    hostIP: "127.0.0.1"
+    hostPort: 18787
+  - guestIP: "127.0.0.1"
+    guestPortRange: [1, 65535]
+    hostIP: "127.0.0.1"
+    hostPortRange: [1, 65535]
+    proto: any
+    ignore: true
