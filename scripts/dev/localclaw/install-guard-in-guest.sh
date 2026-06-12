@@ -11,6 +11,22 @@ UTC_REPO_MOUNT="${UTC_REPO_MOUNT:?set UTC_REPO_MOUNT to the read-only dep mount 
 UTC_PORT="${UTC_PORT:-8787}"
 [[ -f "$UTC_REPO_MOUNT/pyproject.toml" ]] || die "no pyproject.toml at $UTC_REPO_MOUNT (mount missing?)"
 
+# The shared lima vmnet (lima0) installs a default route at a lower metric than
+# the vz user-mode NAT (eth0), but only eth0 actually reaches the internet here.
+# Drop the lima0 default route so apt/pip egress uses the working NAT. This only
+# removes the broken default; lima0's subnet route stays, so guest-agent port
+# forwarding (over SSH/vsock) is unaffected. No-op when lima0 has no default.
+ensure_egress_route() {
+  local lima_default eth_default
+  lima_default="$(ip route show default dev lima0 2>/dev/null | head -n1 || true)"
+  eth_default="$(ip route show default dev eth0 2>/dev/null | head -n1 || true)"
+  if [[ -n "$lima_default" && -n "$eth_default" ]]; then
+    log "dropping lima0 default route so egress uses vzNAT (eth0)"
+    sudo ip route del default dev lima0 2>/dev/null || true
+  fi
+}
+ensure_egress_route
+
 log "installing system packages"
 sudo DEBIAN_FRONTEND=noninteractive apt-get update -y
 sudo DEBIAN_FRONTEND=noninteractive apt-get install -y python3-venv python3-pip rsync curl
@@ -39,12 +55,14 @@ log "writing service environment"
   echo "UTC_SCANNER_MODE=${UTC_SCANNER_MODE:-heuristic}"
   echo "UTC_GUARDRAIL_FALLBACK=quarantine"
   echo "UTC_SCANNER_FALLBACK=quarantine"
-  [[ -n "${UTC_GUARDRAIL_ENDPOINT:-}" ]] && echo "UTC_GUARDRAIL_ENDPOINT=$UTC_GUARDRAIL_ENDPOINT"
-  [[ -n "${UTC_GUARDRAIL_MODEL:-}" ]] && echo "UTC_GUARDRAIL_MODEL=$UTC_GUARDRAIL_MODEL"
-  [[ -n "${UTC_GUARDRAIL_API_KEY:-}" ]] && echo "UTC_GUARDRAIL_API_KEY=$UTC_GUARDRAIL_API_KEY"
-  [[ -n "${UTC_SCANNER_ENDPOINT:-}" ]] && echo "UTC_SCANNER_ENDPOINT=$UTC_SCANNER_ENDPOINT"
-  [[ -n "${UTC_SCANNER_MODEL:-}" ]] && echo "UTC_SCANNER_MODEL=$UTC_SCANNER_MODEL"
-  [[ -n "${UTC_SCANNER_API_KEY:-}" ]] && echo "UTC_SCANNER_API_KEY=$UTC_SCANNER_API_KEY"
+  # `if` (not `&& echo`): a trailing failed `[[ -n "" ]]` would make the brace
+  # group exit non-zero and trip `set -e` when these optional vars are unset.
+  if [[ -n "${UTC_GUARDRAIL_ENDPOINT:-}" ]]; then echo "UTC_GUARDRAIL_ENDPOINT=$UTC_GUARDRAIL_ENDPOINT"; fi
+  if [[ -n "${UTC_GUARDRAIL_MODEL:-}" ]]; then echo "UTC_GUARDRAIL_MODEL=$UTC_GUARDRAIL_MODEL"; fi
+  if [[ -n "${UTC_GUARDRAIL_API_KEY:-}" ]]; then echo "UTC_GUARDRAIL_API_KEY=$UTC_GUARDRAIL_API_KEY"; fi
+  if [[ -n "${UTC_SCANNER_ENDPOINT:-}" ]]; then echo "UTC_SCANNER_ENDPOINT=$UTC_SCANNER_ENDPOINT"; fi
+  if [[ -n "${UTC_SCANNER_MODEL:-}" ]]; then echo "UTC_SCANNER_MODEL=$UTC_SCANNER_MODEL"; fi
+  if [[ -n "${UTC_SCANNER_API_KEY:-}" ]]; then echo "UTC_SCANNER_API_KEY=$UTC_SCANNER_API_KEY"; fi
 } | sudo tee /etc/untrusted-content/untrusted-content.env >/dev/null
 sudo chmod 0600 /etc/untrusted-content/untrusted-content.env
 
