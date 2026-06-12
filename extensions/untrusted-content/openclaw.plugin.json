@@ -2,6 +2,10 @@
   "id": "untrusted-content",
   "name": "Untrusted Content",
   "description": "Sanitize and quarantine untrusted tool output through a local tool-untrusted-content service.",
+  "activation": {
+    "onStartup": false,
+    "onConfigPaths": ["plugins.entries.untrusted-content"]
+  },
   "contracts": {
     "tools": ["untrusted_content_scan"]
   },

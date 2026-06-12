@@ -2,6 +2,10 @@
   "id": "locksmith",
   "name": "Locksmith",
   "description": "Optional tool bridge for Agent Locksmith credential-proxy deployments.",
+  "activation": {
+    "onStartup": false,
+    "onConfigPaths": ["plugins.entries.locksmith"]
+  },
   "contracts": {
     "tools": ["locksmith_call", "locksmith_*"]
   },
