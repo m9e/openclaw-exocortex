@@ -234,7 +234,8 @@ cmd_list() {
       LIMA_HOME="$dir/lima" limactl list --format '{{.Name}} {{.Status}}' 2>/dev/null
       local gw_port
       gw_port="$(localclaw_meta "$dir" '.gatewayPort')"
-      if curl -fsS -m 2 "http://127.0.0.1:$gw_port/" >/dev/null 2>&1; then
+      # The gateway answers 200 only on /health; GET / is 503 even when healthy.
+      if curl -fsS -m 2 "http://127.0.0.1:$gw_port/health" >/dev/null 2>&1; then
         printf 'host gateway 127.0.0.1:%s running\n' "$gw_port"
       else
         printf 'host gateway 127.0.0.1:%s down\n' "$gw_port"
@@ -258,7 +259,11 @@ cmd_status() {
     printf 'kind:      local (host gateway + guard VM)\n'
     printf 'dir:       %s\n' "$RUNTIME_DIR"
     printf 'workspace: %s\n' "$workspace"
-    printf 'gateway:   host 127.0.0.1:%s (shared/singular, not per-runtime)\n' "$gateway_port"
+    local gateway_state="down"
+    # /health is the gateway's 200 endpoint; GET / returns 503 even when healthy.
+    curl -fsS -m 3 "http://127.0.0.1:$gateway_port/health" >/dev/null 2>&1 && gateway_state="running"
+    printf 'gateway:   host 127.0.0.1:%s %s (shared/singular, not per-runtime)\n' \
+      "$gateway_port" "$gateway_state"
     lima list --format '{{.Name}} {{.Status}}' 2>/dev/null
     if curl -fsS -m 3 "http://127.0.0.1:$guard_port/health" 2>/dev/null; then
       printf '\n <- guard http://127.0.0.1:%s/health\n' "$guard_port"
