@@ -44,7 +44,10 @@ sudo chown -R utc:utc /var/lib/untrusted-content
 log "installing python package into venv"
 sudo python3 -m venv /opt/untrusted-content/venv
 sudo /opt/untrusted-content/venv/bin/pip install --quiet --upgrade pip
-sudo /opt/untrusted-content/venv/bin/pip install --quiet /opt/untrusted-content/src
+# Editable install: the venv imports directly from the rsynced source, so a
+# re-run that updates /opt/untrusted-content/src takes effect on restart
+# without pip skipping reinstall on an unchanged package version.
+sudo /opt/untrusted-content/venv/bin/pip install --quiet -e /opt/untrusted-content/src
 
 log "writing service environment"
 # Stage fallbacks are forced to quarantine: this guard is load-bearing for a
@@ -90,7 +93,11 @@ WantedBy=multi-user.target
 UNIT
 
 sudo systemctl daemon-reload
-sudo systemctl enable --now untrusted-content.service
+sudo systemctl enable untrusted-content.service
+# Restart (not just start): on a re-run the unit is already active, so `start`
+# is a no-op and a stale process keeps serving old source. Restart picks up
+# the freshly rsynced/editable code and the regenerated unit.
+sudo systemctl restart untrusted-content.service
 
 log "waiting for health"
 for _ in $(seq 1 30); do
