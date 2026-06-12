@@ -48,7 +48,7 @@ Environment:
   KAMIWAZA_PASSWORD               Password for PAT generation (else prompted or
                                   resolved through OPENCLAW_KAMIWAZA_LOGIN_SCRIPT).
   OPENCLAW_KAMIWAZA_PAT_NAME      Name for the generated PAT, default openclaw-<runtime>.
-  OPENCLAW_KAMIWAZA_PAT_TTL_SECONDS  Generated PAT TTL, default 2592000 (30 days).
+  OPENCLAW_KAMIWAZA_PAT_TTL_SECONDS  Generated PAT TTL, default 31536000 (365 days).
   OPENCLAW_KAMIWAZA_MODEL_NAME    Preferred deployed model name (m_name); default first DEPLOYED.
   OPENCLAW_KAMIWAZA_ALLOW_NO_MODEL  Set 1 to proceed without a deployed model.
   OPENCLAW_KAMIWAZA_GUEST_API_HOST  Hostname guests use for the Kamiwaza API,
@@ -279,7 +279,7 @@ mint_pat() {
   # /auth/pats takes query parameters, not a JSON body.
   local access_token="$1"
   local pat_name="${OPENCLAW_KAMIWAZA_PAT_NAME:-openclaw-$OPENCLAW_RUNTIME_NAME}"
-  local ttl="${OPENCLAW_KAMIWAZA_PAT_TTL_SECONDS:-2592000}"
+  local ttl="${OPENCLAW_KAMIWAZA_PAT_TTL_SECONDS:-31536000}"
   [[ "$ttl" =~ ^[0-9]+$ ]] || die "OPENCLAW_KAMIWAZA_PAT_TTL_SECONDS must be numeric"
   local encoded_name
   encoded_name="$(jq -rn --arg v "$pat_name" '$v|@uri')"
@@ -480,11 +480,11 @@ write_pat_store_source() {
   KAMIWAZA_STORE_TOKEN="$KAMIWAZA_RESOLVED_TOKEN" \
     KAMIWAZA_STORE_HOST="$credential_host" \
     KAMIWAZA_STORE_PATH="$store_path" \
-    KAMIWAZA_STORE_TTL="${OPENCLAW_KAMIWAZA_PAT_TTL_SECONDS:-2592000}" \
+    KAMIWAZA_STORE_TTL="${OPENCLAW_KAMIWAZA_PAT_TTL_SECONDS:-31536000}" \
     node -e '
       const fs = require("fs");
       const now = new Date();
-      const ttlSeconds = Number(process.env.KAMIWAZA_STORE_TTL || 2592000);
+      const ttlSeconds = Number(process.env.KAMIWAZA_STORE_TTL || 31536000);
       const expires = new Date(now.getTime() + ttlSeconds * 1000);
       const store = {
         format: "pdash-pat-store-v1",
