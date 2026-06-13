@@ -7,8 +7,9 @@
     "onConfigPaths": ["plugins.entries.untrusted-content"]
   },
   "contracts": {
-    "tools": ["untrusted_content_scan"]
+    "tools": ["untrusted_content_scan", "untrusted_content_reveal"]
   },
+  "commandAliases": [{ "name": "untrusted-content" }],
   "uiHints": {
     "enabled": {
       "label": "Enable Guard",

@@ -29,7 +29,7 @@ export type Incident = {
   clearedBy?: string;
 };
 
-const INCIDENTS_NAMESPACE = "untrusted-content:incidents";
+const INCIDENTS_NAMESPACE = "untrusted-content-incidents";
 const INCIDENTS_MAX_ENTRIES = 5000;
 const INCIDENTS_TTL_MS = 1000 * 60 * 60 * 24 * 30; // 30 days
 
