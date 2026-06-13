@@ -149,6 +149,65 @@ Logs:
     limactl shell <name>-guard -- sudo journalctl -u untrusted-content
   ```
 
+## Host Locksmith credential proxy (phase 1)
+
+`install-locksmith-host.sh` stands up a host-local
+[Locksmith](../../../../deps/exocortex-agent-locksmith) (`locksmithd`) so the
+agent can call upstream APIs through `locksmith_<tool>` tools **without ever
+seeing the upstream credential**. The agent calls the proxy; the proxy injects
+the secret from a 0600 host file and forwards to the upstream.
+
+```bash
+scripts/dev/localclaw/install-locksmith-host.sh
+```
+
+What it does:
+
+- Builds `locksmithd` from the dep repo and installs it to `~/.local/bin`.
+- Generates a 0600 inbound bearer token in `~/.config/locksmith/locksmith.env`
+  and mirrors it into `~/.openclaw/.env` (so the bundled `locksmith` plugin's
+  env fallback resolves it — no secret literal in `openclaw.json`).
+- Writes `~/.config/locksmith/config.yaml` (`tools: []`; idempotent — never
+  clobbers operator-added tools on re-run).
+- Installs a per-user LaunchAgent `com.exocortex.locksmith` whose wrapper
+  (`~/.local/bin/locksmithd-run.sh`) sources the 0600 env file before exec, so
+  secrets never land in the plist. Logs to `~/Library/Logs/locksmith.log`.
+- Wires `plugins.entries.locksmith` with `required:false` (a down proxy must
+  **not** brick the gateway — phase 1 it is a convenience, not a control) and
+  `genericTool:false`.
+
+**Port:** defaults to `9202`, not 9200. On hosts that also run the root
+`openclaw-hardened` boundary deployment, its locksmith-bridge owns 9200 and its
+boundary locksmithd owns 9201; the phase-1 host proxy is additive and takes the
+next free port. Override with `LOCKSMITH_PORT=...`.
+
+**Threat model (accepted-insecure v0):** the upstream credentials sit in a 0600
+file on the host. Anything running as this user can read it — this only hides
+the secret from the _agent's tool context_, not from local root. Phase 2
+relocates the proxy to a LAN box; phase 3 ports it to Kamiwaza.
+
+Add upstreams and credentials via clawctl (it operates on the host files for
+`kind=local` runtimes):
+
+```bash
+# add an upstream tool (egress "direct"; projects locksmith_github to the agent)
+scripts/dev/lima/clawctl tool add github \
+  --upstream https://api.github.com \
+  --auth-header Authorization --secret-env GITHUB_TOKEN \
+  --description "GitHub REST API" --name localclaw
+
+# set its credential (VALUE=- reads from stdin; never echoed)
+scripts/dev/lima/clawctl creds set GITHUB_TOKEN=- --name localclaw
+
+scripts/dev/lima/clawctl creds list --name localclaw   # key names only
+scripts/dev/lima/clawctl tool list  --name localclaw   # tools the proxy serves
+```
+
+`creds set` / `tool add` restart the host LaunchAgent (and, for `tool add`, the
+gateway) so the change takes effect. `locksmith_*` is already in the guard
+plugin's `toolNames`, so every Locksmith result is still run through the
+fail-closed untrusted-content guard before it reaches the agent.
+
 ## Fleet foreman
 
 The trusted claw is also the foreman of the fleet. Because its agent has full
@@ -215,6 +274,7 @@ LLM endpoint outage still fails closed.
   the way the VM-pair rig restricts the untrusted guest.
 - **Honeypot wiring** — route the dep service's `/v1/honeypot/trigger` events
   into incident handling.
-- **Optional host Locksmith sidecar** — a host-side Locksmith proxy so
-  `locksmith_*` tools inject credentials without exposing them to the agent
-  (already in the guard's `toolNames` so its results are guarded).
+- **Host Locksmith hardening (phase 2/3)** — the phase-1 proxy (see "Host
+  Locksmith credential proxy" above) keeps upstream creds in a 0600 host file.
+  Phase 2 relocates the proxy to a LAN box; phase 3 ports it to Kamiwaza so the
+  secrets never live on the claw host at all.

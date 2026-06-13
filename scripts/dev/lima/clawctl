@@ -476,6 +476,31 @@ EOF
   esac
 }
 
+# Restart the host-local Locksmith LaunchAgent so the daemon re-reads its env
+# file (the wrapper sources locksmith.env at exec). kickstart -k re-execs the
+# job in place; the unload/load fallback covers older launchd.
+# Read the host-local Locksmith listen port from its config.yaml so clawctl and
+# the installer agree even when the proxy is not on 9200 (the root boundary
+# deployment owns 9200/9201, so the host proxy defaults to 9202).
+host_locksmith_port() {
+  local config="$HOME/.config/locksmith/config.yaml"
+  local port=""
+  if [[ -f "$config" ]]; then
+    port="$(awk '/^listen:/{l=1;next} l&&/port:/{gsub(/[^0-9]/,"",$2);print $2;exit}' "$config")"
+  fi
+  printf '%s\n' "${port:-9202}"
+}
+
+host_locksmith_restart() {
+  local label="com.exocortex.locksmith"
+  local plist="$HOME/Library/LaunchAgents/$label.plist"
+  if launchctl kickstart -k "gui/$(id -u)/$label" >/dev/null 2>&1; then
+    return 0
+  fi
+  launchctl unload "$plist" >/dev/null 2>&1 || true
+  launchctl load "$plist" >/dev/null 2>&1 || true
+}
+
 cmd_creds() {
   local action="${1:-list}"
   shift || true
@@ -483,6 +508,12 @@ cmd_creds() {
     list)
       parse_name_flag "$@"
       resolve_runtime
+      if [[ "$(runtime_kind "$RUNTIME_DIR")" == "local" ]]; then
+        local env_file="$HOME/.config/locksmith/locksmith.env"
+        [[ -f "$env_file" ]] || die "no host locksmith env at $env_file; run install-locksmith-host.sh"
+        cut -d= -f1 "$env_file"
+        return
+      fi
       gateway_shell <<'EOF'
 set -euo pipefail
 cut -d= -f1 ~/.config/locksmith/locksmith.env
@@ -501,6 +532,22 @@ EOF
       fi
       [[ -n "$value" ]] || die "empty credential value"
       resolve_runtime
+      if [[ "$(runtime_kind "$RUNTIME_DIR")" == "local" ]]; then
+        # Host file: replace-or-append KEY=VALUE in the 0600 env file, then
+        # restart the LaunchAgent so the daemon picks up the new env. The value
+        # never reaches argv or stdout.
+        local env_file="$HOME/.config/locksmith/locksmith.env"
+        umask 077
+        mkdir -p "$(dirname "$env_file")"
+        touch "$env_file"
+        grep -vE "^${key}=" "$env_file" >"$env_file.tmp" 2>/dev/null || true
+        printf '%s=%s\n' "$key" "$value" >>"$env_file.tmp"
+        chmod 600 "$env_file.tmp"
+        mv "$env_file.tmp" "$env_file"
+        host_locksmith_restart
+        echo "credential $key updated; host locksmith restarted"
+        return
+      fi
       # The secret travels on stdin after the script body, never in argv.
       {
         cat <<'EOF'
@@ -525,6 +572,73 @@ EOF
   esac
 }
 
+# Host-local `tool add`: append the tool to the host config.yaml (egress
+# "direct" — no Pipelock on the host), project it via openclaw.json, then
+# restart the host locksmith + gateway. Mirrors the pair-runtime add: a present
+# --secret-env writes `value: "${ENV}"` (the full header value lives in the env
+# var), and the env var must be set with `clawctl creds set`.
+cmd_tool_add_local() {
+  local tool_name="$1" upstream="$2" auth_header="$3" secret_env="$4" description="$5"
+  local config="$HOME/.config/locksmith/config.yaml"
+  local env_file="$HOME/.config/locksmith/locksmith.env"
+  [[ -f "$config" ]] || die "no host locksmith config at $config; run install-locksmith-host.sh"
+
+  grep -q "  - name: \"$tool_name\"" "$config" &&
+    die "tool $tool_name already exists in the host Locksmith config"
+
+  if [[ -n "$secret_env" ]]; then
+    grep -qE "^${secret_env}=" "$env_file" 2>/dev/null ||
+      log "warning: $secret_env is not set yet; run: clawctl creds set $secret_env=- --name $RUNTIME_NAME"
+  fi
+
+  {
+    printf '  - name: "%s"\n' "$tool_name"
+    printf '    description: "%s"\n' "$description"
+    printf '    upstream: "%s"\n' "$upstream"
+    printf '    egress: "direct"\n'
+    printf '    timeouts:\n'
+    printf '      request_seconds: 30\n'
+    printf '      idle_seconds: 60\n'
+    if [[ -n "$auth_header" ]]; then
+      printf '    auth:\n'
+      printf '      header: "%s"\n' "$auth_header"
+      printf '      value: "${%s}"\n' "$secret_env"
+    fi
+  } >>"$config"
+
+  host_locksmith_restart
+  sleep 2
+  local token
+  token="$(grep -E '^LOCKSMITH_INBOUND_TOKEN=' "$env_file" | tail -n 1 | cut -d= -f2-)"
+  curl -fsS -m 90 -H "Authorization: Bearer $token" "http://127.0.0.1:$(host_locksmith_port)/tools" |
+    CLAWCTL_TOOL_NAME="$tool_name" python3 -c "
+import json, os, sys
+name = os.environ['CLAWCTL_TOOL_NAME']
+tools = [t['name'] for t in json.load(sys.stdin).get('tools', [])]
+assert name in tools, 'tool did not appear in Locksmith catalog'
+print(f'locksmith serves {name}')
+"
+
+  CLAWCTL_TOOL_NAME="$tool_name" CLAWCTL_TOOL_DESCRIPTION="$description" python3 - <<'PY'
+import json, os, pathlib
+path = pathlib.Path.home() / ".openclaw/openclaw.json"
+cfg = json.loads(path.read_text())
+tools = cfg["plugins"]["entries"]["locksmith"].setdefault("config", {}).setdefault("tools", {})
+name = os.environ["CLAWCTL_TOOL_NAME"]
+entry = tools.setdefault(name, {})
+entry["enabled"] = True
+entry.setdefault("description", os.environ["CLAWCTL_TOOL_DESCRIPTION"])
+path.write_text(json.dumps(cfg, indent=2) + "\n")
+print(f"projected locksmith_{name} in openclaw config")
+PY
+
+  if (cd "$WORKSPACE_ROOT/openclaw-exocortex" && corepack pnpm openclaw gateway restart) >/dev/null 2>&1; then
+    log "gateway restarted to register the projected tool"
+  else
+    log "could not restart the gateway; run 'corepack pnpm openclaw gateway restart' to register locksmith_$tool_name"
+  fi
+}
+
 cmd_tool() {
   local action="${1:-list}"
   shift || true
@@ -532,6 +646,16 @@ cmd_tool() {
     list)
       parse_name_flag "$@"
       resolve_runtime
+      if [[ "$(runtime_kind "$RUNTIME_DIR")" == "local" ]]; then
+        local env_file="$HOME/.config/locksmith/locksmith.env"
+        [[ -f "$env_file" ]] || die "no host locksmith env at $env_file; run install-locksmith-host.sh"
+        local token
+        token="$(grep -E '^LOCKSMITH_INBOUND_TOKEN=' "$env_file" | tail -n 1 | cut -d= -f2-)"
+        [[ -n "$token" ]] || die "LOCKSMITH_INBOUND_TOKEN missing from $env_file"
+        curl -fsS -m 90 -H "Authorization: Bearer $token" "http://127.0.0.1:$(host_locksmith_port)/tools" |
+          python3 -c 'import json,sys; [print(t["name"]) for t in json.load(sys.stdin).get("tools", [])]'
+        return
+      fi
       gateway_shell <<'EOF'
 set -euo pipefail
 source ~/.config/locksmith/locksmith.env
@@ -578,6 +702,11 @@ EOF
         [[ "$secret_env" =~ ^[A-Z][A-Z0-9_]*$ ]] || die "--secret-env must be UPPER_SNAKE_CASE"
       fi
       resolve_runtime
+      if [[ "$(runtime_kind "$RUNTIME_DIR")" == "local" ]]; then
+        cmd_tool_add_local "$tool_name" "$upstream" "$auth_header" "$secret_env" \
+          "${description:-$tool_name upstream via Locksmith}"
+        return
+      fi
       gateway_shell \
         "CLAWCTL_TOOL_NAME=$tool_name" \
         "CLAWCTL_TOOL_UPSTREAM=$upstream" \
