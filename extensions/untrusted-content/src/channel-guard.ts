@@ -27,6 +27,7 @@ import {
   resolveGuardChannels,
   resolveRiskWeights,
 } from "./risk.js";
+import { resolveBlockSessionId } from "./session-identity.js";
 
 export type ChannelDispatchEvent = {
   content: string;
@@ -115,7 +116,11 @@ export async function evaluateChannelDispatch(
       ...(risk.breakerReason ? { breakerReason: risk.breakerReason } : {}),
       tool: `channel:${event.channel ?? "?"}`,
       score: risk.score,
-      sessionKey: event.sessionKey,
+      // before_dispatch events carry no sessionId, only sessionKey; route through
+      // the same resolver as the tool/agent gates so any block we record here is
+      // keyed uniformly. (No-op today: the drop below short-circuits the run so no
+      // later run relies on this lock — but keeps the keying contract consistent.)
+      sessionKey: resolveBlockSessionId({ sessionKey: event.sessionKey }),
       contentId: response.id,
       // Only the breaker tier installs an active session lock.
       active: risk.tier === "breaker",
