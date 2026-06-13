@@ -105,6 +105,77 @@ async function readErrorResponse(response: Response): Promise<string> {
   return `${response.status} ${response.statusText}: ${normalized}`.trim();
 }
 
+export type QuarantineRawRecord = {
+  id: string;
+  raw_content: string;
+  source?: string | null;
+  url?: string | null;
+  content_type?: string | null;
+  sha256?: string | null;
+  timestamp?: string | null;
+};
+
+export type FetchQuarantineRawResult =
+  | { ok: true; raw: QuarantineRawRecord }
+  | { ok: false; status: number; error: string };
+
+function buildQuarantineEndpoint(baseUrl: string, contentId: string): string {
+  const normalizedBaseUrl = baseUrl.endsWith("/") ? baseUrl : `${baseUrl}/`;
+  return new URL(`v1/quarantine/${encodeURIComponent(contentId)}`, normalizedBaseUrl).toString();
+}
+
+/**
+ * OPERATOR-ONLY raw quarantine retrieval.
+ *
+ * Fetches the original, un-sanitized hostile content from the dep service so an
+ * operator can inspect it at their terminal. This MUST stay reachable only from
+ * the CLI `show` path; never wire it into an agent tool, hook, or transform, or
+ * the breaker/quarantine isolation it protects is defeated. Never throws.
+ */
+export async function fetchQuarantineRaw(
+  cfg: OpenClawConfig | undefined,
+  contentId: string,
+): Promise<FetchQuarantineRawResult> {
+  const baseUrl = resolveUntrustedContentBaseUrl(cfg);
+  const endpoint = buildQuarantineEndpoint(baseUrl, contentId);
+  const apiKey = resolveUntrustedContentApiKey(cfg);
+  let guarded: Awaited<ReturnType<typeof fetchWithSsrFGuard>> | undefined;
+  try {
+    guarded = await fetchWithSsrFGuard({
+      url: endpoint,
+      init: {
+        method: "GET",
+        headers: {
+          accept: "application/json",
+          ...(apiKey ? { authorization: `Bearer ${apiKey}` } : {}),
+        },
+      },
+      timeoutMs: resolveUntrustedContentTimeoutMs(cfg),
+      policy: LOCAL_SERVICE_FETCH_POLICY,
+      ...(!resolveUntrustedContentTlsRejectUnauthorized(cfg)
+        ? { dispatcherPolicy: { mode: "direct" as const, connect: { rejectUnauthorized: false } } }
+        : {}),
+      auditContext: "untrusted-content-quarantine-raw",
+      capture: false,
+    });
+    const { response } = guarded;
+    if (response.status === 404) {
+      return { ok: false, status: 404, error: "not found" };
+    }
+    if (!response.ok) {
+      return { ok: false, status: response.status, error: await readErrorResponse(response) };
+    }
+    const raw = (await response.json()) as QuarantineRawRecord;
+    return { ok: true, raw };
+  } catch (error) {
+    const message =
+      error instanceof Error ? error.message : `quarantine fetch failed: ${String(error)}`;
+    return { ok: false, status: 0, error: message };
+  } finally {
+    await guarded?.release();
+  }
+}
+
 export async function runUntrustedContentPipeline(
   params: RunUntrustedContentPipelineParams,
 ): Promise<UntrustedContentPipelineResponse> {

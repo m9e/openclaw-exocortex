@@ -7,6 +7,7 @@ import {
   findActiveBlockForSession,
   generateIncidentCode,
   getIncident,
+  listActiveIncidents,
   recordIncident,
 } from "./incidents.js";
 
@@ -183,6 +184,35 @@ describe("findActiveBlockForSession", () => {
     store.map.set(second.code, { ...second, createdAt: 50 });
     const latestAfter = await findActiveBlockForSession(api, "sess-X");
     expect(latestAfter?.code).toBe(first.code);
+  });
+});
+
+describe("listActiveIncidents", () => {
+  it("returns only active incidents, newest-first by createdAt", async () => {
+    const store = createFakeStore();
+    const api = createFakeApi(store);
+
+    const first = await recordIncident(api, { ...BASE_INPUT, sessionKey: "sess-A" });
+    const second = await recordIncident(api, { ...BASE_INPUT, sessionKey: "sess-B" });
+    const third = await recordIncident(api, { ...BASE_INPUT, sessionKey: "sess-C" });
+    // An inactive (cleared) block and an inactive summarize must be excluded.
+    await clearIncident(api, second.code, "user");
+    await recordIncident(api, { tier: "summarize", tool: "browser", score: 5 });
+
+    store.map.set(first.code, { ...store.map.get(first.code)!, createdAt: 100 });
+    store.map.set(third.code, { ...store.map.get(third.code)!, createdAt: 300 });
+
+    const active = await listActiveIncidents(api);
+    expect(active.map((entry) => entry.code)).toEqual([third.code, first.code]);
+    expect(active.every((entry) => entry.active === true)).toBe(true);
+  });
+
+  it("returns an empty list when nothing is active", async () => {
+    const store = createFakeStore();
+    const api = createFakeApi(store);
+    const inc = await recordIncident(api, { ...BASE_INPUT, sessionKey: "sess-A" });
+    await clearIncident(api, inc.code, "user");
+    expect(await listActiveIncidents(api)).toEqual([]);
   });
 });
 

@@ -122,6 +122,16 @@ export async function findActiveBlockForSession(
   return latest;
 }
 
+export async function listActiveIncidents(api: OpenClawPluginApi): Promise<Incident[]> {
+  // Active blocks are low-volume, so a full scan is cheap. Sorted newest-first
+  // so the operator `blocks` listing leads with the most recent halt.
+  const entries = await openIncidentStore(api).entries();
+  return entries
+    .map((entry) => entry.value)
+    .filter((incident) => incident.active)
+    .toSorted((a, b) => b.createdAt - a.createdAt);
+}
+
 export async function clearIncident(
   api: OpenClawPluginApi,
   code: string,
