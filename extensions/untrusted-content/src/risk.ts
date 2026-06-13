@@ -206,3 +206,49 @@ export function targetingForTool(toolName: string, cfg?: OpenClawConfig): Target
 function isSourceTrust(value: unknown): value is SourceTrust {
   return value === "user" || value === "low" || value === "med" || value === "high";
 }
+
+/**
+ * Tool names (or trailing-`*` prefix globs) that act as honeypot traps. An agent
+ * calling one is treated as lured by injection. Default empty: no tool is a trap
+ * until an operator opts in.
+ */
+export function resolveHoneypotTools(cfg?: OpenClawConfig): string[] {
+  return normalizeGlobList(resolveRiskConfig(cfg)?.honeypotTools) ?? [];
+}
+
+/** True if a tool name matches any configured honeypot entry. */
+export function isHoneypotTool(toolName: string, cfg?: OpenClawConfig): boolean {
+  const normalized = toolName.trim().toLowerCase();
+  return resolveHoneypotTools(cfg).some((entry) => matchesGlob(entry, normalized));
+}
+
+/**
+ * Opt-in master switch for guarding untrusted channel-ingest messages in
+ * before_dispatch. Default false so the existing channel behavior (only the
+ * conversational `clear` short-circuit) is preserved until an operator turns it
+ * on. Enabling it couples untrusted inbound delivery to guard-service health.
+ */
+export function resolveGuardChannels(cfg?: OpenClawConfig): boolean {
+  return resolveRiskConfig(cfg)?.guardChannels === true;
+}
+
+/**
+ * Source-trust level applied to inbound messages from a given channel. Unknown
+ * channels default to "med" (untrusted-but-not-hostile). Operators can raise or
+ * lower per channel via `risk.channelSourceTrust` (e.g. a paired DM channel).
+ */
+export function resolveChannelSourceTrust(
+  cfg: OpenClawConfig | undefined,
+  channel: string | undefined,
+): SourceTrust {
+  const normalized = channel?.trim().toLowerCase();
+  if (!normalized) {
+    return "med";
+  }
+  const map = resolveRiskConfig(cfg)?.channelSourceTrust;
+  if (!map || typeof map !== "object" || Array.isArray(map)) {
+    return "med";
+  }
+  const level = (map as Record<string, unknown>)[normalized];
+  return isSourceTrust(level) ? level : "med";
+}

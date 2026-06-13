@@ -1,8 +1,10 @@
 import { definePluginEntry, type AnyAgentTool } from "openclaw/plugin-sdk/plugin-entry";
 import type { PluginHookToolResultTransformResult } from "openclaw/plugin-sdk/plugin-runtime";
+import { evaluateChannelDispatch } from "./src/channel-guard.js";
 import { CONVERSATIONAL_CLEAR_RE } from "./src/clear-pattern.js";
 import { registerUntrustedContentCli } from "./src/cli.js";
 import { isUntrustedContentGuardConfigured, resolveUntrustedContentEnabled } from "./src/config.js";
+import { evaluateBeforeToolCall } from "./src/gates.js";
 import { clearIncident, findActiveBlockForSession } from "./src/incidents.js";
 import { createUntrustedContentRevealTool } from "./src/reveal-tool.js";
 import { createUntrustedContentScanTool } from "./src/tool.js";
@@ -54,27 +56,58 @@ export default definePluginEntry({
       };
     });
 
-    // Conversational release: a bare `clear <code>` in a DM clears the block and
-    // short-circuits the agent run. Group messages are ignored (owner-only,
-    // phase 1) so a non-owner participant cannot release another's block.
+    // Current-run containment + honeypot: deny tool calls once a session is
+    // held by an active breaker block, and shut down + record any agent lured
+    // into calling a configured honeypot trap tool.
+    api.on("before_tool_call", async (event, ctx) => {
+      if (!resolveUntrustedContentEnabled(api.config)) {
+        return undefined;
+      }
+      const evaluation = await evaluateBeforeToolCall(api, {
+        toolName: event.toolName,
+        sessionKey: ctx?.sessionKey,
+        agentId: ctx?.agentId,
+        arguments: event.params,
+      });
+      if (!evaluation) {
+        return undefined;
+      }
+      return { block: true, blockReason: evaluation.reason };
+    });
+
+    // Conversational release first, then opt-in channel-ingest guarding. The
+    // `clear <code>` short-circuit must stay ahead of guarding so an operator
+    // can always release a block; guarding only runs when no clear matched.
     api.on("before_dispatch", async (event) => {
       if (!resolveUntrustedContentEnabled(api.config)) {
         return undefined;
       }
       const match = CONVERSATIONAL_CLEAR_RE.exec(event.content ?? "");
-      if (!match) {
-        return undefined;
+      if (match) {
+        // Group messages are ignored for clears (owner-only, phase 1) so a
+        // non-owner participant cannot release another's block.
+        if (event.isGroup) {
+          return undefined;
+        }
+        const cleared = await clearIncident(api, match[1], event.senderId ?? "conversation");
+        return {
+          handled: true,
+          text: cleared
+            ? `Block ${cleared.code} cleared.`
+            : `No active block ${match[1].toUpperCase()}.`,
+        };
       }
-      if (event.isGroup) {
-        return undefined;
-      }
-      const cleared = await clearIncident(api, match[1], event.senderId ?? "conversation");
-      return {
-        handled: true,
-        text: cleared
-          ? `Block ${cleared.code} cleared.`
-          : `No active block ${match[1].toUpperCase()}.`,
-      };
+
+      // Channel-ingest guard (default OFF via risk.guardChannels). Drops an
+      // untrusted inbound message on a breaker/quarantine verdict and never
+      // replies to the sender; otherwise lets it through.
+      return await evaluateChannelDispatch(api, {
+        content: event.content ?? "",
+        ...(event.channel !== undefined ? { channel: event.channel } : {}),
+        ...(event.sessionKey !== undefined ? { sessionKey: event.sessionKey } : {}),
+        ...(event.senderId !== undefined ? { senderId: event.senderId } : {}),
+        ...(event.isGroup !== undefined ? { isGroup: event.isGroup } : {}),
+      });
     });
 
     api.on("tool_result_transform", async (event, ctx) => {

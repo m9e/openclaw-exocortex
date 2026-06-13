@@ -1,0 +1,75 @@
+/**
+ * before_tool_call gate logic for the untrusted-content guard.
+ *
+ * Two concerns, in order:
+ *  1. Containment: once a session holds an active breaker block, every further
+ *     tool call from that run is denied until an operator clears the code. This
+ *     stops a tripped/hostile run from continuing to act through tools.
+ *  2. Honeypot: a configured trap tool call is treated as injection-driven; it
+ *     records a fresh breaker incident, fires a best-effort service notification,
+ *     and then blocks the call (and all subsequent ones via containment).
+ *
+ * Active-block is checked first so a re-call on an already-blocked session just
+ * blocks instead of recording a second honeypot incident.
+ */
+import type { OpenClawConfig } from "openclaw/plugin-sdk/config-runtime";
+import type { OpenClawPluginApi } from "openclaw/plugin-sdk/plugin-entry";
+import { triggerHoneypot } from "./client.js";
+import { findActiveBlockForSession, recordIncident } from "./incidents.js";
+import { isHoneypotTool } from "./risk.js";
+
+export type BeforeToolCallEvaluation = { block: true; reason: string } | undefined;
+
+type BeforeToolCallInput = {
+  toolName: string;
+  sessionKey?: string;
+  agentId?: string;
+  arguments?: unknown;
+  cfg?: OpenClawConfig;
+};
+
+function containmentReason(code: string): string {
+  return `This agent is halted by the untrusted-content guard (code ${code}). Tool calls are blocked until an operator runs 'clear ${code}'.`;
+}
+
+function honeypotReason(code: string): string {
+  return `Honeypot tool triggered (code ${code}). This agent has been shut down for a suspected hostile prompt; tool calls are blocked until an operator runs 'clear ${code}'.`;
+}
+
+export async function evaluateBeforeToolCall(
+  api: OpenClawPluginApi,
+  input: BeforeToolCallInput,
+): Promise<BeforeToolCallEvaluation> {
+  const cfg = input.cfg ?? api.config;
+
+  // Containment first: an already-blocked session re-calling a honeypot tool
+  // should just block, not record a duplicate incident.
+  if (input.sessionKey) {
+    const block = await findActiveBlockForSession(api, input.sessionKey);
+    if (block) {
+      return { block: true, reason: containmentReason(block.code) };
+    }
+  }
+
+  if (!isHoneypotTool(input.toolName, cfg)) {
+    return undefined;
+  }
+
+  // Fresh honeypot hit: notify the service (best-effort, never throws) and
+  // record an active breaker block that contains the rest of the run.
+  await triggerHoneypot(cfg, {
+    toolName: input.toolName,
+    sessionKey: input.sessionKey,
+    arguments: input.arguments,
+  });
+  const incident = await recordIncident(api, {
+    tier: "breaker",
+    breakerReason: "honeypot",
+    tool: input.toolName,
+    score: 99,
+    sessionKey: input.sessionKey,
+    agentId: input.agentId,
+    active: true,
+  });
+  return { block: true, reason: honeypotReason(incident.code) };
+}

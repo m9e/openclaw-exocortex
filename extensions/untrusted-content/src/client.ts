@@ -176,6 +176,58 @@ export async function fetchQuarantineRaw(
   }
 }
 
+function buildHoneypotEndpoint(baseUrl: string): string {
+  const normalizedBaseUrl = baseUrl.endsWith("/") ? baseUrl : `${baseUrl}/`;
+  return new URL("v1/honeypot/trigger", normalizedBaseUrl).toString();
+}
+
+/**
+ * Best-effort honeypot trigger notification to the dep service.
+ *
+ * Fired when an agent calls a configured trap tool (likely lured by injection).
+ * It is a fire-and-forget side notification: the breaker incident and block are
+ * recorded locally regardless, so this MUST never throw and never gate the
+ * containment decision on the service being reachable.
+ */
+export async function triggerHoneypot(
+  cfg: OpenClawConfig | undefined,
+  input: { toolName: string; sessionKey?: string; arguments?: unknown },
+): Promise<void> {
+  const baseUrl = resolveUntrustedContentBaseUrl(cfg);
+  const endpoint = buildHoneypotEndpoint(baseUrl);
+  const apiKey = resolveUntrustedContentApiKey(cfg);
+  const body = JSON.stringify({
+    tool_name: input.toolName,
+    ...(input.sessionKey ? { session_key: input.sessionKey } : {}),
+    ...(input.arguments !== undefined ? { arguments: input.arguments } : {}),
+  });
+  let guarded: Awaited<ReturnType<typeof fetchWithSsrFGuard>> | undefined;
+  try {
+    guarded = await fetchWithSsrFGuard({
+      url: endpoint,
+      init: {
+        method: "POST",
+        headers: {
+          "content-type": "application/json",
+          ...(apiKey ? { authorization: `Bearer ${apiKey}` } : {}),
+        },
+        body,
+      },
+      timeoutMs: resolveUntrustedContentTimeoutMs(cfg),
+      policy: LOCAL_SERVICE_FETCH_POLICY,
+      ...(!resolveUntrustedContentTlsRejectUnauthorized(cfg)
+        ? { dispatcherPolicy: { mode: "direct" as const, connect: { rejectUnauthorized: false } } }
+        : {}),
+      auditContext: "untrusted-content-honeypot",
+      capture: false,
+    });
+  } catch {
+    // Swallow: containment does not depend on the service receiving this.
+  } finally {
+    await guarded?.release();
+  }
+}
+
 export async function runUntrustedContentPipeline(
   params: RunUntrustedContentPipelineParams,
 ): Promise<UntrustedContentPipelineResponse> {
