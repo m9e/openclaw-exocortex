@@ -17,16 +17,19 @@ export default definePluginEntry({
 
     api.registerTool(createUntrustedContentScanTool(api) as AnyAgentTool);
 
-    api.on("tool_result_transform", async (event) => {
+    api.on("tool_result_transform", async (event, ctx) => {
       if (!resolveUntrustedContentEnabled(api.config)) {
         return undefined;
       }
       const result = await maybeTransformToolResult({
+        api,
         cfg: api.config,
         toolName: event.toolName,
         params: event.params,
         toolCallId: event.toolCallId,
         result: event.result,
+        sessionKey: ctx?.sessionKey,
+        agentId: ctx?.agentId,
       });
       return {
         result: result as PluginHookToolResultTransformResult["result"],

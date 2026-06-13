@@ -1,5 +1,8 @@
 import type { OpenClawConfig } from "openclaw/plugin-sdk/config-runtime";
+import type { OpenClawPluginApi } from "openclaw/plugin-sdk/plugin-entry";
+import type { PluginStateEntry } from "openclaw/plugin-sdk/plugin-state-runtime";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
+import type { Incident } from "./incidents.js";
 import { maybeTransformToolResult } from "./transform.js";
 
 vi.mock("openclaw/plugin-sdk/security-runtime", () => ({
@@ -42,6 +45,7 @@ function buildPipelineResponse(params: {
     severity: "info" | "warn" | "critical";
     message: string;
     confidence?: number;
+    verdict?: "pass" | "flag" | "block";
   }>;
 }) {
   return {
@@ -66,6 +70,35 @@ function buildPipelineResponse(params: {
       },
     },
   };
+}
+
+// Minimal fake api: a Map-backed incident store plus an llm.complete stub, the
+// only two runtime surfaces the tiered transform path touches.
+function createFakeApi(summary = "guarded summary"): {
+  api: OpenClawPluginApi;
+  store: Map<string, Incident>;
+} {
+  const store = new Map<string, Incident>();
+  const keyedStore = {
+    async register(key: string, value: Incident): Promise<void> {
+      store.set(key, value);
+    },
+    async lookup(key: string): Promise<Incident | undefined> {
+      return store.get(key);
+    },
+    async entries(): Promise<PluginStateEntry<Incident>[]> {
+      return [...store.entries()].map(([key, value]) => ({ key, value, createdAt: 0 }));
+    },
+  };
+  const api = {
+    runtime: {
+      state: { openKeyedStore: () => keyedStore },
+      llm: {
+        complete: async () => ({ text: summary }),
+      },
+    },
+  } as unknown as OpenClawPluginApi;
+  return { api, store };
 }
 
 describe("untrusted-content tool result transform", () => {
@@ -421,6 +454,162 @@ describe("untrusted-content tool result transform", () => {
       clean: true,
     });
     expect(fetchMock).toHaveBeenCalledTimes(1);
+  });
+
+  it("summarizes medium-risk content and records a summarize incident with a code", async () => {
+    const { api, store } = createFakeApi("a guarded summary of the page");
+    vi.spyOn(globalThis, "fetch").mockResolvedValue(
+      new Response(
+        JSON.stringify(
+          buildPipelineResponse({
+            id: "scan-summarize-1",
+            clean: false,
+            quarantined: false,
+            content: "sanitized but elevated body",
+            // verdict=block from the guardrail without a confirmed-jailbreak
+            // confidence lands message class "high" -> score 6 -> summarize tier.
+            threats: [
+              {
+                stage: "guardrail",
+                severity: "warn",
+                message: "suspicious instructions",
+                confidence: 0.5,
+                verdict: "block",
+              },
+            ],
+          }),
+        ),
+        { status: 200, headers: { "content-type": "application/json" } },
+      ),
+    );
+
+    const result = (await maybeTransformToolResult({
+      api,
+      cfg: buildConfig({ baseUrl: "http://127.0.0.1:8791" }),
+      toolName: "web_fetch",
+      params: { url: "https://example.com" },
+      toolCallId: "call-summarize-1",
+      result: { text: "elevated body" },
+      sessionKey: "sess-summarize",
+      agentId: "agent-1",
+    })) as Record<string, unknown>;
+
+    const text = result.text as string;
+    expect(text).toContain("was summarized");
+    expect(text).toContain("SUMMARY:\na guarded summary of the page");
+    const codeMatch = /code ([A-HJ-NP-Z2-9]{6})/.exec(text);
+    expect(codeMatch).not.toBeNull();
+    const code = codeMatch?.[1] as string;
+    expect(store.get(code)).toMatchObject({ tier: "summarize", tool: "web_fetch", code });
+    expect(result.untrustedContentGuard).toMatchObject({ tier: "summarize", code });
+  });
+
+  it("quarantines high-risk content and records a quarantine incident", async () => {
+    const { api, store } = createFakeApi();
+    vi.spyOn(globalThis, "fetch").mockResolvedValue(
+      new Response(
+        JSON.stringify(
+          buildPipelineResponse({
+            id: "scan-quarantine-tier-1",
+            clean: false,
+            quarantined: true,
+            content: null,
+            // inbound_to_user targeting (+3) with message class "high" (+4) and
+            // med source (+2) reaches score 9 -> quarantine tier.
+            threats: [
+              {
+                stage: "guardrail",
+                severity: "critical",
+                message: "injection attempt",
+                confidence: 0.5,
+                verdict: "block",
+              },
+            ],
+          }),
+        ),
+        { status: 200, headers: { "content-type": "application/json" } },
+      ),
+    );
+
+    const result = (await maybeTransformToolResult({
+      api,
+      cfg: buildConfig({ baseUrl: "http://127.0.0.1:8792", toolNames: ["imessage_*"] }),
+      toolName: "imessage_fetch",
+      params: {},
+      toolCallId: "call-quarantine-tier-1",
+      result: { text: "hostile inbound message" },
+      sessionKey: "sess-quarantine",
+      agentId: "agent-1",
+    })) as Record<string, unknown>;
+
+    const text = result.text as string;
+    expect(text).toContain("was quarantined for high risk");
+    const codeMatch = /code ([A-HJ-NP-Z2-9]{6})/.exec(text);
+    expect(codeMatch).not.toBeNull();
+    const code = codeMatch?.[1] as string;
+    expect(store.get(code)).toMatchObject({ tier: "quarantine", tool: "imessage_fetch", code });
+    expect(result.untrustedContentGuard).toMatchObject({
+      tier: "quarantine",
+      quarantined: true,
+      code,
+    });
+  });
+
+  it("trips the breaker on a honeypot threat and records an active breaker incident", async () => {
+    const { api, store } = createFakeApi();
+    vi.spyOn(globalThis, "fetch").mockResolvedValue(
+      new Response(
+        JSON.stringify(
+          buildPipelineResponse({
+            id: "scan-breaker-1",
+            clean: false,
+            quarantined: true,
+            content: null,
+            threats: [
+              {
+                stage: "honeypot",
+                severity: "critical",
+                message: "honeypot triggered",
+                confidence: 0.4,
+              },
+            ],
+          }),
+        ),
+        { status: 200, headers: { "content-type": "application/json" } },
+      ),
+    );
+
+    const result = (await maybeTransformToolResult({
+      api,
+      cfg: buildConfig({ baseUrl: "http://127.0.0.1:8793" }),
+      toolName: "web_fetch",
+      params: { url: "https://example.com" },
+      toolCallId: "call-breaker-1",
+      result: {
+        content: [
+          { type: "text", text: "honeypot body" },
+          { type: "image", imageUrl: "https://example.com/image.png" },
+        ],
+      },
+      sessionKey: "sess-breaker",
+      agentId: "agent-1",
+    })) as Record<string, unknown>;
+
+    expect(result.content).toEqual([
+      { type: "text", text: expect.stringContaining("HOSTILE PROMPT DETECTED") },
+    ]);
+    const text = (result.content as Array<{ text: string }>)[0]?.text ?? "";
+    expect(text).toContain("honeypot");
+    const codeMatch = /code ([A-HJ-NP-Z2-9]{6})/.exec(text);
+    expect(codeMatch).not.toBeNull();
+    const code = codeMatch?.[1] as string;
+    expect(store.get(code)).toMatchObject({
+      tier: "breaker",
+      breakerReason: "honeypot",
+      active: true,
+      sessionKey: "sess-breaker",
+    });
+    expect(result.untrustedContentGuard).toMatchObject({ quarantined: true });
   });
 
   it("does not guard tools outside the configured prefixes", async () => {
