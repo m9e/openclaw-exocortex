@@ -23,7 +23,6 @@ import { recordIncident } from "./incidents.js";
 import {
   classifyRisk,
   deriveMessageClass,
-  isHoneypotTool,
   resolveChannelSourceTrust,
   resolveGuardChannels,
   resolveRiskWeights,
@@ -88,14 +87,15 @@ export async function evaluateChannelDispatch(
   );
   const maxThreatConfidence = confidences.length ? Math.max(...confidences) : 0;
   const guardrailVerdict = response.threats.find((threat) => threat.stage === "guardrail")?.verdict;
-  // A honeypot-stage signal or a configured trap surfaced in scanner output.
-  const honeypot =
-    response.threats.some((threat) => threat.stage === "honeypot") ||
-    isHoneypotTool(`channel:${event.channel ?? "?"}`, cfg);
+  const honeypot = response.threats.some((threat) => threat.stage === "honeypot");
+  // A critical-severity scanner/guardrail threat forces a confirmed jailbreak so
+  // blatant injections reach the breaker even below the 0.95 confidence band.
+  const hasCriticalThreat = response.threats.some((threat) => threat.severity === "critical");
   const { messageClass, confirmedJailbreak } = deriveMessageClass({
     quarantined: response.quarantined,
     maxThreatConfidence,
     verdict: guardrailVerdict,
+    hasCriticalThreat,
   });
   const risk = classifyRisk(
     {

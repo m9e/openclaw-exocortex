@@ -57,11 +57,16 @@ function createFakeStore() {
 
 type FakeStore = ReturnType<typeof createFakeStore>;
 
+// The incident helpers open two namespaces: the incidents store (passed in, so
+// tests can inspect it via store.map) and an internal active-blocks index store.
+// Route by namespace so the two do not collide in a single Map.
 function createFakeApi(store: FakeStore): OpenClawPluginApi {
+  const activeBlocks = createFakeStore();
   return {
     runtime: {
       state: {
-        openKeyedStore: () => store,
+        openKeyedStore: (opts: { namespace: string }) =>
+          opts.namespace === "untrusted-content-active-blocks" ? activeBlocks : store,
       },
     },
   } as unknown as OpenClawPluginApi;
@@ -166,24 +171,28 @@ describe("findActiveBlockForSession", () => {
     expect(await findActiveBlockForSession(api, "sess-none")).toBeUndefined();
   });
 
-  it("returns the most recent active incident for a session by createdAt", async () => {
+  it("returns the most recently recorded active block for a session (O(1) index)", async () => {
     const store = createFakeStore();
     const api = createFakeApi(store);
 
-    // recordIncident stamps Date.now(), which can tie within a tight loop, so
-    // overwrite createdAt directly to assert the max-createdAt selection.
-    const first = await recordIncident(api, { ...BASE_INPUT, sessionKey: "sess-X" });
+    // The session->active-code index keeps one entry per session: a later active
+    // record for the same session supersedes the earlier one.
+    await recordIncident(api, { ...BASE_INPUT, sessionKey: "sess-X" });
     const second = await recordIncident(api, { ...BASE_INPUT, sessionKey: "sess-X" });
-    store.map.set(first.code, { ...first, createdAt: 100 });
-    store.map.set(second.code, { ...second, createdAt: 200 });
 
     const latest = await findActiveBlockForSession(api, "sess-X");
     expect(latest?.code).toBe(second.code);
+  });
 
-    // Lower the second's createdAt below the first and the first now wins.
-    store.map.set(second.code, { ...second, createdAt: 50 });
-    const latestAfter = await findActiveBlockForSession(api, "sess-X");
-    expect(latestAfter?.code).toBe(first.code);
+  it("stops returning a block once its incident is cleared (index entry dropped)", async () => {
+    const store = createFakeStore();
+    const api = createFakeApi(store);
+
+    const incident = await recordIncident(api, { ...BASE_INPUT, sessionKey: "sess-Y" });
+    expect((await findActiveBlockForSession(api, "sess-Y"))?.code).toBe(incident.code);
+
+    await clearIncident(api, incident.code, "user");
+    expect(await findActiveBlockForSession(api, "sess-Y")).toBeUndefined();
   });
 });
 

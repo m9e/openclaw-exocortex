@@ -4,7 +4,6 @@ import { normalizeOptionalString } from "openclaw/plugin-sdk/text-runtime";
 import {
   resolveUntrustedContentApiKey,
   resolveUntrustedContentBaseUrl,
-  resolveUntrustedContentPipelineOverrides,
   resolveUntrustedContentPipelineId,
   resolveUntrustedContentTlsRejectUnauthorized,
   resolveUntrustedContentTimeoutMs,
@@ -243,9 +242,8 @@ export async function runUntrustedContentPipeline(
     params.timeoutMs > 0
       ? Math.floor(params.timeoutMs)
       : resolveUntrustedContentTimeoutMs(params.cfg);
-  // The deployed service owns pipeline policy in /v1/pipelines/{id}/run. Resolve
-  // overrides for forward compatibility, but do not send unsupported fields.
-  resolveUntrustedContentPipelineOverrides(params.cfg);
+  // The deployed service owns pipeline policy in /v1/pipelines/{id}/run, so the
+  // request carries only input fields; per-stage overrides are not sent.
   const requestBody = {
     input: {
       content: params.content,

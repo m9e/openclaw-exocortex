@@ -145,10 +145,16 @@ describe("deriveMessageClass", () => {
     confirmedJailbreak: boolean;
   }> = [
     {
-      name: "block verdict -> high",
+      name: "block verdict -> high + confirmedJailbreak (reaches breaker)",
       params: { quarantined: false, maxThreatConfidence: 0, verdict: "block" },
       messageClass: "high",
-      confirmedJailbreak: false,
+      confirmedJailbreak: true,
+    },
+    {
+      name: "critical severity threat -> confirmedJailbreak (reaches breaker)",
+      params: { quarantined: false, maxThreatConfidence: 0, hasCriticalThreat: true },
+      messageClass: "low",
+      confirmedJailbreak: true,
     },
     {
       name: "confidence 0.96 -> high + confirmedJailbreak",
@@ -159,6 +165,17 @@ describe("deriveMessageClass", () => {
     {
       name: "confidence 0.9 -> high without confirmedJailbreak",
       params: { quarantined: false, maxThreatConfidence: 0.9 },
+      messageClass: "high",
+      confirmedJailbreak: false,
+    },
+    {
+      name: "conf 0.90 with flag verdict and no critical -> not confirmed (stays high/quarantine)",
+      params: {
+        quarantined: false,
+        maxThreatConfidence: 0.9,
+        verdict: "flag",
+        hasCriticalThreat: false,
+      },
       messageClass: "high",
       confirmedJailbreak: false,
     },

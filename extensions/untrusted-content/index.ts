@@ -7,6 +7,7 @@ import { isUntrustedContentGuardConfigured, resolveUntrustedContentEnabled } fro
 import { evaluateBeforeToolCall } from "./src/gates.js";
 import { clearIncident, findActiveBlockForSession } from "./src/incidents.js";
 import { createUntrustedContentRevealTool } from "./src/reveal-tool.js";
+import { resolveBlockSessionId } from "./src/session-identity.js";
 import { createUntrustedContentScanTool } from "./src/tool.js";
 import { maybeTransformToolResult } from "./src/transform.js";
 
@@ -41,11 +42,11 @@ export default definePluginEntry({
       if (!resolveUntrustedContentEnabled(api.config)) {
         return undefined;
       }
-      const sessionKey = ctx?.sessionKey;
-      if (!sessionKey) {
+      const sessionId = resolveBlockSessionId(ctx);
+      if (!sessionId) {
         return undefined;
       }
-      const block = await findActiveBlockForSession(api, sessionKey);
+      const block = await findActiveBlockForSession(api, sessionId);
       if (!block) {
         return undefined;
       }
@@ -65,6 +66,7 @@ export default definePluginEntry({
       }
       const evaluation = await evaluateBeforeToolCall(api, {
         toolName: event.toolName,
+        sessionId: ctx?.sessionId,
         sessionKey: ctx?.sessionKey,
         agentId: ctx?.agentId,
         arguments: event.params,
@@ -121,6 +123,7 @@ export default definePluginEntry({
         params: event.params,
         toolCallId: event.toolCallId,
         result: event.result,
+        sessionId: ctx?.sessionId,
         sessionKey: ctx?.sessionKey,
         agentId: ctx?.agentId,
       });

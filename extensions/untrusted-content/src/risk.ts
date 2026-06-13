@@ -78,9 +78,18 @@ export function deriveMessageClass(params: {
   quarantined: boolean;
   maxThreatConfidence: number;
   verdict?: "pass" | "flag" | "block";
+  hasCriticalThreat?: boolean;
 }): { messageClass: MessageClass; confirmedJailbreak: boolean } {
   const confidence = params.maxThreatConfidence;
-  const confirmedJailbreak = confidence >= CONFIRMED_JAILBREAK_CONFIDENCE;
+  // Confirmed jailbreak (forces the breaker tier) when any of: a high-confidence
+  // scanner hit, an explicit guardrail "block" verdict, or a critical-severity
+  // threat. This lets blatant injections (which the heuristic scanner marks
+  // critical/block) reach the breaker even when numeric confidence is < 0.95,
+  // while the 8-9 multifactor band stays at quarantine.
+  const confirmedJailbreak =
+    confidence >= CONFIRMED_JAILBREAK_CONFIDENCE ||
+    params.verdict === "block" ||
+    params.hasCriticalThreat === true;
 
   let messageClass: MessageClass;
   if (params.verdict === "block" || confidence >= 0.9) {

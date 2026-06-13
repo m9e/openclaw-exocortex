@@ -55,9 +55,17 @@ function createFakeStore() {
 type FakeStore = ReturnType<typeof createFakeStore>;
 
 function createFakeApi(store: FakeStore, config?: OpenClawConfig): OpenClawPluginApi {
+  // Route the internal active-blocks index to its own store so store.map stays
+  // incidents-only for size assertions.
+  const activeBlocks = createFakeStore();
   return {
     config,
-    runtime: { state: { openKeyedStore: () => store } },
+    runtime: {
+      state: {
+        openKeyedStore: (opts: { namespace: string }) =>
+          opts.namespace === "untrusted-content-active-blocks" ? activeBlocks : store,
+      },
+    },
   } as unknown as OpenClawPluginApi;
 }
 

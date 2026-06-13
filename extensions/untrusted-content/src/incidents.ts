@@ -30,8 +30,15 @@ export type Incident = {
 };
 
 const INCIDENTS_NAMESPACE = "untrusted-content-incidents";
+// Second store mapping a canonical session id -> its active breaker code, so the
+// before_agent_run / before_tool_call gates resolve a held session in O(1)
+// instead of scanning the whole incidents table on every call. Namespace must be
+// a safe path segment (hyphens only, no colons).
+const ACTIVE_BLOCKS_NAMESPACE = "untrusted-content-active-blocks";
 const INCIDENTS_MAX_ENTRIES = 5000;
 const INCIDENTS_TTL_MS = 1000 * 60 * 60 * 24 * 30; // 30 days
+
+type ActiveBlockPointer = { code: string };
 
 // Unambiguous uppercase alphabet: no 0/O/1/I/L. Yields [A-HJ-NP-Z2-9].
 const CODE_ALPHABET = "ABCDEFGHJKMNPQRSTUVWXYZ23456789";
@@ -41,6 +48,14 @@ const CODE_COLLISION_RETRIES = 5;
 export function openIncidentStore(api: OpenClawPluginApi): PluginStateKeyedStore<Incident> {
   return api.runtime.state.openKeyedStore<Incident>({
     namespace: INCIDENTS_NAMESPACE,
+    maxEntries: INCIDENTS_MAX_ENTRIES,
+    defaultTtlMs: INCIDENTS_TTL_MS,
+  });
+}
+
+function openActiveBlockStore(api: OpenClawPluginApi): PluginStateKeyedStore<ActiveBlockPointer> {
+  return api.runtime.state.openKeyedStore<ActiveBlockPointer>({
+    namespace: ACTIVE_BLOCKS_NAMESPACE,
     maxEntries: INCIDENTS_MAX_ENTRIES,
     defaultTtlMs: INCIDENTS_TTL_MS,
   });
@@ -92,6 +107,12 @@ export async function recordIncident(
     active: input.active ?? input.tier === "breaker",
   };
   await store.register(code, incident);
+  // Maintain the O(1) session->active-code index so the gates never scan the
+  // whole incidents table. `sessionKey` here is the canonical session id the
+  // caller resolved via resolveBlockSessionId, so record and lookup match.
+  if (incident.active && incident.sessionKey) {
+    await openActiveBlockStore(api).register(incident.sessionKey, { code: incident.code });
+  }
   return incident;
 }
 
@@ -106,20 +127,14 @@ export async function findActiveBlockForSession(
   api: OpenClawPluginApi,
   sessionKey: string,
 ): Promise<Incident | undefined> {
-  // Volume is low (one entry per enforced block), so a full scan for the most
-  // recent active incident matching this session is cheap.
-  const entries = await openIncidentStore(api).entries();
-  let latest: Incident | undefined;
-  for (const entry of entries) {
-    const incident = entry.value;
-    if (!incident.active || incident.sessionKey !== sessionKey) {
-      continue;
-    }
-    if (!latest || incident.createdAt > latest.createdAt) {
-      latest = incident;
-    }
+  // O(1): resolve the canonical session id to its active code via the index,
+  // then load the incident. No full-table scan on this hot gate path.
+  const pointer = await openActiveBlockStore(api).lookup(sessionKey);
+  if (!pointer) {
+    return undefined;
   }
-  return latest;
+  const incident = await openIncidentStore(api).lookup(pointer.code);
+  return incident?.active ? incident : undefined;
 }
 
 export async function listActiveIncidents(api: OpenClawPluginApi): Promise<Incident[]> {
@@ -153,5 +168,10 @@ export async function clearIncident(
     clearedBy,
   };
   await store.register(normalized, cleared);
+  // Drop the session->active-code index entry so a future lookup for this
+  // session resolves to no active block.
+  if (existing.sessionKey) {
+    await openActiveBlockStore(api).delete(existing.sessionKey);
+  }
   return cleared;
 }

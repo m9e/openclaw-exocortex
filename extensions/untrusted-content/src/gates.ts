@@ -16,12 +16,14 @@ import type { OpenClawConfig } from "openclaw/plugin-sdk/config-runtime";
 import type { OpenClawPluginApi } from "openclaw/plugin-sdk/plugin-entry";
 import { triggerHoneypot } from "./client.js";
 import { findActiveBlockForSession, recordIncident } from "./incidents.js";
-import { isHoneypotTool } from "./risk.js";
+import { isHoneypotTool, resolveRiskWeights } from "./risk.js";
+import { resolveBlockSessionId } from "./session-identity.js";
 
 export type BeforeToolCallEvaluation = { block: true; reason: string } | undefined;
 
 type BeforeToolCallInput = {
   toolName: string;
+  sessionId?: string;
   sessionKey?: string;
   agentId?: string;
   arguments?: unknown;
@@ -41,11 +43,14 @@ export async function evaluateBeforeToolCall(
   input: BeforeToolCallInput,
 ): Promise<BeforeToolCallEvaluation> {
   const cfg = input.cfg ?? api.config;
+  // Canonical session id (sessionId -> sessionKey -> agentId) so record/lookup
+  // match regardless of sandbox session keying.
+  const sessionId = resolveBlockSessionId(input);
 
   // Containment first: an already-blocked session re-calling a honeypot tool
   // should just block, not record a duplicate incident.
-  if (input.sessionKey) {
-    const block = await findActiveBlockForSession(api, input.sessionKey);
+  if (sessionId) {
+    const block = await findActiveBlockForSession(api, sessionId);
     if (block) {
       return { block: true, reason: containmentReason(block.code) };
     }
@@ -66,8 +71,10 @@ export async function evaluateBeforeToolCall(
     tier: "breaker",
     breakerReason: "honeypot",
     tool: input.toolName,
-    score: 99,
-    sessionKey: input.sessionKey,
+    // Track config so the honeypot score follows the configured weight.
+    score: resolveRiskWeights(cfg).honeypotBonus,
+    // Store the canonical session id so the containment lookup matches.
+    ...(sessionId ? { sessionKey: sessionId } : {}),
     agentId: input.agentId,
     active: true,
   });

@@ -30,7 +30,10 @@ type UntrustedContentPluginConfig = {
 export const DEFAULT_UNTRUSTED_CONTENT_BASE_URL = "http://127.0.0.1:8787";
 export const DEFAULT_UNTRUSTED_CONTENT_TIMEOUT_SECONDS = 10;
 export const DEFAULT_UNTRUSTED_CONTENT_MAX_CONTENT_CHARS = 50_000;
-export const DEFAULT_UNTRUSTED_CONTENT_ON_ERROR = "pass" as const;
+// Fail closed: when the guard service errors, the tool-result path defaults to
+// quarantining the result rather than delivering unscanned content. "pass" is
+// the explicit operator opt-out for that error path.
+export const DEFAULT_UNTRUSTED_CONTENT_ON_ERROR = "quarantine" as const;
 export const DEFAULT_GUARDED_TOOL_NAMES = ["web_fetch", "browser"] as const;
 export const DEFAULT_UNTRUSTED_CONTENT_PIPELINE_ID = "default";
 const UNTRUSTED_CONTENT_API_KEY_PATH = "plugins.entries.untrusted-content.config.apiKey";
@@ -151,7 +154,8 @@ export function resolveUntrustedContentOnErrorMode(
   cfg?: OpenClawConfig,
 ): UntrustedContentOnErrorMode {
   const configured = resolvePluginConfig(cfg)?.onError;
-  return configured === "quarantine" ? configured : DEFAULT_UNTRUSTED_CONTENT_ON_ERROR;
+  // "pass" is the explicit opt-out; anything else (including unset) fails closed.
+  return configured === "pass" ? configured : DEFAULT_UNTRUSTED_CONTENT_ON_ERROR;
 }
 
 export function resolveUntrustedContentGuardedToolNames(cfg?: OpenClawConfig): string[] {

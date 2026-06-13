@@ -138,6 +138,10 @@
       "windowOverlap": {
         "type": "number",
         "minimum": 0
+      },
+      "risk": {
+        "type": "object",
+        "additionalProperties": true
       }
     }
   }
