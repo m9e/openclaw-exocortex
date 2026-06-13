@@ -233,6 +233,21 @@ lc.catalogTtlSeconds = 600;
 // the gateway dotenv. Preserve any operator-added tools.
 if (!isRecord(lc.tools)) lc.tools = {};
 
+// Projected locksmith_<slug> tools are registered optional; optional tools are
+// policy-hidden from the agent unless explicitly opted in. alsoAllow adds them
+// to the default tool set without converting to a restrictive allow-list.
+const agents = ensureRecord(cfg, "agents");
+const list = Array.isArray(agents.list) ? agents.list : (agents.list = []);
+let main = list.find((a) => isRecord(a) && a.id === "main");
+if (!main) {
+  main = { id: "main" };
+  list.push(main);
+}
+const mainTools = ensureRecord(main, "tools");
+const also = new Set(Array.isArray(mainTools.alsoAllow) ? mainTools.alsoAllow : []);
+also.add("locksmith_*");
+mainTools.alsoAllow = [...also].sort();
+
 fs.writeFileSync(configPath, `${JSON.stringify(cfg, null, 2)}\n`, { mode: 0o600 });
 console.log(`[install-locksmith-host] wired plugins.entries.locksmith in ${configPath}`);
 NODE

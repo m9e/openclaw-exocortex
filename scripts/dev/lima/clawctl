@@ -591,6 +591,12 @@ cmd_tool_add_local() {
       log "warning: $secret_env is not set yet; run: clawctl creds set $secret_env=- --name $RUNTIME_NAME"
   fi
 
+  # An empty `tools: []` inline list can't take appended block entries (invalid
+  # YAML). Convert it to a `tools:` block header before appending the first tool.
+  if grep -qE '^tools: \[\][[:space:]]*$' "$config"; then
+    perl -0pi -e 's/^tools: \[\][[:space:]]*\n/tools:\n/m' "$config"
+  fi
+
   {
     printf '  - name: "%s"\n' "$tool_name"
     printf '    description: "%s"\n' "$description"
