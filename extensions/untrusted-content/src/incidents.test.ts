@@ -204,7 +204,7 @@ describe("listActiveIncidents", () => {
 
     const active = await listActiveIncidents(api);
     expect(active.map((entry) => entry.code)).toEqual([third.code, first.code]);
-    expect(active.every((entry) => entry.active === true)).toBe(true);
+    expect(active.every((entry) => entry.active)).toBe(true);
   });
 
   it("returns an empty list when nothing is active", async () => {

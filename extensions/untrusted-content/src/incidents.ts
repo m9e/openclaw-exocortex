@@ -6,7 +6,7 @@
  * before-agent-run gate can block a session by looking it up by `sessionKey`.
  */
 import { randomBytes } from "node:crypto";
-import { type OpenClawPluginApi } from "openclaw/plugin-sdk/plugin-entry";
+import type { OpenClawPluginApi } from "openclaw/plugin-sdk/plugin-entry";
 import type { PluginStateKeyedStore } from "openclaw/plugin-sdk/plugin-state-runtime";
 import type { RiskTier } from "./risk.js";
 
@@ -112,7 +112,7 @@ export async function findActiveBlockForSession(
   let latest: Incident | undefined;
   for (const entry of entries) {
     const incident = entry.value;
-    if (incident.active !== true || incident.sessionKey !== sessionKey) {
+    if (!incident.active || incident.sessionKey !== sessionKey) {
       continue;
     }
     if (!latest || incident.createdAt > latest.createdAt) {
