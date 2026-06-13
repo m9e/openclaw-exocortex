@@ -2,17 +2,23 @@
 # install-locksmith-host.sh — PHASE 1 host-local Locksmith credential proxy
 # for the trusted "localclaw" host claw.
 #
-# This is a deliberate v0. The upstream credentials live in a 0600 env file on
-# the host (~/.config/locksmith/locksmith.env). This is accepted-insecure
-# against a local-root threat model: anything running as this user can already
-# read the file. Phase 2 relocates the proxy to a LAN box; phase 3 ports it to
-# Kamiwaza. Until then, locksmithd just hides upstream secrets from the agent's
-# own tool context — the agent calls locksmith_<tool>, never sees the key.
+# This installs Locksmith as a ROOT LaunchDaemon with ROOT-OWNED credentials.
+# The upstream credentials live in a 0600 root:wheel env file under
+# /usr/local/etc/locksmith (the dir is 0700 root, so the `yod` agent cannot even
+# traverse it). The hardening over the old user-mode v0: now only a root privesc
+# can read the upstream secrets — a meaningful step up from a user-readable file.
+# Phase 2 relocates the proxy to a LAN box; phase 3 ports it to Kamiwaza. Until
+# then, locksmithd hides upstream secrets from the agent's own tool context —
+# the agent calls locksmith_<tool>, never sees the key.
 #
 # What it does NOT do (out of scope for phase 1): no Kamiwaza provider block,
 # no Pipelock/egress_proxy, no delegation, no untrusted-content. Tools use
 # egress "direct" (host/LAN, no CONNECT proxy). The plugin is wired with
 # required:false so a down locksmith never bricks the gateway.
+#
+# Idempotent: re-running on a live root setup is safe — it preserves the
+# existing inbound token, never clobbers operator-added upstream creds or tools,
+# and only re-applies the binary/wrapper/plist/config skeleton.
 set -euo pipefail
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
@@ -20,29 +26,37 @@ REPO_ROOT="$(cd "$SCRIPT_DIR/../../.." && pwd)"
 WORKSPACE_ROOT="$(cd "$REPO_ROOT/.." && pwd)"
 
 LOCKSMITH_REPO="${LOCKSMITH_SOURCE_REPO:-$WORKSPACE_ROOT/deps/exocortex-agent-locksmith}"
-CONFIG_DIR="$HOME/.config/locksmith"
+
+# Root model paths (all root:wheel; CONFIG_DIR is 0700 so yod cannot traverse).
+CONFIG_DIR="/usr/local/etc/locksmith"
 ENV_FILE="$CONFIG_DIR/locksmith.env"
 CONFIG_FILE="$CONFIG_DIR/config.yaml"
-BIN_DIR="$HOME/.local/bin"
-LOCKSMITHD_BIN="$BIN_DIR/locksmithd"
-RUN_WRAPPER="$BIN_DIR/locksmithd-run.sh"
+LOCKSMITHD_BIN="/usr/local/bin/locksmithd"
+RUN_WRAPPER="/usr/local/bin/locksmithd-run.sh"
+LOG_DIR="/var/log/locksmith"
+PLIST_LABEL="com.exocortex.locksmith"
+PLIST_PATH="/Library/LaunchDaemons/$PLIST_LABEL.plist"
+
+# yod-owned gateway files (no sudo).
 OPENCLAW_ENV="$HOME/.openclaw/.env"
 OPENCLAW_CONFIG="$HOME/.openclaw/openclaw.json"
-PLIST_LABEL="com.exocortex.locksmith"
-PLIST_PATH="$HOME/Library/LaunchAgents/$PLIST_LABEL.plist"
-LOG_FILE="$HOME/Library/Logs/locksmith.log"
+
 LISTEN_HOST="127.0.0.1"
-# Default 9202, not 9200: on hosts that already run the root openclaw-hardened
-# boundary deployment, its locksmith-bridge (socat) owns 9200 and the boundary
-# locksmithd owns 9201. The phase-1 host-local proxy is additive and must not
-# collide with that stack, so it takes the next free port. Override with
-# LOCKSMITH_PORT if 9202 is taken too.
-LISTEN_PORT="${LOCKSMITH_PORT:-9202}"
+# The root daemon is canonical on 9200 (loopback). LOCKSMITH_PORT override is
+# kept for odd setups, but the live deployment is always 9200.
+LISTEN_PORT="${LOCKSMITH_PORT:-9200}"
 
 log() { printf '[install-locksmith-host] %s\n' "$*"; }
 die() {
   printf '[install-locksmith-host] error: %s\n' "$*" >&2
   exit 1
+}
+
+# Warn before a sudo call when no creds are cached so the password prompt is not
+# a surprise. We never suppress the prompt (root-owned creds need real sudo).
+sudo_note() {
+  sudo -n true 2>/dev/null && return 0
+  log "this installer needs sudo (Locksmith runs as a root LaunchDaemon with root-owned creds); you'll be prompted"
 }
 
 # --- preflight --------------------------------------------------------------
@@ -51,46 +65,35 @@ command -v cargo >/dev/null 2>&1 ||
 command -v corepack >/dev/null 2>&1 || die "corepack required (Node 22+)"
 command -v openssl >/dev/null 2>&1 || die "openssl required to generate the inbound token"
 command -v node >/dev/null 2>&1 || die "node required to wire the openclaw plugin config"
+command -v sudo >/dev/null 2>&1 || die "sudo required (root LaunchDaemon + root-owned creds)"
 [[ -f "$LOCKSMITH_REPO/Cargo.toml" ]] ||
   die "agent-locksmith dep repo not found at $LOCKSMITH_REPO (set LOCKSMITH_SOURCE_REPO)"
 
 log "locksmith dep repo: $LOCKSMITH_REPO"
-log "listen: http://$LISTEN_HOST:$LISTEN_PORT"
+log "listen: http://$LISTEN_HOST:$LISTEN_PORT (root LaunchDaemon)"
+sudo_note
 
-# --- 1. build locksmithd ----------------------------------------------------
+# --- 1. build + install locksmithd (root:wheel) -----------------------------
 log "building locksmithd (cargo build --release --bin locksmithd; this can take a few minutes)"
 (cd "$LOCKSMITH_REPO" && cargo build --release --bin locksmithd)
 BUILT_BIN="$LOCKSMITH_REPO/target/release/locksmithd"
 [[ -x "$BUILT_BIN" ]] || die "build did not produce $BUILT_BIN"
 
-mkdir -p "$BIN_DIR"
-install -m 0755 "$BUILT_BIN" "$LOCKSMITHD_BIN"
-log "installed $LOCKSMITHD_BIN"
+sudo install -m 0755 -o root -g wheel "$BUILT_BIN" "$LOCKSMITHD_BIN"
+log "installed $LOCKSMITHD_BIN (root:wheel 0755)"
 
-# --- 2. config dir ----------------------------------------------------------
-mkdir -p "$CONFIG_DIR"
-chmod 700 "$CONFIG_DIR"
+# --- 2. root dirs -----------------------------------------------------------
+# 0700 config dir: yod cannot traverse it, so the creds/config are unreadable
+# without root. 0750 log dir keeps logs off the agent's eyes too.
+sudo install -d -m 0700 -o root -g wheel "$CONFIG_DIR"
+sudo install -d -m 0750 -o root -g wheel "$LOG_DIR"
 
-# --- 3. inbound token (preserve any existing creds in the env file) ---------
-# Replace-or-append only the LOCKSMITH_INBOUND_TOKEN line so upstream creds the
-# operator already set with `clawctl creds set` survive a re-run.
-ensure_token_in_file() {
-  local file="$1" token="$2"
-  umask 177
-  touch "$file"
-  grep -vE '^LOCKSMITH_INBOUND_TOKEN=' "$file" >"$file.tmp" 2>/dev/null || true
-  printf 'LOCKSMITH_INBOUND_TOKEN=%s\n' "$token" >>"$file.tmp"
-  chmod 600 "$file.tmp"
-  mv "$file.tmp" "$file"
-}
-
-read_token_from_file() {
-  local file="$1"
-  [[ -f "$file" ]] || return 0
-  grep -E '^LOCKSMITH_INBOUND_TOKEN=' "$file" | tail -n 1 | cut -d= -f2- || true
-}
-
-TOKEN="$(read_token_from_file "$ENV_FILE")"
+# --- 3. inbound token (preserve existing token + operator upstream creds) ----
+# Reuse the existing LOCKSMITH_INBOUND_TOKEN if the root env file already has one
+# (idempotent); otherwise generate a fresh one. Then replace-or-append ONLY the
+# token line in the root env file (sudo), preserving any operator-added upstream
+# secrets. Finally mirror the token into the yod-readable gateway dotenv.
+TOKEN="$(sudo grep -E '^LOCKSMITH_INBOUND_TOKEN=' "$ENV_FILE" 2>/dev/null | tail -n 1 | cut -d= -f2- || true)"
 if [[ -z "$TOKEN" ]]; then
   TOKEN="$(openssl rand -hex 32)"
   log "generated a new inbound token"
@@ -98,26 +101,47 @@ else
   log "reusing existing inbound token from $ENV_FILE"
 fi
 [[ "$TOKEN" =~ ^[A-Za-z0-9._~+-]+$ ]] || die "inbound token has unsupported characters"
-ensure_token_in_file "$ENV_FILE" "$TOKEN"
-log "inbound token stored in $ENV_FILE (0600)"
 
-# Mirror the token into the gateway dotenv so the bundled locksmith plugin's
-# env fallback (LOCKSMITH_INBOUND_TOKEN) resolves it — no secret literal in
-# openclaw.json. The gateway loads ~/.openclaw/.env at startup.
+# Replace-or-append the token in the root env file via sudo (root:wheel 0600).
+sudo LOCKSMITH_INBOUND_TOKEN_VALUE="$TOKEN" ENV_FILE="$ENV_FILE" bash -c '
+  set -euo pipefail
+  umask 077
+  tmp="$(mktemp)"
+  grep -vE "^LOCKSMITH_INBOUND_TOKEN=" "$ENV_FILE" 2>/dev/null >"$tmp" || true
+  printf "LOCKSMITH_INBOUND_TOKEN=%s\n" "$LOCKSMITH_INBOUND_TOKEN_VALUE" >>"$tmp"
+  install -m 0600 -o root -g wheel "$tmp" "$ENV_FILE"
+  rm -f "$tmp"
+'
+log "inbound token stored in $ENV_FILE (root:wheel 0600)"
+
+# Mirror ONLY the inbound token into the yod-owned gateway dotenv so the bundled
+# locksmith plugin's env fallback resolves it. This authorizes CALLING locksmith,
+# never reading upstream secrets — those stay root-only in $ENV_FILE.
 mkdir -p "$(dirname "$OPENCLAW_ENV")"
-ensure_token_in_file "$OPENCLAW_ENV" "$TOKEN"
-log "inbound token mirrored into $OPENCLAW_ENV (0600)"
+(
+  umask 077
+  touch "$OPENCLAW_ENV"
+  tmp="$(mktemp)"
+  grep -vE '^LOCKSMITH_INBOUND_TOKEN=' "$OPENCLAW_ENV" 2>/dev/null >"$tmp" || true
+  printf 'LOCKSMITH_INBOUND_TOKEN=%s\n' "$TOKEN" >>"$tmp"
+  chmod 600 "$tmp"
+  mv "$tmp" "$OPENCLAW_ENV"
+)
+log "inbound token mirrored into $OPENCLAW_ENV (yod 0600)"
 
 # --- 4. config.yaml (idempotent; never clobber operator-added tools) --------
 # If config.yaml is absent, write the full host-local shape with tools: [].
 # If it exists, leave it untouched so `clawctl tool add` entries survive —
 # listen/inbound_auth are already present from the first write and never change
 # in phase 1. (The operator adds upstreams via `clawctl tool add`.)
-if [[ -f "$CONFIG_FILE" ]]; then
+if sudo test -f "$CONFIG_FILE"; then
   log "config.yaml already present; leaving it (and any operator tools) untouched"
 else
-  umask 177
-  cat >"$CONFIG_FILE" <<YAML
+  sudo LISTEN_HOST="$LISTEN_HOST" LISTEN_PORT="$LISTEN_PORT" CONFIG_FILE="$CONFIG_FILE" bash -c '
+    set -euo pipefail
+    umask 022
+    tmp="$(mktemp)"
+    cat >"$tmp" <<YAML
 listen:
   host: "$LISTEN_HOST"
   port: $LISTEN_PORT
@@ -134,31 +158,38 @@ shutdown:
 
 tools: []
 YAML
-  chmod 600 "$CONFIG_FILE"
-  log "wrote $CONFIG_FILE (0600, tools: [])"
+    install -m 0644 -o root -g wheel "$tmp" "$CONFIG_FILE"
+    rm -f "$tmp"
+  '
+  log "wrote $CONFIG_FILE (root:wheel 0644, tools: [])"
 fi
 
-# --- 5. run wrapper (sources the 0600 env, then execs the daemon) -----------
-# The secret stays in the 0600 env file, never in the plist. launchd execs the
-# wrapper, which sources locksmith.env (so ${LOCKSMITH_INBOUND_TOKEN} and any
-# upstream creds substitute at daemon startup) and replaces itself with the
-# daemon.
-umask 022
-cat >"$RUN_WRAPPER" <<WRAP
-#!/usr/bin/env bash
-set -euo pipefail
-set -a
-# shellcheck disable=SC1090
-source "$ENV_FILE"
-set +a
+# --- 5. run wrapper (sources the 0600 root env, then execs the daemon) -------
+# The secret stays in the 0600 root env file, never in the plist. launchd execs
+# the wrapper as root, which sources locksmith.env (so ${LOCKSMITH_INBOUND_TOKEN}
+# and any upstream creds substitute at daemon startup) and replaces itself with
+# the daemon.
+sudo RUN_WRAPPER="$RUN_WRAPPER" ENV_FILE="$ENV_FILE" LOCKSMITHD_BIN="$LOCKSMITHD_BIN" \
+  CONFIG_FILE="$CONFIG_FILE" bash -c '
+  set -euo pipefail
+  umask 077
+  tmp="$(mktemp)"
+  cat >"$tmp" <<WRAP
+#!/bin/bash
+set -a; source "$ENV_FILE"; set +a
 exec "$LOCKSMITHD_BIN" --config "$CONFIG_FILE"
 WRAP
-chmod 755 "$RUN_WRAPPER"
-log "wrote $RUN_WRAPPER"
+  install -m 0700 -o root -g wheel "$tmp" "$RUN_WRAPPER"
+  rm -f "$tmp"
+'
+log "wrote $RUN_WRAPPER (root:wheel 0700)"
 
-# --- 6. LaunchAgent ---------------------------------------------------------
-mkdir -p "$(dirname "$PLIST_PATH")" "$(dirname "$LOG_FILE")"
-cat >"$PLIST_PATH" <<PLIST
+# --- 6. LaunchDaemon (system domain) ----------------------------------------
+sudo PLIST_PATH="$PLIST_PATH" PLIST_LABEL="$PLIST_LABEL" RUN_WRAPPER="$RUN_WRAPPER" \
+  LOG_DIR="$LOG_DIR" CONFIG_DIR="$CONFIG_DIR" bash -c '
+  set -euo pipefail
+  tmp="$(mktemp)"
+  cat >"$tmp" <<PLIST
 <?xml version="1.0" encoding="UTF-8"?>
 <!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
 <plist version="1.0">
@@ -174,20 +205,25 @@ cat >"$PLIST_PATH" <<PLIST
   <key>KeepAlive</key>
   <true/>
   <key>StandardOutPath</key>
-  <string>$LOG_FILE</string>
+  <string>$LOG_DIR/locksmith.out.log</string>
   <key>StandardErrorPath</key>
-  <string>$LOG_FILE</string>
+  <string>$LOG_DIR/locksmith.err.log</string>
+  <key>WorkingDirectory</key>
+  <string>$CONFIG_DIR</string>
 </dict>
 </plist>
 PLIST
-log "wrote LaunchAgent $PLIST_PATH (label $PLIST_LABEL)"
+  install -m 0644 -o root -g wheel "$tmp" "$PLIST_PATH"
+  rm -f "$tmp"
+'
+log "wrote LaunchDaemon $PLIST_PATH (label $PLIST_LABEL)"
 
-launchctl unload "$PLIST_PATH" >/dev/null 2>&1 || true
-launchctl load "$PLIST_PATH"
-launchctl start "$PLIST_LABEL" >/dev/null 2>&1 || true
-log "loaded and started $PLIST_LABEL"
+# Re-bootstrap the system-domain job so the new plist/wrapper/binary take effect.
+sudo launchctl bootout system/"$PLIST_LABEL" >/dev/null 2>&1 || true
+sudo launchctl bootstrap system "$PLIST_PATH"
+log "bootstrapped $PLIST_LABEL into the system domain"
 
-# --- 7. wire the bundled locksmith plugin into openclaw.json ----------------
+# --- 7. wire the bundled locksmith plugin into openclaw.json (yod) ----------
 # required:false — phase 1 locksmith is a convenience, not load-bearing; a down
 # daemon must not brick the gateway. No inboundToken literal (env fallback). No
 # kamiwaza block. genericTool:false hides the generic locksmith_call.
@@ -264,7 +300,7 @@ for _ in 1 2 3 4 5 6 7 8 9 10; do
   fi
   sleep 1
 done
-[[ "$ok" == "1" ]] || die "locksmithd did not answer $HEALTH_URL — check $LOG_FILE"
+[[ "$ok" == "1" ]] || die "locksmithd did not answer $HEALTH_URL — check $LOG_DIR/locksmith.err.log"
 
 log "GET /health:"
 curl -fsS -m 5 "$HEALTH_URL" || die "health check failed"
@@ -282,6 +318,6 @@ else
 fi
 
 log "done."
-log "next: add an upstream and its credential, e.g."
+log "next: add an upstream and its credential (both root-owned; clawctl uses sudo), e.g."
 log "  scripts/dev/lima/clawctl tool add github --upstream https://api.github.com --auth-header Authorization --secret-env GITHUB_TOKEN --name localclaw"
 log "  scripts/dev/lima/clawctl creds set GITHUB_TOKEN=- --name localclaw   # reads value from stdin"

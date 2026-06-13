@@ -476,29 +476,42 @@ EOF
   esac
 }
 
-# Restart the host-local Locksmith LaunchAgent so the daemon re-reads its env
-# file (the wrapper sources locksmith.env at exec). kickstart -k re-execs the
-# job in place; the unload/load fallback covers older launchd.
-# Read the host-local Locksmith listen port from its config.yaml so clawctl and
-# the installer agree even when the proxy is not on 9200 (the root boundary
-# deployment owns 9200/9201, so the host proxy defaults to 9202).
+# Host-local Locksmith now runs as a ROOT LaunchDaemon (label
+# com.exocortex.locksmith, system domain) listening on loopback 9200. Its config
+# and upstream creds live under /usr/local/etc/locksmith (0700 root — yod cannot
+# traverse/read it), so creds/tool edits go through sudo. The inbound bearer
+# token is mirrored into ~/.openclaw/.env (yod-readable) — that only authorizes
+# CALLING locksmith, never reading the upstream secrets.
+LK_ROOT_CONFIG="/usr/local/etc/locksmith/config.yaml"
+LK_ROOT_ENV="/usr/local/etc/locksmith/locksmith.env"
+
+# The root daemon owns 9200 canonically. Allow a LOCKSMITH_PORT override for odd
+# setups, but the live deployment is always 9200.
 host_locksmith_port() {
-  local config="$HOME/.config/locksmith/config.yaml"
-  local port=""
-  if [[ -f "$config" ]]; then
-    port="$(awk '/^listen:/{l=1;next} l&&/port:/{gsub(/[^0-9]/,"",$2);print $2;exit}' "$config")"
-  fi
-  printf '%s\n' "${port:-9202}"
+  printf '%s\n' "${LOCKSMITH_PORT:-9200}"
 }
 
+# Read the yod-readable inbound bearer token from ~/.openclaw/.env (the gateway's
+# dotenv). This only authorizes calling locksmith; the upstream secrets stay
+# root-only in $LK_ROOT_ENV.
+host_locksmith_token() {
+  grep -E '^LOCKSMITH_INBOUND_TOKEN=' "$HOME/.openclaw/.env" 2>/dev/null |
+    tail -n 1 | cut -d= -f2-
+}
+
+# Warn the operator before a sudo call when no creds are cached, so an
+# interactive password prompt is not a surprise. We never suppress the prompt.
+host_locksmith_sudo_note() {
+  sudo -n true 2>/dev/null && return 0
+  log "this needs sudo (Locksmith creds/config are root-owned); you'll be prompted for your password"
+}
+
+# Restart the root Locksmith LaunchDaemon so it re-reads its env file and config
+# (the wrapper sources locksmith.env at exec). kickstart -k re-execs the job in
+# place in the system domain.
 host_locksmith_restart() {
-  local label="com.exocortex.locksmith"
-  local plist="$HOME/Library/LaunchAgents/$label.plist"
-  if launchctl kickstart -k "gui/$(id -u)/$label" >/dev/null 2>&1; then
-    return 0
-  fi
-  launchctl unload "$plist" >/dev/null 2>&1 || true
-  launchctl load "$plist" >/dev/null 2>&1 || true
+  host_locksmith_sudo_note
+  sudo launchctl kickstart -k system/com.exocortex.locksmith
 }
 
 cmd_creds() {
@@ -509,9 +522,10 @@ cmd_creds() {
       parse_name_flag "$@"
       resolve_runtime
       if [[ "$(runtime_kind "$RUNTIME_DIR")" == "local" ]]; then
-        local env_file="$HOME/.config/locksmith/locksmith.env"
-        [[ -f "$env_file" ]] || die "no host locksmith env at $env_file; run install-locksmith-host.sh"
-        cut -d= -f1 "$env_file"
+        # Root-owned creds: print key NAMES only, via sudo (yod cannot read the
+        # 0600 root env file). Values are never printed.
+        host_locksmith_sudo_note
+        sudo grep -oE '^[A-Za-z_][A-Za-z0-9_]*=' "$LK_ROOT_ENV" | sed 's/=$//'
         return
       fi
       gateway_shell <<'EOF'
@@ -533,19 +547,25 @@ EOF
       [[ -n "$value" ]] || die "empty credential value"
       resolve_runtime
       if [[ "$(runtime_kind "$RUNTIME_DIR")" == "local" ]]; then
-        # Host file: replace-or-append KEY=VALUE in the 0600 env file, then
-        # restart the LaunchAgent so the daemon picks up the new env. The value
-        # never reaches argv or stdout.
-        local env_file="$HOME/.config/locksmith/locksmith.env"
-        umask 077
-        mkdir -p "$(dirname "$env_file")"
-        touch "$env_file"
-        grep -vE "^${key}=" "$env_file" >"$env_file.tmp" 2>/dev/null || true
-        printf '%s=%s\n' "$key" "$value" >>"$env_file.tmp"
-        chmod 600 "$env_file.tmp"
-        mv "$env_file.tmp" "$env_file"
+        # Root-owned env file: replace-or-append KEY=VALUE in the 0600
+        # root:wheel env file via sudo, then restart the root LaunchDaemon so it
+        # picks up the new env. The value travels on the sudo bash stdin (never
+        # in argv or stdout). Upstream secrets are ROOT-ONLY by design — they are
+        # NOT mirrored into ~/.openclaw/.env; only LOCKSMITH_INBOUND_TOKEN lives
+        # there (set at install), and it only authorizes calling locksmith.
+        host_locksmith_sudo_note
+        printf '%s\n' "$value" | sudo CLAWCTL_CRED_KEY="$key" LK_ROOT_ENV="$LK_ROOT_ENV" bash -c '
+          set -euo pipefail
+          IFS= read -r value
+          umask 077
+          tmp="$(mktemp)"
+          grep -vE "^${CLAWCTL_CRED_KEY}=" "$LK_ROOT_ENV" 2>/dev/null >"$tmp" || true
+          printf "%s=%s\n" "$CLAWCTL_CRED_KEY" "$value" >>"$tmp"
+          install -m 0600 -o root -g wheel "$tmp" "$LK_ROOT_ENV"
+          rm -f "$tmp"
+        '
         host_locksmith_restart
-        echo "credential $key updated; host locksmith restarted"
+        echo "credential $key updated; root locksmith restarted"
         return
       fi
       # The secret travels on stdin after the script body, never in argv.
@@ -572,32 +592,24 @@ EOF
   esac
 }
 
-# Host-local `tool add`: append the tool to the host config.yaml (egress
-# "direct" — no Pipelock on the host), project it via openclaw.json, then
-# restart the host locksmith + gateway. Mirrors the pair-runtime add: a present
-# --secret-env writes `value: "${ENV}"` (the full header value lives in the env
-# var), and the env var must be set with `clawctl creds set`.
+# Host-local `tool add`: append the tool to the ROOT config.yaml (egress
+# "direct" — no Pipelock on the host) via sudo, project it via openclaw.json
+# (yod-owned, no sudo), then restart the root locksmith + gateway. Mirrors the
+# pair-runtime add: a present --secret-env writes `value: "${ENV}"` (the full
+# header value lives in the root env var), and the env var must be set with
+# `clawctl creds set` (also root, also via sudo).
 cmd_tool_add_local() {
   local tool_name="$1" upstream="$2" auth_header="$3" secret_env="$4" description="$5"
-  local config="$HOME/.config/locksmith/config.yaml"
-  local env_file="$HOME/.config/locksmith/locksmith.env"
-  [[ -f "$config" ]] || die "no host locksmith config at $config; run install-locksmith-host.sh"
+  # The root config dir is 0700 root — yod cannot read or test it directly, so
+  # the existence/dup/secret-presence checks run inside the sudo edit below.
+  host_locksmith_sudo_note
 
-  grep -q "  - name: \"$tool_name\"" "$config" &&
-    die "tool $tool_name already exists in the host Locksmith config"
-
-  if [[ -n "$secret_env" ]]; then
-    grep -qE "^${secret_env}=" "$env_file" 2>/dev/null ||
-      log "warning: $secret_env is not set yet; run: clawctl creds set $secret_env=- --name $RUNTIME_NAME"
-  fi
-
-  # An empty `tools: []` inline list can't take appended block entries (invalid
-  # YAML). Convert it to a `tools:` block header before appending the first tool.
-  if grep -qE '^tools: \[\][[:space:]]*$' "$config"; then
-    perl -0pi -e 's/^tools: \[\][[:space:]]*\n/tools:\n/m' "$config"
-  fi
-
-  {
+  # Build the tool YAML block locally (no secrets here — only `${ENV}`
+  # placeholders), then hand it to a single sudo edit that dup-checks, fixes an
+  # empty `tools: []` into a block header (invalid-YAML bug preserved from the
+  # user-mode version), appends, and rewrites the file root:wheel 0644.
+  local tool_block
+  tool_block="$(
     printf '  - name: "%s"\n' "$tool_name"
     printf '    description: "%s"\n' "$description"
     printf '    upstream: "%s"\n' "$upstream"
@@ -610,12 +622,37 @@ cmd_tool_add_local() {
       printf '      header: "%s"\n' "$auth_header"
       printf '      value: "${%s}"\n' "$secret_env"
     fi
-  } >>"$config"
+  )"
+
+  sudo CLAWCTL_TOOL_NAME="$tool_name" CLAWCTL_TOOL_SECRET_ENV="$secret_env" \
+    CLAWCTL_TOOL_BLOCK="$tool_block" LK_ROOT_CONFIG="$LK_ROOT_CONFIG" \
+    LK_ROOT_ENV="$LK_ROOT_ENV" bash -c '
+    set -euo pipefail
+    [[ -f "$LK_ROOT_CONFIG" ]] || { echo "no host locksmith config at $LK_ROOT_CONFIG; run install-locksmith-host.sh" >&2; exit 1; }
+    grep -q "  - name: \"$CLAWCTL_TOOL_NAME\"" "$LK_ROOT_CONFIG" && {
+      echo "tool $CLAWCTL_TOOL_NAME already exists in the host Locksmith config" >&2
+      exit 1
+    }
+    if [[ -n "$CLAWCTL_TOOL_SECRET_ENV" ]]; then
+      grep -qE "^${CLAWCTL_TOOL_SECRET_ENV}=" "$LK_ROOT_ENV" 2>/dev/null ||
+        echo "warning: $CLAWCTL_TOOL_SECRET_ENV is not set yet; run: clawctl creds set $CLAWCTL_TOOL_SECRET_ENV=- --name <runtime>" >&2
+    fi
+    # An empty `tools: []` inline list cannot take appended block entries
+    # (invalid YAML). Convert it to a `tools:` block header before the first add.
+    if grep -qE "^tools: \[\][[:space:]]*$" "$LK_ROOT_CONFIG"; then
+      perl -0pi -e "s/^tools: \[\][[:space:]]*\n/tools:\n/m" "$LK_ROOT_CONFIG"
+    fi
+    tmp="$(mktemp)"
+    cat "$LK_ROOT_CONFIG" >"$tmp"
+    printf "%s\n" "$CLAWCTL_TOOL_BLOCK" >>"$tmp"
+    install -m 0644 -o root -g wheel "$tmp" "$LK_ROOT_CONFIG"
+    rm -f "$tmp"
+  '
 
   host_locksmith_restart
   sleep 2
   local token
-  token="$(grep -E '^LOCKSMITH_INBOUND_TOKEN=' "$env_file" | tail -n 1 | cut -d= -f2-)"
+  token="$(host_locksmith_token)"
   curl -fsS -m 90 -H "Authorization: Bearer $token" "http://127.0.0.1:$(host_locksmith_port)/tools" |
     CLAWCTL_TOOL_NAME="$tool_name" python3 -c "
 import json, os, sys
@@ -653,11 +690,11 @@ cmd_tool() {
       parse_name_flag "$@"
       resolve_runtime
       if [[ "$(runtime_kind "$RUNTIME_DIR")" == "local" ]]; then
-        local env_file="$HOME/.config/locksmith/locksmith.env"
-        [[ -f "$env_file" ]] || die "no host locksmith env at $env_file; run install-locksmith-host.sh"
+        # Inbound token comes from ~/.openclaw/.env (yod-readable) — no sudo
+        # needed to LIST what the proxy serves; the root creds stay hidden.
         local token
-        token="$(grep -E '^LOCKSMITH_INBOUND_TOKEN=' "$env_file" | tail -n 1 | cut -d= -f2-)"
-        [[ -n "$token" ]] || die "LOCKSMITH_INBOUND_TOKEN missing from $env_file"
+        token="$(host_locksmith_token)"
+        [[ -n "$token" ]] || die "LOCKSMITH_INBOUND_TOKEN missing from ~/.openclaw/.env; run install-locksmith-host.sh"
         curl -fsS -m 90 -H "Authorization: Bearer $token" "http://127.0.0.1:$(host_locksmith_port)/tools" |
           python3 -c 'import json,sys; [print(t["name"]) for t in json.load(sys.stdin).get("tools", [])]'
         return
