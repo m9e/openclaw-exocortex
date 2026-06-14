@@ -5,6 +5,7 @@ import {
   normalizeOptionalLowercaseString,
   normalizeOptionalString,
 } from "openclaw/plugin-sdk/text-runtime";
+import { notifyBreaker } from "./breaker-notify.js";
 import { runUntrustedContentPipeline, type UntrustedContentPipelineResponse } from "./client.js";
 import {
   resolveUntrustedContentMaxContentChars,
@@ -57,6 +58,14 @@ const WRAPPED_EXTERNAL_CONTENT_RE =
 
 function isRecord(value: unknown): value is Record<string, unknown> {
   return Boolean(value) && typeof value === "object" && !Array.isArray(value);
+}
+
+// Best-effort display name for the breaker advisory; omitted when unknown.
+function resolveAgentName(cfg?: OpenClawConfig, agentId?: string): string | undefined {
+  if (!agentId) {
+    return undefined;
+  }
+  return cfg?.agents?.list?.find((agent) => agent.id === agentId)?.name;
 }
 
 function cloneRecord(value: Record<string, unknown>): Record<string, unknown> {
@@ -368,6 +377,20 @@ async function guardTextBlock(params: {
       ...(response.id ? { contentId: response.id } : {}),
       active: true,
     });
+    // Out-of-band advisory to the operator: fire once at trip time, after the
+    // incident is recorded. Bounded + best-effort + never throws, so awaiting it
+    // here gets the alert out before the turn ends without blocking the terminal
+    // withholding notice.
+    if (params.api) {
+      await notifyBreaker(params.api, {
+        code: recorded.code,
+        tool: params.toolName,
+        ...(risk.breakerReason ? { breakerReason: risk.breakerReason } : {}),
+        ...(resolveAgentName(params.cfg, params.agentId)
+          ? { agentName: resolveAgentName(params.cfg, params.agentId) }
+          : {}),
+      });
+    }
     return {
       tier: "breaker",
       code: recorded.code,

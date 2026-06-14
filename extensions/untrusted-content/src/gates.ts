@@ -14,6 +14,7 @@
  */
 import type { OpenClawConfig } from "openclaw/plugin-sdk/config-runtime";
 import type { OpenClawPluginApi } from "openclaw/plugin-sdk/plugin-entry";
+import { notifyBreaker } from "./breaker-notify.js";
 import { triggerHoneypot } from "./client.js";
 import { findActiveBlockForSession, recordIncident } from "./incidents.js";
 import { isHoneypotTool, resolveRiskWeights } from "./risk.js";
@@ -77,6 +78,15 @@ export async function evaluateBeforeToolCall(
     ...(sessionId ? { sessionKey: sessionId } : {}),
     agentId: input.agentId,
     active: true,
+  });
+  // Out-of-band operator advisory for the honeypot trip: fire once here, after
+  // the breaker incident is recorded. Best-effort and never throws.
+  const agentName = cfg?.agents?.list?.find((agent) => agent.id === input.agentId)?.name;
+  await notifyBreaker(api, {
+    code: incident.code,
+    tool: input.toolName,
+    breakerReason: "honeypot",
+    ...(agentName ? { agentName } : {}),
   });
   return { block: true, reason: honeypotReason(incident.code) };
 }
