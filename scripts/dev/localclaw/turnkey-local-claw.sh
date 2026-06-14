@@ -68,7 +68,10 @@ bash "$SCRIPT_DIR/create-guard-vm.sh" --name "$NAME" --guard-port "$GUARD_PORT"
 
 # --- 2. host build ----------------------------------------------------------
 log "building OpenClaw from checkout"
-(cd "$REPO_ROOT" && corepack pnpm install && corepack pnpm build)
+# `pnpm build`'s ui:build step can no-op from cache without emitting
+# dist/control-ui, leaving the dashboard with "Control UI assets not found".
+# Build the Control UI explicitly so the loopback dashboard works on first boot.
+(cd "$REPO_ROOT" && corepack pnpm install && corepack pnpm build && corepack pnpm ui:build)
 
 # --- 3. credentials + config ------------------------------------------------
 if [[ -n "$MODEL_BASE_URL" && -n "${LOCALCLAW_MODEL_API_KEY:-}" ]]; then
