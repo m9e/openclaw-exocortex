@@ -474,6 +474,7 @@ async function listMcpTools(params: {
   token: string;
   timeoutMs: number;
   verifyTls: boolean;
+  detachClose?: boolean;
 }): Promise<unknown[]> {
   const sessionId = await initializeMcpSession(params);
   try {
@@ -493,7 +494,15 @@ async function listMcpTools(params: {
     }
     return readMcpTools(payload);
   } finally {
-    await closeMcpSession({ ...params, sessionId });
+    // Each MCP round-trip through the platform ingress is slow (seconds), so
+    // during discovery the session-close DELETE is fired without blocking the
+    // result; closeMcpSession already swallows its own errors.
+    const close = closeMcpSession({ ...params, sessionId });
+    if (params.detachClose) {
+      void close;
+    } else {
+      await close;
+    }
   }
 }
 
@@ -571,7 +580,7 @@ export async function discoverKamiwazaTools(
       }
       let tools: unknown[];
       try {
-        tools = await listMcpTools({ mcpUrl, token, timeoutMs, verifyTls });
+        tools = await listMcpTools({ mcpUrl, token, timeoutMs, verifyTls, detachClose: true });
       } catch {
         return [];
       }
