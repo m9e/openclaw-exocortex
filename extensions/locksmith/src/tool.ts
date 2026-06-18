@@ -194,19 +194,32 @@ function describeLocksmithError(error: unknown): string {
   }
 }
 
+function buildProjectedToolDescription(projected: LocksmithProjectedTool): string {
+  const baseDescription =
+    projected.description ??
+    `Call the "${projected.slug}" tool exposed by Agent Locksmith without sending raw credentials. Locksmith injects upstream auth.`;
+  if (projected.slug !== "github" || projected.mode !== "proxy") {
+    return baseDescription;
+  }
+  return [
+    baseDescription,
+    "Use this as the GitHub REST API proxy: `path` is relative to api.github.com, and Locksmith injects auth.",
+    "Common writes: create repos with `POST user/repos` or `POST orgs/{org}/repos`; create/update one file with `PUT repos/{owner}/{repo}/contents/{path}`; push multi-file commits with Git Data API blobs, tree, commit, then refs.",
+    "Do not claim a GitHub create/push/update succeeded unless the matching POST/PUT/PATCH/DELETE result succeeded and a follow-up GET verifies the external state.",
+  ].join(" ");
+}
+
 function buildProjectedAgentTool(
   api: OpenClawPluginApi,
   ctx: OpenClawPluginToolContext,
   projected: LocksmithProjectedTool,
 ): AnyAgentTool {
-  const baseDescription =
-    projected.description ??
-    `Call the "${projected.slug}" tool exposed by Agent Locksmith without sending raw credentials. Locksmith injects upstream auth.`;
+  const description = buildProjectedToolDescription(projected);
   if (projected.mode === "json") {
     return {
       name: projected.toolName,
       label: projected.label ?? `Locksmith: ${projected.slug}`,
-      description: baseDescription,
+      description,
       parameters: resolveProjectedParameters(projected),
       execute: async (_toolCallId: string, rawParams: Record<string, unknown>) => {
         try {
@@ -230,7 +243,7 @@ function buildProjectedAgentTool(
   return {
     name: projected.toolName,
     label: projected.label ?? `Locksmith: ${projected.slug}`,
-    description: baseDescription,
+    description,
     parameters: ProjectedToolSchema,
     execute: async (_toolCallId: string, rawParams: Record<string, unknown>) => {
       try {

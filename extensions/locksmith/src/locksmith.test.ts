@@ -354,6 +354,21 @@ describe("locksmith projection / prompt-cache stability", () => {
     expect(tools.map((tool) => tool.name)).toEqual(["locksmith_github", "locksmith_tavily"]);
   });
 
+  it("enriches the GitHub projected tool description with write and verification guidance", () => {
+    const cfg = buildConfigWithProjectedTools({
+      github: { enabled: true, description: "GitHub REST API" },
+    });
+    const factory = createLocksmithProjectedToolFactory(fakeApi(cfg));
+    const [tool] = factory(fakeCtx()) as AnyAgentTool[];
+
+    expect(tool.name).toBe("locksmith_github");
+    expect(tool.description).toContain("GitHub REST API");
+    expect(tool.description).toContain("POST user/repos");
+    expect(tool.description).toContain("PUT repos/{owner}/{repo}/contents/{path}");
+    expect(tool.description).toContain("Git Data API blobs, tree, commit, then refs");
+    expect(tool.description).toContain("follow-up GET verifies the external state");
+  });
+
   it("registers configured projected tools as default-visible", () => {
     const cfg = buildConfigWithProjectedTools({
       github: { enabled: true, description: "GitHub REST API" },
@@ -470,6 +485,13 @@ describe("locksmith projection / prompt-cache stability", () => {
     expect(guidance).toContain(
       '"method": "POST", "path": "user/repos", "json": { "name": "repo-name"',
     );
+    expect(guidance).toContain('"method": "PUT", "path": "repos/OWNER/REPO/contents/README.md"');
+    expect(guidance).toContain('"method": "GET", "path": "repos/OWNER/REPO/commits/main"');
+    expect(guidance).toContain("GitHub write guidance for `locksmith_github`");
+    expect(guidance).toContain("POST repos/{owner}/{repo}/git/blobs");
+    expect(guidance).toContain("POST repos/{owner}/{repo}/git/refs");
+    expect(guidance).toContain("PATCH repos/{owner}/{repo}/git/refs/heads/main");
+    expect(guidance).toContain("follow-up read proves the external state");
   });
 
   it("bridge prompt guidance warns against raw Locksmith HTTP and secret handling", () => {

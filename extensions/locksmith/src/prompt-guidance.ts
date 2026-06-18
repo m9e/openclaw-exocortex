@@ -31,6 +31,17 @@ const PROJECTED_GUIDANCE = [
   'Generic proxy call shape: `{ "method": "GET", "path": "relative/path", "query": { "per_page": 10 } }`.',
 ].join("\n");
 
+const GITHUB_PROJECTED_PROXY_GUIDANCE = [
+  "GitHub write guidance for `locksmith_github`:",
+  "- Create a user repo with `POST user/repos`; create an org repo with `POST orgs/{org}/repos`.",
+  "- For a single file, use the Contents API: `PUT repos/{owner}/{repo}/contents/{path}` with JSON containing `message`, base64 `content`, and `branch`; include the current file `sha` when updating an existing file.",
+  "- For a multi-file commit, use the Git Data API sequence: create blobs, create a tree, create a commit, then create or update the branch ref.",
+  '- Empty repo first push: `POST repos/{owner}/{repo}/git/blobs` for file contents, `POST repos/{owner}/{repo}/git/trees`, `POST repos/{owner}/{repo}/git/commits`, then `POST repos/{owner}/{repo}/git/refs` with `ref: "refs/heads/main"`.',
+  "- Existing branch push: read the current ref/commit/tree, create blobs/tree/commit with the current commit as parent, then `PATCH repos/{owner}/{repo}/git/refs/heads/main`.",
+  "- Treat 200/201/204 mutation responses as pending until verified by a read such as `GET repos/{owner}/{repo}/commits/{branch}` or `GET repos/{owner}/{repo}/contents/{path}`.",
+  "- Never report that a repo, commit, branch, PR, issue, or file was created/pushed unless the matching Locksmith mutation result succeeded and a follow-up read proves the external state.",
+].join("\n");
+
 function buildProjectedUsageExamples(projected: LocksmithProjectedTool[]): string | undefined {
   const hasProxyMode = projected.some((entry) => entry.mode === "proxy");
   if (!hasProxyMode) {
@@ -45,6 +56,8 @@ function buildProjectedUsageExamples(projected: LocksmithProjectedTool[]): strin
       '- `locksmith_github` authenticated user: `{ "method": "GET", "path": "user" }`.',
       '- `locksmith_github` list repositories: `{ "method": "GET", "path": "user/repos", "query": { "type": "owner", "sort": "updated" } }`.',
       '- `locksmith_github` create repository: `{ "method": "POST", "path": "user/repos", "json": { "name": "repo-name", "private": true } }`.',
+      '- `locksmith_github` create one file: `{ "method": "PUT", "path": "repos/OWNER/REPO/contents/README.md", "json": { "message": "Initial commit", "content": "<base64>", "branch": "main" } }`.',
+      '- `locksmith_github` verify branch: `{ "method": "GET", "path": "repos/OWNER/REPO/commits/main" }`.',
     );
   }
   return lines.join("\n");
@@ -71,7 +84,17 @@ export function buildLocksmithStaticPromptGuidance(cfg?: OpenClawConfig): string
     return description ? `- ${entry.toolName}: ${description}` : `- ${entry.toolName}`;
   });
   const examples = buildProjectedUsageExamples(projected);
-  return [PROJECTED_GUIDANCE, `Projected Locksmith tools:\n${lines.join("\n")}`, examples]
+  const githubGuidance = projected.some(
+    (entry) => entry.slug === "github" && entry.mode === "proxy",
+  )
+    ? GITHUB_PROJECTED_PROXY_GUIDANCE
+    : undefined;
+  return [
+    PROJECTED_GUIDANCE,
+    `Projected Locksmith tools:\n${lines.join("\n")}`,
+    examples,
+    githubGuidance,
+  ]
     .filter((part): part is string => Boolean(part))
     .join("\n");
 }

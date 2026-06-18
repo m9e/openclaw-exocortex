@@ -210,6 +210,33 @@ higher-level tool call such as a Kamiwaza MCP tool; in that mode the projected
 OpenClaw tool forwards the agent's raw parameters as the JSON body with `POST`
 by default.
 
+### GitHub projected tool behavior
+
+When projecting the `github` slug, expose it as `locksmith_github` and let
+Locksmith inject the GitHub credential. Agents should call `locksmith_github`
+directly and use paths relative to `api.github.com`; they should not curl
+Locksmith, guess proxy URLs, or pass authorization headers.
+
+Common write paths:
+
+- Create a user repo: `POST user/repos`
+- Create an org repo: `POST orgs/{org}/repos`
+- Create or update one file: `PUT repos/{owner}/{repo}/contents/{path}` with
+  JSON containing `message`, base64 `content`, and `branch`; include the current
+  file `sha` when updating an existing file.
+- Push a multi-file commit through the Git Data API: create blobs, create a
+  tree, create a commit, then create or update the branch ref. For an empty
+  first push, the last step is `POST repos/{owner}/{repo}/git/refs` with
+  `ref: "refs/heads/main"`. For an existing branch, update
+  `repos/{owner}/{repo}/git/refs/heads/main` with `PATCH`.
+
+Treat GitHub mutations as pending until verified by a read such as
+`GET repos/{owner}/{repo}/commits/{branch}` or
+`GET repos/{owner}/{repo}/contents/{path}`. An agent should not report that a
+repo, branch, commit, issue, PR, or file was created/pushed unless the matching
+Locksmith mutation returned success and a follow-up read proves the external
+state.
+
 Locksmith slugs may use lowercase letters, numbers, hyphens, and underscores.
 The OpenClaw tool name is always `locksmith_<slug>`.
 
