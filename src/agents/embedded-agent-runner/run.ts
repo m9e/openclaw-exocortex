@@ -1256,6 +1256,12 @@ export async function runEmbeddedAgent(
       let compactionContinuationRetryInstruction: string | null = null;
       const MAX_POST_TOOL_FINALIZATION_RETRIES = 1;
       let postToolFinalizationRetryAttempts = 0;
+      let accumulatedToolMetasForSummary: Array<{
+        toolName: string;
+        meta?: string;
+        asyncStarted?: boolean;
+      }> = [];
+      let accumulatedToolSummaryHadFailure = false;
       let nextAttemptPromptOverride: string | null = null;
       const ackExecutionFastPathInstruction = resolveAckExecutionFastPathInstruction({
         provider,
@@ -1524,21 +1530,25 @@ export async function runEmbeddedAgent(
             nextAttemptPromptOverride ??
             (provider === "anthropic" ? scrubAnthropicRefusalMagic(params.prompt) : params.prompt);
           nextAttemptPromptOverride = null;
-          const promptAdditions = [
-            ackExecutionFastPathInstruction,
-            planningOnlyRetryInstruction,
-            postToolFinalizationRetryInstruction,
-            reasoningOnlyRetryInstruction,
-            emptyResponseRetryInstruction,
-            compactionContinuationRetryInstruction,
-          ].filter(
+          const postToolFinalizationRetryActive = postToolFinalizationRetryInstruction !== null;
+          const promptAdditions = (
+            postToolFinalizationRetryActive
+              ? [postToolFinalizationRetryInstruction]
+              : [
+                  ackExecutionFastPathInstruction,
+                  planningOnlyRetryInstruction,
+                  reasoningOnlyRetryInstruction,
+                  emptyResponseRetryInstruction,
+                  compactionContinuationRetryInstruction,
+                ]
+          ).filter(
             (value): value is string => typeof value === "string" && value.trim().length > 0,
           );
-          const prompt =
-            promptAdditions.length > 0
+          const prompt = postToolFinalizationRetryActive
+            ? promptAdditions.join("\n\n")
+            : promptAdditions.length > 0
               ? `${basePrompt}\n\n${promptAdditions.join("\n\n")}`
               : basePrompt;
-          const postToolFinalizationRetryActive = postToolFinalizationRetryInstruction !== null;
           const resolvedStreamApiKey = resolveAttemptDispatchApiKey({
             apiKeyInfo,
             runtimeAuthState,
@@ -1749,7 +1759,26 @@ export async function runEmbeddedAgent(
           if (postCompactionAbortError) {
             throw postCompactionAbortError;
           }
-          const attempt = normalizeEmbeddedRunAttemptResult(rawAttempt);
+          let attempt = normalizeEmbeddedRunAttemptResult(rawAttempt);
+          if (postToolFinalizationRetryActive) {
+            const finalizationAnswerText =
+              normalizeOptionalString(
+                resolveFinalAssistantVisibleText(attempt.lastAssistant) ??
+                  resolveFinalAssistantRawText(attempt.lastAssistant),
+              ) ?? "";
+            if (finalizationAnswerText && (attempt.toolMetas.length > 0 || attempt.lastToolError)) {
+              log.warn(
+                `post-tool finalization emitted tool artifact after visible answer: runId=${params.runId} ` +
+                  `sessionId=${params.sessionId} provider=${provider}/${modelId} ` +
+                  `tools=${attempt.toolMetas.length} — suppressing disabled-tool artifact`,
+              );
+              attempt = {
+                ...attempt,
+                toolMetas: [],
+                lastToolError: undefined,
+              };
+            }
+          }
 
           const {
             aborted,
@@ -1778,6 +1807,15 @@ export async function runEmbeddedAgent(
           }
           if (sessionFileUsed && sessionFileUsed !== activeSessionFile) {
             activeSessionFile = sessionFileUsed;
+          }
+          if (attempt.toolMetas.length > 0) {
+            accumulatedToolMetasForSummary = [
+              ...accumulatedToolMetasForSummary,
+              ...attempt.toolMetas,
+            ];
+          }
+          if (attempt.lastToolError) {
+            accumulatedToolSummaryHadFailure = true;
           }
           bootstrapPromptWarningSignaturesSeen =
             attempt.bootstrapPromptWarningSignaturesSeen ??
@@ -3045,8 +3083,8 @@ export async function runEmbeddedAgent(
             !attempt.lastToolError &&
             (attempt.toolMetas?.length ?? 0) === 0;
           const attemptToolSummary = buildTraceToolSummary({
-            toolMetas: attempt.toolMetas,
-            hadFailure: Boolean(attempt.lastToolError),
+            toolMetas: accumulatedToolMetasForSummary,
+            hadFailure: accumulatedToolSummaryHadFailure,
           });
           const failureSignal = resolveEmbeddedRunFailureSignal({
             trigger: params.trigger,

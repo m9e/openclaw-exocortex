@@ -697,12 +697,97 @@ describe("runEmbeddedAgent incomplete-turn safety", () => {
       toolsAllow?: string[];
       clientTools?: unknown;
     };
-    expect(secondCall.prompt).toContain(POST_TOOL_FINALIZATION_RETRY_INSTRUCTION);
+    expect(secondCall.prompt).toBe(POST_TOOL_FINALIZATION_RETRY_INSTRUCTION);
     expect(secondCall.disableTools).toBe(true);
     expect(secondCall.toolsAllow).toEqual([]);
     expect(secondCall.clientTools).toBeUndefined();
     expect(result.meta.finalAssistantVisibleText).toBe("OPENCLAW_GATEWAY_TOOL_GUARD");
+    expect(result.meta.toolSummary).toEqual({ calls: 1, tools: ["exec"], failures: 0 });
     expectWarnMessageWith("post-tool finalization turn detected");
+  });
+
+  it("suppresses spurious disabled-tool artifacts after post-tool finalization answers", async () => {
+    mockedClassifyFailoverReason.mockReturnValue(null);
+    mockedResolveModelAsync.mockResolvedValue({
+      model: {
+        id: "kamiwaza/tokenator/Kimi-K2.7-Code",
+        provider: "kzproxy",
+        contextWindow: 160000,
+        api: "openai-completions",
+      },
+      error: null,
+      authStorage: {
+        setRuntimeApiKey: vi.fn(),
+      },
+      modelRegistry: {},
+    });
+    mockedBuildEmbeddedRunPayloads.mockImplementation((payloadParams) =>
+      payloadParams.assistantTexts.map((text) => ({ text })),
+    );
+    mockedRunEmbeddedAttempt.mockResolvedValueOnce(
+      makeAttemptResult({
+        assistantTexts: [],
+        toolMetas: [{ toolName: "exec" }],
+        lastAssistant: {
+          role: "assistant",
+          api: "openai-completions",
+          stopReason: "stop",
+          provider: "kzproxy",
+          model: "kamiwaza/tokenator/Kimi-K2.7-Code",
+          content: [
+            {
+              type: "thinking",
+              thinking: "tool result processed, but no final text emitted",
+              thinkingSignature: "reasoning_content",
+            },
+          ],
+        } as unknown as EmbeddedRunAttemptResult["lastAssistant"],
+      }),
+    );
+    mockedRunEmbeddedAttempt.mockResolvedValueOnce(
+      makeAttemptResult({
+        assistantTexts: ["OPENCLAW_TOOL_STRESS_OK"],
+        toolMetas: [{ toolName: "exec", meta: "print text" }],
+        lastToolError: {
+          toolName: "exec",
+          meta: "print text",
+          error: "Tool exec not found",
+        },
+        lastAssistant: {
+          role: "assistant",
+          api: "openai-completions",
+          stopReason: "stop",
+          provider: "kzproxy",
+          model: "kamiwaza/tokenator/Kimi-K2.7-Code",
+          content: [{ type: "text", text: "OPENCLAW_TOOL_STRESS_OK" }],
+        } as unknown as EmbeddedRunAttemptResult["lastAssistant"],
+      }),
+    );
+
+    const result = await runEmbeddedAgent({
+      ...overflowBaseRunParams,
+      prompt:
+        "Use the exec tool exactly once to run: printf OPENCLAW_TOOL_STRESS_OK. " +
+        "After the tool result is available, reply with exactly: OPENCLAW_TOOL_STRESS_OK. " +
+        "Do not call any other tools.",
+      provider: "kzproxy",
+      model: "kamiwaza/tokenator/Kimi-K2.7-Code",
+      runId: "run-post-tool-finalization-spurious-disabled-tool",
+    });
+
+    expect(mockedRunEmbeddedAttempt).toHaveBeenCalledTimes(2);
+    const secondCall = mockedRunEmbeddedAttempt.mock.calls[1]?.[0] as { prompt?: string };
+    expect(secondCall.prompt).toBe(POST_TOOL_FINALIZATION_RETRY_INSTRUCTION);
+    const finalPayloadParams =
+      mockedBuildEmbeddedRunPayloads.mock.calls[
+        mockedBuildEmbeddedRunPayloads.mock.calls.length - 1
+      ]?.[0];
+    expect(finalPayloadParams?.toolMetas).toEqual([]);
+    expect(finalPayloadParams?.lastToolError).toBeUndefined();
+    expect(result.payloads).toEqual([{ text: "OPENCLAW_TOOL_STRESS_OK" }]);
+    expect(result.meta.finalAssistantVisibleText).toBe("OPENCLAW_TOOL_STRESS_OK");
+    expect(result.meta.toolSummary).toEqual({ calls: 1, tools: ["exec"], failures: 0 });
+    expectWarnMessageWith("post-tool finalization emitted tool artifact");
   });
 
   it("allows post-tool finalization after replay-unsafe tool results", () => {
@@ -3008,6 +3093,7 @@ describe("runEmbeddedAgent incomplete-turn safety", () => {
     expect(secondCall.prompt).toContain(POST_TOOL_FINALIZATION_RETRY_INSTRUCTION);
     expect(result.meta.terminalReplyKind).toBeUndefined();
     expect(result.meta.finalAssistantVisibleText).toBe("Visible StepFun answer.");
+    expect(result.meta.toolSummary).toEqual({ calls: 1, tools: ["process.poll"], failures: 0 });
     expectWarnMessageWith("post-tool finalization turn detected");
   });
 

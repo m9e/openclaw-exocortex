@@ -218,6 +218,31 @@ loopback/local pairing.
 - **Response**: `{type:"res", id, ok, payload|error}`
 - **Event**: `{type:"event", event, payload, seq?, stateVersion?}`
 
+## Agent Run Lifecycle
+
+`chat.send` is an asynchronous start request. A successful response means the
+Gateway accepted or reused a run; it does not mean the agent has produced a
+final reply or completed any tool calls.
+
+Typical direct clients should:
+
+1. Call `chat.send` with a stable `idempotencyKey`.
+2. Read the returned `runId` from `status: "started"` or handle
+   `status: "in_flight"` as an already-running duplicate.
+3. Call `agent.wait` with that `runId` until it returns a terminal `ok`,
+   `error`, or `timeout` status, or subscribe to the `chat` final event stream.
+4. Only report tool success/failure from the terminal run result, such as
+   `result.payloads`, `result.meta.finalAssistantVisibleText`, and
+   `result.meta.toolSummary`.
+
+Do not treat the `chat.send` ACK as the assistant's answer, and do not infer
+that a tool call succeeded because a model said it was about to call a tool.
+Tool calls and tool results are part of the accepted run and are only reliable
+after `agent.wait` or an equivalent final event reports the run outcome. If a
+client loses connection after `chat.send`, reconnect and call `agent.wait` with
+the same `runId`; do not replay the user turn unless the original run is known
+to be absent or cancelled.
+
 Side-effecting methods require **idempotency keys** (see schema).
 
 ## Roles + scopes
