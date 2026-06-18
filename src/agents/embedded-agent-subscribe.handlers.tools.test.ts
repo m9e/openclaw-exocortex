@@ -383,6 +383,92 @@ describe("handleToolExecutionEnd cron.add commitment tracking", () => {
   });
 });
 
+describe("handleToolExecutionEnd HTTP outcome tracking", () => {
+  it("records HTTP-like result status without storing response bodies in tool metas", async () => {
+    const { ctx } = createTestContext();
+
+    await handleToolExecutionStart(
+      ctx as never,
+      {
+        type: "tool_execution_start",
+        toolName: "locksmith_github",
+        toolCallId: "tool-locksmith-github-409",
+        args: {
+          method: "POST",
+          path: "repos/FreerangeGPT/firestorm/git/blobs",
+          body: { content: "x", encoding: "utf-8" },
+        },
+      } as never,
+    );
+
+    await handleToolExecutionEnd(
+      ctx as never,
+      {
+        type: "tool_execution_end",
+        toolName: "locksmith_github",
+        toolCallId: "tool-locksmith-github-409",
+        isError: false,
+        result: {
+          details: {
+            ok: false,
+            status: 409,
+            text: "Git Repository is empty.",
+          },
+        },
+      } as never,
+    );
+
+    expect(ctx.state.toolMetas).toEqual([
+      {
+        toolName: "locksmith_github",
+        meta: "repos/FreerangeGPT/firestorm/git/blobs",
+        method: "POST",
+        resultOk: false,
+        resultStatus: 409,
+      },
+    ]);
+  });
+
+  it("records exec nonzero exit as failed result metadata", async () => {
+    const { ctx } = createTestContext();
+
+    await handleToolExecutionStart(
+      ctx as never,
+      {
+        type: "tool_execution_start",
+        toolName: "exec",
+        toolCallId: "tool-exec-git-push-failed",
+        args: { command: "git push origin main" },
+      } as never,
+    );
+
+    await handleToolExecutionEnd(
+      ctx as never,
+      {
+        type: "tool_execution_end",
+        toolName: "exec",
+        toolCallId: "tool-exec-git-push-failed",
+        isError: false,
+        result: {
+          details: {
+            status: "failed",
+            exitCode: 128,
+            aggregated: "fatal: Authentication failed",
+          },
+        },
+      } as never,
+    );
+
+    expect(ctx.state.toolMetas).toEqual([
+      {
+        toolName: "exec",
+        meta: "push git changes",
+        resultOk: false,
+      },
+    ]);
+  });
+});
+
 describe("handleToolExecutionEnd sessions_spawn terminal success tracking", () => {
   it("records accepted sessions_spawn identifiers", async () => {
     const { ctx } = createTestContext();

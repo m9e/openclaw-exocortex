@@ -4916,6 +4916,9 @@ export async function runEmbeddedAttempt(
           ): entry is {
             toolName: string;
             meta?: string;
+            method?: string;
+            resultOk?: boolean;
+            resultStatus?: number;
             asyncStarted?: boolean;
             asyncTaskRunId?: string;
             asyncTaskId?: string;
@@ -4925,6 +4928,9 @@ export async function runEmbeddedAttempt(
           const normalized: {
             toolName: string;
             meta?: string;
+            method?: string;
+            resultOk?: boolean;
+            resultStatus?: number;
             asyncStarted?: true;
             asyncTaskRunId?: string;
             asyncTaskId?: string;
@@ -4932,6 +4938,15 @@ export async function runEmbeddedAttempt(
             toolName: entry.toolName,
             meta: entry.meta,
           };
+          if (entry.method) {
+            normalized.method = entry.method;
+          }
+          if (typeof entry.resultOk === "boolean") {
+            normalized.resultOk = entry.resultOk;
+          }
+          if (typeof entry.resultStatus === "number") {
+            normalized.resultStatus = entry.resultStatus;
+          }
           if (entry.asyncStarted === true) {
             normalized.asyncStarted = true;
           }

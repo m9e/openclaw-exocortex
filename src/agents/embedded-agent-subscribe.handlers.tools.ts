@@ -9,6 +9,7 @@ import {
 } from "@openclaw/normalization-core/record-coerce";
 import {
   normalizeOptionalLowercaseString,
+  normalizeOptionalString,
   readStringValue,
 } from "@openclaw/normalization-core/string-coerce";
 import {
@@ -100,6 +101,57 @@ function isMiddlewareToolResultError(result: unknown): boolean {
     !Array.isArray(details) &&
     (details as { middlewareError?: unknown }).middlewareError === true,
   );
+}
+
+function parseOptionalInteger(value: unknown): number | undefined {
+  const valueString = typeof value === "number" ? String(value) : normalizeOptionalString(value);
+  return valueString && /^-?\d+$/.test(valueString) ? Number.parseInt(valueString, 10) : undefined;
+}
+
+function readToolRequestMethod(args: unknown): string | undefined {
+  const record = readRecordField(args);
+  const method = normalizeOptionalString(record?.method ?? record?.httpMethod);
+  const normalized = method?.trim().toUpperCase();
+  return normalized && /^[A-Z]+$/.test(normalized) ? normalized : undefined;
+}
+
+function readToolResultOutcome(
+  result: unknown,
+  isToolError: boolean,
+): {
+  resultOk?: boolean;
+  resultStatus?: number;
+} {
+  const record = readRecordField(result);
+  const details = readRecordField(record?.details);
+  const source = details ?? record;
+  if (!source) {
+    return isToolError ? { resultOk: false } : {};
+  }
+  const okRaw = source.ok;
+  const statusRaw = source.status;
+  const exitCode = parseOptionalInteger(source.exitCode);
+  const statusString = normalizeOptionalLowercaseString(statusRaw);
+  const resultStatus = parseOptionalInteger(statusRaw);
+  const resultOk =
+    typeof okRaw === "boolean"
+      ? okRaw
+      : isToolError ||
+          (exitCode !== undefined && exitCode !== 0) ||
+          statusString === "failed" ||
+          statusString === "error" ||
+          statusString === "timeout" ||
+          statusString === "timed_out" ||
+          statusString === "canceled" ||
+          statusString === "cancelled"
+        ? false
+        : exitCode === 0
+          ? true
+          : undefined;
+  return {
+    ...(typeof resultOk === "boolean" ? { resultOk } : {}),
+    ...(resultStatus !== undefined ? { resultStatus } : {}),
+  };
 }
 
 function loadExecApprovalReply(): Promise<ExecApprovalReplyModule> {
@@ -229,6 +281,7 @@ function buildToolCallSummary(toolName: string, args: unknown, meta?: string): T
   const mutation = buildToolMutationState(toolName, args, meta);
   return {
     meta,
+    method: readToolRequestMethod(args),
     mutatingAction: mutation.mutatingAction,
     actionFingerprint: mutation.actionFingerprint,
     fileTarget: mutation.fileTarget,
@@ -1179,9 +1232,12 @@ export async function handleToolExecutionEnd(
   const meta = callSummary?.meta;
   const asyncStarted = !isToolError && isAsyncStartedToolResult(sanitizedResult);
   const asyncTaskIds = asyncStarted ? readAsyncStartedTaskIds(sanitizedResult) : {};
+  const resultOutcome = readToolResultOutcome(sanitizedResult, isToolError);
   ctx.state.toolMetas.push({
     toolName,
     meta,
+    ...(callSummary?.method ? { method: callSummary.method } : {}),
+    ...resultOutcome,
     ...(asyncStarted ? { asyncStarted: true, ...asyncTaskIds } : {}),
   });
   const acceptedSessionSpawn =

@@ -11,6 +11,10 @@ import {
 
 export type AsyncStartedToolMeta = {
   toolName?: string;
+  meta?: string;
+  method?: string;
+  resultOk?: boolean;
+  resultStatus?: number;
   asyncStarted?: boolean;
   asyncTaskRunId?: string;
   asyncTaskId?: string;

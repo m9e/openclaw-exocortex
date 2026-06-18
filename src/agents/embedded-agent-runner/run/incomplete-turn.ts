@@ -140,9 +140,9 @@ const GITHUB_TOOL_BACKED_CONTEXT_RE =
 const GITHUB_UNBACKED_SUCCESS_CLAIM_RE =
   /\b(?:the push is complete|pushed(?:\s+and\s+verified)?|(?:i|we)(?:'ve| have)\s+(?:pushed|uploaded|published|mirrored|created|updated|verified)|has\s+been\s+mirrored|created\s+`?refs\/heads\/[^\s`]+`?|commit\s+`?[0-9a-f]{6,40}`?.{0,120}\bon\s+`?(?:main|master)`?|\d+\s+files?\s+present)\b/i;
 const GITHUB_SUPPORTING_LOCKSMITH_META_RE =
-  /\b(?:repos\/[^/\s]+\/[^/\s]+\/git\/(?:blobs|trees|commits|refs)|repos\/[^/\s]+\/[^/\s]+\/contents(?:\/|$)|user\/repos|orgs\/[^/\s]+\/repos)\b/i;
+  /\b(?:repos\/[^/\s]+\/[^/\s]+\/git\/refs(?:\/|$)|repos\/[^/\s]+\/[^/\s]+\/contents(?:\/|$)|user\/repos|orgs\/[^/\s]+\/repos|repos\/[^/\s]+\/[^/\s]+\/(?:pulls|issues|releases)(?:\/|$))\b/i;
 const GITHUB_SUPPORTING_SHELL_META_RE =
-  /\b(?:git\s+push|gh\s+(?:repo\s+create|pr\s+create|release\s+create)|gh\s+api\b.*(?:--method|-X)\s*(?:POST|PUT|PATCH|DELETE)|curl\b.*(?:-X|--request)\s*(?:POST|PUT|PATCH|DELETE)|curl\b.*(?:--data|-d)\b)/i;
+  /\b(?:git\s+push|push\s+git\s+changes|gh\s+(?:repo\s+create|pr\s+create|release\s+create)|gh\s+api\b.*(?:--method|-X)\s*(?:POST|PUT|PATCH|DELETE)|curl\b.*(?:-X|--request)\s*(?:POST|PUT|PATCH|DELETE)|curl\b.*(?:--data|-d)\b)/i;
 const UNBACKED_SUCCESS_RETRY_SAFE_EXEC_META_RE =
   /\b(?:git\s+(?:status|log|remote|rev-parse|show|branch|ls-tree|cat-file|ls-remote)|run\s+git\s+(?:status|log|remote|rev-parse|show|branch|ls-tree|cat-file|ls-remote)|base64\b.*(?:print text|\.gitignore)|env\s*\|\s*grep|printenv\s*\|\s*grep)\b/i;
 const SINGLE_ACTION_EXPLICIT_CONTINUATION_RE =
@@ -1067,14 +1067,32 @@ function hasGitHubToolBackedSuccessClaim(text: string): boolean {
   return GITHUB_TOOL_BACKED_CONTEXT_RE.test(text) && GITHUB_UNBACKED_SUCCESS_CLAIM_RE.test(text);
 }
 
+function hasFailedToolResultSignal(entry: PlanningOnlyAttempt["toolMetas"][number]): boolean {
+  if (entry.resultOk === false) {
+    return true;
+  }
+  return typeof entry.resultStatus === "number" && entry.resultStatus >= 400;
+}
+
+function hasMutatingHttpMethodSignal(entry: PlanningOnlyAttempt["toolMetas"][number]): boolean {
+  const method = normalizeLowercaseStringOrEmpty(entry.method ?? "");
+  if (!method) {
+    return true;
+  }
+  return method === "post" || method === "put" || method === "patch" || method === "delete";
+}
+
 function hasSupportingGitHubMutationToolActivity(
   toolMetas?: PlanningOnlyAttempt["toolMetas"],
 ): boolean {
   return normalizePlanningToolMetas(toolMetas).some((entry) => {
+    if (hasFailedToolResultSignal(entry)) {
+      return false;
+    }
     const toolName = normalizeLowercaseStringOrEmpty(entry.toolName);
     const meta = normalizeLowercaseStringOrEmpty(entry.meta ?? "");
     if (toolName === "locksmith_github" || toolName === "locksmith_call") {
-      return GITHUB_SUPPORTING_LOCKSMITH_META_RE.test(meta);
+      return hasMutatingHttpMethodSignal(entry) && GITHUB_SUPPORTING_LOCKSMITH_META_RE.test(meta);
     }
     if (toolName === "exec" || toolName === "bash") {
       return GITHUB_SUPPORTING_SHELL_META_RE.test(meta);
@@ -1090,6 +1108,9 @@ function hasUnsafeToolActivityForUnbackedSuccessRetry(
     const toolName = normalizeLowercaseStringOrEmpty(entry.toolName);
     const meta = normalizeLowercaseStringOrEmpty(entry.meta ?? "");
     if (!toolName || toolName === "update_plan") {
+      return false;
+    }
+    if (hasFailedToolResultSignal(entry)) {
       return false;
     }
     if (toolName === "locksmith_github" || toolName === "locksmith_call") {

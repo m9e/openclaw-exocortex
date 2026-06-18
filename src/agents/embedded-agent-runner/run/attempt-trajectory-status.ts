@@ -27,6 +27,9 @@ export type ResolveAttemptTrajectoryTerminalParams = {
   toolMetas: Array<{
     toolName: string;
     meta?: string;
+    method?: string;
+    resultOk?: boolean;
+    resultStatus?: number;
     asyncStarted?: boolean;
     asyncTaskRunId?: string;
     asyncTaskId?: string;

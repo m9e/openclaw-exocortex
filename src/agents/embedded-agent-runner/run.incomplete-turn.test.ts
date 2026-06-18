@@ -3375,6 +3375,213 @@ describe("runEmbeddedAgent incomplete-turn safety", () => {
     expect(retryInstruction).toBe(UNBACKED_TOOL_SUCCESS_RETRY_INSTRUCTION);
   });
 
+  it("detects unbacked GitHub success claims after failed Locksmith Git Data writes", () => {
+    const retryInstruction = resolvePlanningOnlyRetryInstruction({
+      provider: "kzproxy",
+      modelId: "kamiwaza/tokenator/Kimi-K2.7-Code",
+      modelApi: "openai-completions",
+      prompt: "Use locksmith_github to push the local files to the empty GitHub repo.",
+      supportingToolMetas: [
+        {
+          toolName: "locksmith_github",
+          meta: "repos/FreerangeGPT/firestorm/git/blobs",
+          resultOk: false,
+          resultStatus: 409,
+        },
+      ],
+      aborted: false,
+      timedOut: false,
+      attempt: makeAttemptResult({
+        toolMetas: [
+          {
+            toolName: "locksmith_github",
+            meta: "repos/FreerangeGPT/firestorm/git/blobs",
+            resultOk: false,
+            resultStatus: 409,
+          },
+        ],
+        assistantTexts: [
+          "Pushed and verified. The local commit `f494d98` has been mirrored to " +
+            "`FreerangeGPT/firestorm` as commit `70bd104` on `main`, containing all 9 files.",
+        ],
+      }),
+    });
+
+    expect(retryInstruction).toBe(UNBACKED_TOOL_SUCCESS_RETRY_INSTRUCTION);
+  });
+
+  it("detects unbacked GitHub create claims after failed Locksmith repo creation", () => {
+    const retryInstruction = resolvePlanningOnlyRetryInstruction({
+      provider: "kzproxy",
+      modelId: "kamiwaza/tokenator/Kimi-K2.7-Code",
+      modelApi: "openai-completions",
+      prompt: "Create the GitHub repo with locksmith_github.",
+      supportingToolMetas: [
+        {
+          toolName: "locksmith_github",
+          meta: "user/repos",
+          resultOk: false,
+          resultStatus: 403,
+        },
+      ],
+      aborted: false,
+      timedOut: false,
+      attempt: makeAttemptResult({
+        toolMetas: [
+          {
+            toolName: "locksmith_github",
+            meta: "user/repos",
+            resultOk: false,
+            resultStatus: 403,
+          },
+        ],
+        assistantTexts: [
+          "I've created `FreerangeGPT/firestorm` on GitHub and verified the repo is ready.",
+        ],
+      }),
+    });
+
+    expect(retryInstruction).toBe(UNBACKED_TOOL_SUCCESS_RETRY_INSTRUCTION);
+  });
+
+  it("does not treat read-only Locksmith repo listing as repo creation evidence", () => {
+    const retryInstruction = resolvePlanningOnlyRetryInstruction({
+      provider: "kzproxy",
+      modelId: "kamiwaza/tokenator/Kimi-K2.7-Code",
+      modelApi: "openai-completions",
+      prompt: "Create the GitHub repo with locksmith_github.",
+      supportingToolMetas: [
+        {
+          toolName: "locksmith_github",
+          meta: "user/repos",
+          method: "GET",
+          resultOk: true,
+          resultStatus: 200,
+        },
+      ],
+      aborted: false,
+      timedOut: false,
+      attempt: makeAttemptResult({
+        toolMetas: [
+          {
+            toolName: "locksmith_github",
+            meta: "user/repos",
+            method: "GET",
+            resultOk: true,
+            resultStatus: 200,
+          },
+        ],
+        assistantTexts: [
+          "I've created `FreerangeGPT/firestorm` on GitHub and verified the repo is ready.",
+        ],
+      }),
+    });
+
+    expect(retryInstruction).toBe(UNBACKED_TOOL_SUCCESS_RETRY_INSTRUCTION);
+  });
+
+  it("detects unbacked GitHub success claims after failed shell pushes", () => {
+    const retryInstruction = resolvePlanningOnlyRetryInstruction({
+      provider: "kzproxy",
+      modelId: "kamiwaza/tokenator/Kimi-K2.7-Code",
+      modelApi: "openai-completions",
+      prompt: "Push the local files to GitHub.",
+      supportingToolMetas: [
+        {
+          toolName: "exec",
+          meta: "push git changes",
+          resultOk: false,
+        },
+      ],
+      aborted: false,
+      timedOut: false,
+      attempt: makeAttemptResult({
+        toolMetas: [
+          {
+            toolName: "exec",
+            meta: "push git changes",
+            resultOk: false,
+          },
+        ],
+        assistantTexts: ["Pushed and verified. The repo now contains all 9 files."],
+      }),
+    });
+
+    expect(retryInstruction).toBe(UNBACKED_TOOL_SUCCESS_RETRY_INSTRUCTION);
+  });
+
+  it("does not flag GitHub success claims backed by successful shell pushes", () => {
+    const retryInstruction = resolvePlanningOnlyRetryInstruction({
+      provider: "kzproxy",
+      modelId: "kamiwaza/tokenator/Kimi-K2.7-Code",
+      modelApi: "openai-completions",
+      prompt: "Push the local files to GitHub.",
+      supportingToolMetas: [
+        {
+          toolName: "exec",
+          meta: "push git changes",
+          resultOk: true,
+        },
+      ],
+      aborted: false,
+      timedOut: false,
+      attempt: makeAttemptResult({
+        assistantTexts: ["Pushed and verified. The repo now contains all 9 files."],
+      }),
+    });
+
+    expect(retryInstruction).toBeNull();
+  });
+
+  it("detects unbacked GitHub success claims after partial Git Data write failure", () => {
+    const retryInstruction = resolvePlanningOnlyRetryInstruction({
+      provider: "kzproxy",
+      modelId: "kamiwaza/tokenator/Kimi-K2.7-Code",
+      modelApi: "openai-completions",
+      prompt: "Use locksmith_github to push the local files to the empty GitHub repo.",
+      supportingToolMetas: [
+        {
+          toolName: "locksmith_github",
+          meta: "repos/FreerangeGPT/firestorm/git/blobs",
+          method: "POST",
+          resultOk: true,
+          resultStatus: 201,
+        },
+        {
+          toolName: "locksmith_github",
+          meta: "repos/FreerangeGPT/firestorm/git/trees",
+          method: "POST",
+          resultOk: true,
+          resultStatus: 201,
+        },
+        {
+          toolName: "locksmith_github",
+          meta: "repos/FreerangeGPT/firestorm/git/commits",
+          method: "POST",
+          resultOk: true,
+          resultStatus: 201,
+        },
+        {
+          toolName: "locksmith_github",
+          meta: "repos/FreerangeGPT/firestorm/git/refs",
+          method: "POST",
+          resultOk: false,
+          resultStatus: 422,
+        },
+      ],
+      aborted: false,
+      timedOut: false,
+      attempt: makeAttemptResult({
+        assistantTexts: [
+          "Pushed and verified. The local commit `f494d98` has been mirrored to " +
+            "`FreerangeGPT/firestorm` as commit `70bd104` on `main`, containing all 9 files.",
+        ],
+      }),
+    });
+
+    expect(retryInstruction).toBe(UNBACKED_TOOL_SUCCESS_RETRY_INSTRUCTION);
+  });
+
   it("does not flag GitHub success claims backed by accumulated Git Data writes", () => {
     const retryInstruction = resolvePlanningOnlyRetryInstruction({
       provider: "kzproxy",
@@ -3382,10 +3589,34 @@ describe("runEmbeddedAgent incomplete-turn safety", () => {
       modelApi: "openai-completions",
       prompt: "Use locksmith_github to push the local files to the empty GitHub repo.",
       supportingToolMetas: [
-        { toolName: "locksmith_github", meta: "repos/FreerangeGPT/firestorm/git/blobs" },
-        { toolName: "locksmith_github", meta: "repos/FreerangeGPT/firestorm/git/trees" },
-        { toolName: "locksmith_github", meta: "repos/FreerangeGPT/firestorm/git/commits" },
-        { toolName: "locksmith_github", meta: "repos/FreerangeGPT/firestorm/git/refs" },
+        {
+          toolName: "locksmith_github",
+          meta: "repos/FreerangeGPT/firestorm/git/blobs",
+          method: "POST",
+          resultOk: true,
+          resultStatus: 201,
+        },
+        {
+          toolName: "locksmith_github",
+          meta: "repos/FreerangeGPT/firestorm/git/trees",
+          method: "POST",
+          resultOk: true,
+          resultStatus: 201,
+        },
+        {
+          toolName: "locksmith_github",
+          meta: "repos/FreerangeGPT/firestorm/git/commits",
+          method: "POST",
+          resultOk: true,
+          resultStatus: 201,
+        },
+        {
+          toolName: "locksmith_github",
+          meta: "repos/FreerangeGPT/firestorm/git/refs",
+          method: "POST",
+          resultOk: true,
+          resultStatus: 201,
+        },
       ],
       aborted: false,
       timedOut: false,
