@@ -173,6 +173,7 @@ import {
   resolveIncompleteTurnPayloadText,
   resolvePlanningOnlyRetryLimit,
   resolvePlanningOnlyRetryInstruction,
+  resolvePostToolFinalizationRetryInstruction,
   resolveReasoningOnlyRetryInstruction,
   resolveSilentToolResultReplyPayload,
   STRICT_AGENTIC_BLOCKED_TEXT,
@@ -1250,8 +1251,11 @@ export async function runEmbeddedAgent(
       let lastRetryFailoverReason: FailoverReason | null = null;
       let planningOnlyRetryInstruction: string | null = null;
       let reasoningOnlyRetryInstruction: string | null = null;
+      let postToolFinalizationRetryInstruction: string | null = null;
       let emptyResponseRetryInstruction: string | null = null;
       let compactionContinuationRetryInstruction: string | null = null;
+      const MAX_POST_TOOL_FINALIZATION_RETRIES = 1;
+      let postToolFinalizationRetryAttempts = 0;
       let nextAttemptPromptOverride: string | null = null;
       const ackExecutionFastPathInstruction = resolveAckExecutionFastPathInstruction({
         provider,
@@ -1523,6 +1527,7 @@ export async function runEmbeddedAgent(
           const promptAdditions = [
             ackExecutionFastPathInstruction,
             planningOnlyRetryInstruction,
+            postToolFinalizationRetryInstruction,
             reasoningOnlyRetryInstruction,
             emptyResponseRetryInstruction,
             compactionContinuationRetryInstruction,
@@ -1533,6 +1538,7 @@ export async function runEmbeddedAgent(
             promptAdditions.length > 0
               ? `${basePrompt}\n\n${promptAdditions.join("\n\n")}`
               : basePrompt;
+          const postToolFinalizationRetryActive = postToolFinalizationRetryInstruction !== null;
           const resolvedStreamApiKey = resolveAttemptDispatchApiKey({
             apiKeyInfo,
             runtimeAuthState,
@@ -1633,8 +1639,8 @@ export async function runEmbeddedAgent(
             currentInboundContext: params.currentInboundContext,
             images: params.images,
             imageOrder: params.imageOrder,
-            clientTools: params.clientTools,
-            disableTools: params.disableTools,
+            clientTools: postToolFinalizationRetryActive ? undefined : params.clientTools,
+            disableTools: postToolFinalizationRetryActive ? true : params.disableTools,
             provider,
             modelId,
             // Use the harness selected before model/auth setup for the actual
@@ -1710,11 +1716,13 @@ export async function runEmbeddedAgent(
             bootstrapContextMode: params.bootstrapContextMode,
             bootstrapContextRunKind: params.bootstrapContextRunKind,
             jobId: params.jobId,
-            toolsAllow: params.toolsAllow,
+            toolsAllow: postToolFinalizationRetryActive ? [] : params.toolsAllow,
             disableMessageTool: params.disableMessageTool,
-            forceMessageTool: params.forceMessageTool,
-            enableHeartbeatTool: params.enableHeartbeatTool,
-            forceHeartbeatTool: params.forceHeartbeatTool,
+            forceMessageTool: postToolFinalizationRetryActive ? false : params.forceMessageTool,
+            enableHeartbeatTool: postToolFinalizationRetryActive
+              ? false
+              : params.enableHeartbeatTool,
+            forceHeartbeatTool: postToolFinalizationRetryActive ? false : params.forceHeartbeatTool,
             requireExplicitMessageTarget: params.requireExplicitMessageTarget,
             internalEvents: params.internalEvents,
             bootstrapPromptWarningSignaturesSeen,
@@ -3163,6 +3171,18 @@ export async function runEmbeddedAgent(
                 timedOut,
                 attempt,
               });
+          const nextPostToolFinalizationRetryInstruction = emptyAssistantReplyIsSilent
+            ? null
+            : resolvePostToolFinalizationRetryInstruction({
+                provider: activeErrorContext.provider,
+                modelId: activeErrorContext.model,
+                modelApi: effectiveModel.api,
+                executionContract,
+                payloadCount,
+                aborted,
+                timedOut,
+                attempt,
+              });
           const nextEmptyResponseRetryInstruction = emptyAssistantReplyIsSilent
             ? null
             : resolveEmptyResponseRetryInstruction({
@@ -3215,6 +3235,20 @@ export async function runEmbeddedAgent(
                 `provider=${provider}/${modelId} harness=${sanitizeForLog(agentHarness.id)} ` +
                 `contract=${executionContract} configured=${configuredExecutionContractForLog} — retrying ` +
                 `${planningOnlyRetryAttempts}/${maxPlanningOnlyRetryAttempts} with act-now steer`,
+            );
+            continue;
+          }
+          if (
+            !nextPlanningOnlyRetryInstruction &&
+            nextPostToolFinalizationRetryInstruction &&
+            postToolFinalizationRetryAttempts < MAX_POST_TOOL_FINALIZATION_RETRIES
+          ) {
+            postToolFinalizationRetryAttempts += 1;
+            postToolFinalizationRetryInstruction = nextPostToolFinalizationRetryInstruction;
+            log.warn(
+              `post-tool finalization turn detected: runId=${params.runId} sessionId=${params.sessionId} ` +
+                `provider=${activeErrorContext.provider}/${activeErrorContext.model} tools=${attempt.toolMetas?.length ?? 0} ` +
+                `— retrying ${postToolFinalizationRetryAttempts}/${MAX_POST_TOOL_FINALIZATION_RETRIES} with tools disabled`,
             );
             continue;
           }
@@ -3495,6 +3529,7 @@ export async function runEmbeddedAgent(
                 `hasCurrentAttemptAssistant=${attempt.currentAttemptAssistant ? "yes" : "no"} payloads=${payloadCount} ` +
                 `tools=${attempt.toolMetas?.length ?? 0} replaySafe=${replayMetadata.replaySafe ? "yes" : "no"} ` +
                 `compactions=${attemptCompactionCount} planningRetries=${planningOnlyRetryAttempts}/${maxPlanningOnlyRetryAttempts} ` +
+                `postToolFinalizationRetries=${postToolFinalizationRetryAttempts}/${MAX_POST_TOOL_FINALIZATION_RETRIES} ` +
                 `reasoningRetries=${reasoningOnlyRetryAttempts}/${maxReasoningOnlyRetryAttempts} ` +
                 `emptyRetries=${emptyResponseRetryAttempts}/${maxEmptyResponseRetryAttempts} ` +
                 `missingAssistantRetries=${missingAssistantRetryAttempts}/${MAX_MISSING_ASSISTANT_RETRIES} — surfacing error to user`,
@@ -3560,6 +3595,7 @@ export async function runEmbeddedAgent(
             );
             suppressNextUserMessagePersistence = true;
             planningOnlyRetryInstruction = null;
+            postToolFinalizationRetryInstruction = null;
             reasoningOnlyRetryInstruction = null;
             emptyResponseRetryInstruction = null;
             compactionContinuationRetryInstruction = null;

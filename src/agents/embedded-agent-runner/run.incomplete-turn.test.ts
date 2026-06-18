@@ -26,11 +26,13 @@ import {
   extractPlanningOnlyPlanDetails,
   isLikelyExecutionAckPrompt,
   PLANNING_ONLY_RETRY_INSTRUCTION,
+  POST_TOOL_FINALIZATION_RETRY_INSTRUCTION,
   REASONING_ONLY_RETRY_INSTRUCTION,
   resolveAckExecutionFastPathInstruction,
   resolveEmptyResponseRetryInstruction,
   resolvePlanningOnlyRetryLimit,
   resolvePlanningOnlyRetryInstruction,
+  resolvePostToolFinalizationRetryInstruction,
   isIncompleteTerminalAssistantTurn,
   resolveIncompleteTurnPayloadText as resolveIncompleteTurnPayloadTextCore,
   resolveReasoningOnlyRetryInstruction,
@@ -620,6 +622,151 @@ describe("runEmbeddedAgent incomplete-turn safety", () => {
     const secondCall = runAttemptCall(1);
     expect(secondCall.prompt).toContain(REASONING_ONLY_RETRY_INSTRUCTION);
     expectWarnMessageWith("reasoning-only assistant turn detected");
+  });
+
+  it("finalizes reasoning-only post-tool turns with tools disabled", async () => {
+    mockedClassifyFailoverReason.mockReturnValue(null);
+    mockedResolveModelAsync.mockResolvedValue({
+      model: {
+        id: "kamiwaza/tokenator/Kimi-K2.7-Code",
+        provider: "kzproxy",
+        contextWindow: 160000,
+        api: "openai-completions",
+      },
+      error: null,
+      authStorage: {
+        setRuntimeApiKey: vi.fn(),
+      },
+      modelRegistry: {},
+    });
+    mockedRunEmbeddedAttempt.mockResolvedValueOnce(
+      makeAttemptResult({
+        assistantTexts: [],
+        toolMetas: [{ toolName: "exec" }],
+        lastAssistant: {
+          role: "assistant",
+          api: "openai-completions",
+          stopReason: "stop",
+          provider: "kzproxy",
+          model: "kamiwaza/tokenator/Kimi-K2.7-Code",
+          content: [
+            {
+              type: "thinking",
+              thinking: "OPENCLAW_GATEWAY_TOOL_GUARD",
+              thinkingSignature: "reasoning_content",
+            },
+          ],
+        } as unknown as EmbeddedRunAttemptResult["lastAssistant"],
+      }),
+    );
+    mockedRunEmbeddedAttempt.mockResolvedValueOnce(
+      makeAttemptResult({
+        assistantTexts: ["OPENCLAW_GATEWAY_TOOL_GUARD"],
+        lastAssistant: {
+          role: "assistant",
+          api: "openai-completions",
+          stopReason: "stop",
+          provider: "kzproxy",
+          model: "kamiwaza/tokenator/Kimi-K2.7-Code",
+          content: [{ type: "text", text: "OPENCLAW_GATEWAY_TOOL_GUARD" }],
+        } as unknown as EmbeddedRunAttemptResult["lastAssistant"],
+      }),
+    );
+
+    const result = await runEmbeddedAgent({
+      ...overflowBaseRunParams,
+      provider: "kzproxy",
+      model: "kamiwaza/tokenator/Kimi-K2.7-Code",
+      clientTools: [
+        {
+          type: "function",
+          function: {
+            name: "client_lookup",
+            description: "Lookup",
+            parameters: { type: "object" },
+          },
+        },
+      ],
+      runId: "run-post-tool-reasoning-only-finalization",
+    });
+
+    expect(mockedRunEmbeddedAttempt).toHaveBeenCalledTimes(2);
+    const secondCall = mockedRunEmbeddedAttempt.mock.calls[1]?.[0] as {
+      prompt?: string;
+      disableTools?: boolean;
+      toolsAllow?: string[];
+      clientTools?: unknown;
+    };
+    expect(secondCall.prompt).toContain(POST_TOOL_FINALIZATION_RETRY_INSTRUCTION);
+    expect(secondCall.disableTools).toBe(true);
+    expect(secondCall.toolsAllow).toEqual([]);
+    expect(secondCall.clientTools).toBeUndefined();
+    expect(result.meta.finalAssistantVisibleText).toBe("OPENCLAW_GATEWAY_TOOL_GUARD");
+    expectWarnMessageWith("post-tool finalization turn detected");
+  });
+
+  it("allows post-tool finalization after replay-unsafe tool results", () => {
+    const retryInstruction = resolvePostToolFinalizationRetryInstruction({
+      provider: "kzproxy",
+      modelId: "kamiwaza/tokenator/Kimi-K2.7-Code",
+      modelApi: "openai-completions",
+      executionContract: "strict-agentic",
+      payloadCount: 0,
+      aborted: false,
+      timedOut: false,
+      attempt: makeAttemptResult({
+        assistantTexts: [],
+        toolMetas: [{ toolName: "exec" }],
+        lastAssistant: {
+          role: "assistant",
+          api: "openai-completions",
+          stopReason: "stop",
+          provider: "kzproxy",
+          model: "kamiwaza/tokenator/Kimi-K2.7-Code",
+          content: [
+            {
+              type: "thinking",
+              thinking: "internal answer",
+              thinkingSignature: "reasoning_content",
+            },
+          ],
+        } as unknown as EmbeddedRunAttemptResult["lastAssistant"],
+      }),
+    });
+
+    expect(retryInstruction).toBe(POST_TOOL_FINALIZATION_RETRY_INSTRUCTION);
+  });
+
+  it("does not post-tool-finalize async-started tool activity", () => {
+    const retryInstruction = resolvePostToolFinalizationRetryInstruction({
+      provider: "kzproxy",
+      modelId: "kamiwaza/tokenator/Kimi-K2.7-Code",
+      modelApi: "openai-completions",
+      executionContract: "strict-agentic",
+      payloadCount: 0,
+      aborted: false,
+      timedOut: false,
+      attempt: makeAttemptResult({
+        assistantTexts: [],
+        toolMetas: [{ toolName: "process", asyncStarted: true }],
+        lastAssistant: {
+          role: "assistant",
+          api: "openai-completions",
+          stopReason: "stop",
+          provider: "kzproxy",
+          model: "kamiwaza/tokenator/Kimi-K2.7-Code",
+          content: [
+            {
+              type: "thinking",
+              thinking: "internal answer",
+              thinkingSignature: "reasoning_content",
+            },
+          ],
+        } as unknown as EmbeddedRunAttemptResult["lastAssistant"],
+      }),
+    });
+
+    expect(retryInstruction).toBeNull();
   });
 
   it("returns NO_REPLY without retrying reasoning-only assistant turns when silence is allowed", async () => {
@@ -2858,10 +3005,10 @@ describe("runEmbeddedAgent incomplete-turn safety", () => {
 
     expect(mockedRunEmbeddedAttempt).toHaveBeenCalledTimes(2);
     const secondCall = runAttemptCall(1);
-    expect(secondCall.prompt).toContain(EMPTY_RESPONSE_RETRY_INSTRUCTION);
+    expect(secondCall.prompt).toContain(POST_TOOL_FINALIZATION_RETRY_INSTRUCTION);
     expect(result.meta.terminalReplyKind).toBeUndefined();
     expect(result.meta.finalAssistantVisibleText).toBe("Visible StepFun answer.");
-    expectWarnMessageWith("empty response detected");
+    expectWarnMessageWith("post-tool finalization turn detected");
   });
 
   it("keeps retrying and surfacing clean empty assistant turns without the silence flag", async () => {
@@ -3013,6 +3160,74 @@ describe("runEmbeddedAgent incomplete-turn safety", () => {
     });
 
     expect(retryInstruction).toBe(PLANNING_ONLY_RETRY_INSTRUCTION);
+  });
+
+  it("detects immediate tool-call status text without an actual tool call", () => {
+    const retryInstruction = resolvePlanningOnlyRetryInstruction({
+      provider: "kzproxy",
+      modelId: "kamiwaza/tokenator/Kimi-K2.7-Code",
+      modelApi: "openai-completions",
+      prompt: "Use locksmith_github to verify the repo, create it if missing, and push.",
+      aborted: false,
+      timedOut: false,
+      attempt: makeAttemptResult({
+        assistantTexts: ["Got it. Re-engaging `locksmith_github` cleanly."],
+      }),
+    });
+
+    expect(retryInstruction).toBe(PLANNING_ONLY_RETRY_INSTRUCTION);
+  });
+
+  it("detects short present-tense action claims as planning-only", () => {
+    const retryInstruction = resolvePlanningOnlyRetryInstruction({
+      provider: "kzproxy",
+      modelId: "kamiwaza/tokenator/Kimi-K2.7-Code",
+      modelApi: "openai-completions",
+      prompt: "Use the GitHub tool now.",
+      aborted: false,
+      timedOut: false,
+      attempt: makeAttemptResult({
+        assistantTexts: ["I jumped the gun. Calling it now."],
+      }),
+    });
+
+    expect(retryInstruction).toBe(PLANNING_ONLY_RETRY_INSTRUCTION);
+  });
+
+  it("detects git push progress claims without tool activity", () => {
+    const retryInstruction = resolvePlanningOnlyRetryInstruction({
+      provider: "kzproxy",
+      modelId: "kamiwaza/tokenator/Kimi-K2.7-Code",
+      modelApi: "openai-completions",
+      prompt: "Create the repo, add the remote, and push.",
+      aborted: false,
+      timedOut: false,
+      attempt: makeAttemptResult({
+        assistantTexts: [
+          "It created the repo successfully. I'm adding the remote and pushing now. Setting the remote and pushing.",
+        ],
+      }),
+    });
+
+    expect(retryInstruction).toBe(PLANNING_ONLY_RETRY_INSTRUCTION);
+  });
+
+  it("does not treat explanatory tool references as planning-only", () => {
+    const retryInstruction = resolvePlanningOnlyRetryInstruction({
+      provider: "kzproxy",
+      modelId: "kamiwaza/tokenator/Kimi-K2.7-Code",
+      modelApi: "openai-completions",
+      prompt: "How do I use locksmith_github?",
+      aborted: false,
+      timedOut: false,
+      attempt: makeAttemptResult({
+        assistantTexts: [
+          "The tool is named `locksmith_github`; call it with a GitHub API path and method.",
+        ],
+      }),
+    });
+
+    expect(retryInstruction).toBeNull();
   });
 
   it("does not enable incomplete-turn recovery for non-Gemini Google models", () => {

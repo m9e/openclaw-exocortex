@@ -127,7 +127,13 @@ const PLANNING_ONLY_HEADING_RE = /^(?:plan|steps?|next steps?)\s*:/i;
 const PLANNING_ONLY_BULLET_RE = /^(?:[-*•]\s+|\d+[.)]\s+)/u;
 const PLANNING_ONLY_MAX_VISIBLE_TEXT = 700;
 const PLANNING_ONLY_ACTION_VERB_RE =
-  /\b(?:inspect|investigate|check|look(?:\s+into|\s+at)?|read|search|find|debug|fix|patch|update|change|edit|write|implement|run|test|verify|review|analy(?:s|z)e|summari(?:s|z)e|explain|answer|show|share|report|prepare|capture|take|refactor|restart|deploy|ship)\b/i;
+  /\b(?:inspect|investigate|check|look(?:\s+into|\s+at)?|read|search|find|debug|fix|patch|update|change|edit|write|implement|run|test|verify|review|analy(?:s|z)e|summari(?:s|z)e|explain|answer|show|share|report|prepare|capture|take|refactor|restart|deploy|ship|add|create|commit|push|probe|call|invoke|use|try|fetch|open|force|re-?run|re-?engage)\b/i;
+const PLANNING_ONLY_PRESENT_ACTION_RE =
+  /(?:^|[.!?]\s+)(?:(?:i(?:'m| am)\s+)|(?:first|next|then|now)[, ]+|will\s+(?:keep\s+)?|keep\s+)?(?:calling|using|invoking|retrying|re-?engaging|re-?running|probing|checking|verifying|creating|adding|setting|pushing|running|testing|fixing|patching|updating|deploying|writing|editing|committing|searching|inspecting|reading|fetching|opening|forcing|trying)\b/i;
+const PLANNING_ONLY_PRESENT_ACTION_CONTEXT_RE =
+  /\b(?:now|next|first|then|again|cleanly|directly|via|with|through)\b/i;
+const PLANNING_ONLY_TOOL_LIKE_IDENTIFIER_RE =
+  /(?:`[^`]*[_./][^`]*`|\b[a-z][a-z0-9]*(?:[_./][a-z0-9]+)+\b)/i;
 const SINGLE_ACTION_EXPLICIT_CONTINUATION_RE =
   /\b(?:going to|first[, ]+i(?:'ll| will)|next[, ]+i(?:'ll| will)|then[, ]+i(?:'ll| will)|i can do that next|let me (?!know\b)\w+(?:\s+\w+){0,3}\s+(?:next|then|first)\b)/i;
 const SINGLE_ACTION_MULTI_STEP_PROMISE_RE =
@@ -214,14 +220,16 @@ const ACK_EXECUTION_NORMALIZED_SET = new Set([
   "계속해",
 ]);
 const ACTIONABLE_PROMPT_DIRECTIVE_RE =
-  /^\s*(?:please\s+)?(?:check|look(?:\s+into|\s+at)?|read|write|edit|update|fix|investigate|debug|run|search|find|implement|add|remove|refactor|explain|summari(?:s|z)e|analy(?:s|z)e|review|tell|show|make|restart|deploy|prepare)\b/i;
+  /^\s*(?:please\s+)?(?:check|look(?:\s+into|\s+at)?|read|write|edit|update|fix|investigate|debug|run|search|find|implement|add|remove|create|commit|push|probe|call|invoke|use|try|fetch|open|force|refactor|explain|summari(?:s|z)e|analy(?:s|z)e|review|tell|show|make|restart|deploy|prepare)\b/i;
 const ACTIONABLE_PROMPT_REQUEST_RE =
-  /\b(?:can|could|would|will)\s+you\b|\b(?:please|pls)\b|\b(?:help|explain|summari(?:s|z)e|analy(?:s|z)e|review|investigate|debug|fix|check|look(?:\s+into|\s+at)?|read|write|edit|update|run|search|find|implement|add|remove|refactor|show|tell me|walk me through)\b/i;
+  /\b(?:can|could|would|will)\s+you\b|\b(?:please|pls)\b|\b(?:help|explain|summari(?:s|z)e|analy(?:s|z)e|review|investigate|debug|fix|check|look(?:\s+into|\s+at)?|read|write|edit|update|run|search|find|implement|add|remove|create|commit|push|probe|call|invoke|use|try|fetch|open|force|refactor|show|tell me|walk me through)\b/i;
 
 export const PLANNING_ONLY_RETRY_INSTRUCTION =
   "The previous assistant turn only described the plan. Do not restate the plan. Act now: take the first concrete tool action you can. If a real blocker prevents action, reply with the exact blocker in one sentence.";
 export const REASONING_ONLY_RETRY_INSTRUCTION =
   "The previous assistant turn recorded reasoning but did not produce a user-visible answer. Continue from that partial turn and produce the visible answer now. Do not restate the reasoning or restart from scratch.";
+export const POST_TOOL_FINALIZATION_RETRY_INSTRUCTION =
+  "The previous assistant turn already completed one or more tool calls but did not produce a user-visible final answer. Do not call any tools. Use the existing tool result(s) in the transcript and produce the final user-visible answer now.";
 export const EMPTY_RESPONSE_RETRY_INSTRUCTION =
   "The previous attempt did not produce a user-visible answer. Continue from the current state and produce the visible answer now. Do not restart from scratch.";
 export const ACK_EXECUTION_FAST_PATH_INSTRUCTION =
@@ -636,6 +644,25 @@ function shouldSkipPlanningOnlyRetry(params: {
   );
 }
 
+function shouldSkipPostToolFinalizationRetry(params: {
+  aborted: boolean;
+  timedOut: boolean;
+  attempt: IncompleteTurnAttempt;
+}): boolean {
+  return Boolean(
+    params.aborted ||
+    params.timedOut ||
+    params.attempt.clientToolCalls ||
+    params.attempt.yieldDetected ||
+    params.attempt.didSendDeterministicApprovalPrompt ||
+    params.attempt.lastToolError ||
+    hasMessagingToolDeliveryEvidence(params.attempt) ||
+    hasAcceptedSessionSpawn(params.attempt.acceptedSessionSpawns) ||
+    hasAsyncStartedToolActivity(params.attempt.toolMetas) ||
+    (params.attempt.itemLifecycle?.activeCount ?? 0) > 0,
+  );
+}
+
 /** Allows configured silent handling for replay-safe empty or reasoning-only assistant turns. */
 export function shouldTreatEmptyAssistantReplyAsSilent(params: {
   allowEmptyAssistantReplyAsSilent?: boolean;
@@ -665,6 +692,57 @@ export function shouldTreatEmptyAssistantReplyAsSilent(params: {
     payloadCount: params.payloadCount,
     attempt: params.attempt,
   });
+}
+
+/**
+ * Allows a narrow no-tools finalization pass after tool results are already
+ * persisted but the provider returned only reasoning/empty content.
+ */
+export function resolvePostToolFinalizationRetryInstruction(params: {
+  provider?: string;
+  modelId?: string;
+  modelApi?: string;
+  executionContract?: string;
+  payloadCount: number;
+  aborted: boolean;
+  timedOut: boolean;
+  attempt: IncompleteTurnAttempt;
+}): string | null {
+  if (shouldSkipPostToolFinalizationRetry(params)) {
+    return null;
+  }
+
+  if ((params.attempt.toolMetas?.length ?? 0) === 0) {
+    return null;
+  }
+
+  if (
+    !shouldApplyNonVisibleTurnRetryGuard({
+      provider: params.provider,
+      modelId: params.modelId,
+      modelApi: params.modelApi,
+      executionContract: params.executionContract,
+    })
+  ) {
+    return null;
+  }
+
+  const assistant = params.attempt.currentAttemptAssistant ?? params.attempt.lastAssistant;
+  if (joinAssistantTexts(params.attempt.assistantTexts).length > 0) {
+    return null;
+  }
+  if (assistant?.stopReason === "error") {
+    return null;
+  }
+  if (
+    !isReasoningOnlyAssistantTurn(assistant) &&
+    !isUnsignedThinkingOnlyAssistantTurn(assistant) &&
+    !isEmptyResponseAssistantTurn({ payloadCount: params.payloadCount, attempt: params.attempt })
+  ) {
+    return null;
+  }
+
+  return POST_TOOL_FINALIZATION_RETRY_INSTRUCTION;
 }
 
 /**
@@ -898,6 +976,16 @@ function hasStructuredPlanningOnlyFormat(text: string): boolean {
   return (hasPlanningHeading && hasPlanningCueLine) || (bulletLineCount >= 2 && hasPlanningCueLine);
 }
 
+function hasPlanningOnlyImmediateActionCue(text: string): boolean {
+  if (!PLANNING_ONLY_PRESENT_ACTION_RE.test(text)) {
+    return false;
+  }
+  return (
+    PLANNING_ONLY_PRESENT_ACTION_CONTEXT_RE.test(text) ||
+    PLANNING_ONLY_TOOL_LIKE_IDENTIFIER_RE.test(text)
+  );
+}
+
 /** Extracts the visible plan text and normalized step list from a plan-only reply. */
 export function extractPlanningOnlyPlanDetails(text: string): PlanningOnlyPlanDetails | null {
   const trimmed = text.trim();
@@ -1032,12 +1120,18 @@ export function resolvePlanningOnlyRetryInstruction(params: {
     return null;
   }
   const hasStructuredPlanningFormat = hasStructuredPlanningOnlyFormat(text);
-  if (!PLANNING_ONLY_PROMISE_RE.test(text) && !hasStructuredPlanningFormat) {
+  const hasImmediateActionCue = hasPlanningOnlyImmediateActionCue(text);
+  if (
+    !PLANNING_ONLY_PROMISE_RE.test(text) &&
+    !hasImmediateActionCue &&
+    !hasStructuredPlanningFormat
+  ) {
     return null;
   }
   if (
     !hasStructuredPlanningFormat &&
     !singleActionNarrative &&
+    !hasImmediateActionCue &&
     !PLANNING_ONLY_ACTION_VERB_RE.test(text)
   ) {
     return null;
