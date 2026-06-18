@@ -1,6 +1,7 @@
 import type { OpenClawConfig } from "openclaw/plugin-sdk/config-runtime";
 import { listLocksmithTools, sortLocksmithTools } from "./client.js";
 import {
+  type LocksmithProjectedTool,
   resolveLocksmithBaseUrl,
   resolveLocksmithGenericToolEnabled,
   resolveLocksmithProjectedTools,
@@ -9,16 +10,45 @@ import {
 
 const BRIDGE_GUIDANCE = [
   "The optional `locksmith_call` tool is a bridge to Agent Locksmith, a credential-injecting proxy.",
-  "Use it when you need an external API that has been exposed through Locksmith.",
-  "Do not send Authorization headers or raw API keys in tool params. Locksmith injects upstream credentials for the configured tool.",
+  "Call `locksmith_call` directly when you need an external API that has been exposed through Locksmith.",
+  "Do not use web_fetch, curl, fetch, or another HTTP client to probe or call Locksmith routes.",
+  "Do not send Authorization headers, bearer tokens, or raw API keys in tool params. Locksmith injects upstream credentials for the configured tool.",
+  "After calling Locksmith, wait for the returned tool result and report success only from the returned status/data.",
   "The `tool` param selects the Locksmith tool slug, and `path` is the remaining upstream-relative path under that tool.",
+  "Parameters: `tool`, `path`, `method` (default GET), `query`, `headers` (non-auth only), `json` or `body`, plus optional `timeoutSeconds` and `maxResponseBytes`.",
+  'Example call shape: `locksmith_call` with `{ "tool": "github", "method": "GET", "path": "user/repos", "query": { "per_page": 10 } }`.',
 ].join("\n");
 
 const PROJECTED_GUIDANCE = [
-  "Each `locksmith_<slug>` tool calls the matching Agent Locksmith tool slug; Locksmith injects upstream credentials.",
-  "Do not send Authorization headers or raw API keys in tool params.",
-  "The `path` param is the relative path under that tool; the slug is already bound by the tool name.",
+  "Each `locksmith_<slug>` tool is the complete entry point for the matching Agent Locksmith tool slug; call it directly.",
+  "Locksmith injects upstream credentials and forwards the request. Do not handle upstream auth yourself.",
+  "Do not use web_fetch, curl, fetch, or another HTTP client to probe or call Locksmith routes.",
+  "Do not probe paths like `/<slug>`, `/proxy/<slug>`, or `/api/<slug>`; use the projected `locksmith_<slug>` tool only.",
+  "Do not inspect Locksmith YAML `tools: []` blocks to decide whether a projected tool exists; active registrations can come from the Locksmith admin catalog/DB.",
+  "Do not send Authorization headers, bearer tokens, or raw API keys in tool params. Authorization-style headers are ignored.",
+  "After calling a projected Locksmith tool, wait for the returned tool result and report success only from the returned status/data.",
+  "Proxy-mode parameters: `path` (upstream-relative; do not prefix `/api/<slug>/`), `method` (default GET), `query`, `headers` (non-auth only), `json` or `body`, plus optional `timeoutSeconds` and `maxResponseBytes`.",
+  'Generic proxy call shape: `{ "method": "GET", "path": "relative/path", "query": { "per_page": 10 } }`.',
 ].join("\n");
+
+function buildProjectedUsageExamples(projected: LocksmithProjectedTool[]): string | undefined {
+  const hasProxyMode = projected.some((entry) => entry.mode === "proxy");
+  if (!hasProxyMode) {
+    return undefined;
+  }
+  const lines = [
+    "Projected Locksmith proxy examples:",
+    '- Generic REST read: `{ "method": "GET", "path": "resource/path" }`.',
+  ];
+  if (projected.some((entry) => entry.slug === "github")) {
+    lines.push(
+      '- `locksmith_github` authenticated user: `{ "method": "GET", "path": "user" }`.',
+      '- `locksmith_github` list repositories: `{ "method": "GET", "path": "user/repos", "query": { "type": "owner", "sort": "updated" } }`.',
+      '- `locksmith_github` create repository: `{ "method": "POST", "path": "user/repos", "json": { "name": "repo-name", "private": true } }`.',
+    );
+  }
+  return lines.join("\n");
+}
 
 /**
  * Build cache-stable guidance for `prependSystemContext`.
@@ -40,7 +70,10 @@ export function buildLocksmithStaticPromptGuidance(cfg?: OpenClawConfig): string
     const description = entry.description?.trim();
     return description ? `- ${entry.toolName}: ${description}` : `- ${entry.toolName}`;
   });
-  return `${PROJECTED_GUIDANCE}\nProjected Locksmith tools:\n${lines.join("\n")}`;
+  const examples = buildProjectedUsageExamples(projected);
+  return [PROJECTED_GUIDANCE, `Projected Locksmith tools:\n${lines.join("\n")}`, examples]
+    .filter((part): part is string => Boolean(part))
+    .join("\n");
 }
 
 /**

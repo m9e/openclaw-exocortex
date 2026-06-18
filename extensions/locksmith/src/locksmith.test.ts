@@ -416,6 +416,47 @@ describe("locksmith projection / prompt-cache stability", () => {
     expect(buildLocksmithStaticPromptGuidance(cfg1)).toBe(buildLocksmithStaticPromptGuidance(cfg2));
   });
 
+  it("static prompt guidance explains projected proxy usage and anti-patterns", () => {
+    const cfg = buildConfigWithProjectedTools({
+      github: { enabled: true, description: "GitHub REST API" },
+    });
+    const guidance = buildLocksmithStaticPromptGuidance(cfg);
+
+    expect(guidance).toContain("call it directly");
+    expect(guidance).toContain("Do not use web_fetch, curl, fetch");
+    expect(guidance).toContain(
+      "Do not probe paths like `/<slug>`, `/proxy/<slug>`, or `/api/<slug>`",
+    );
+    expect(guidance).toContain("Do not inspect Locksmith YAML `tools: []` blocks");
+    expect(guidance).toContain("Do not send Authorization headers, bearer tokens, or raw API keys");
+    expect(guidance).toContain("wait for the returned tool result");
+    expect(guidance).toContain("report success only from the returned status/data");
+    expect(guidance).toContain("Proxy-mode parameters: `path`");
+    expect(guidance).toContain("`method` (default GET)");
+    expect(guidance).toContain("`query`");
+    expect(guidance).toContain("`json` or `body`");
+    expect(guidance).toContain(
+      '`locksmith_github` authenticated user: `{ "method": "GET", "path": "user" }`.',
+    );
+    expect(guidance).toContain(
+      '"path": "user/repos", "query": { "type": "owner", "sort": "updated" }',
+    );
+    expect(guidance).toContain(
+      '"method": "POST", "path": "user/repos", "json": { "name": "repo-name"',
+    );
+  });
+
+  it("bridge prompt guidance warns against raw Locksmith HTTP and secret handling", () => {
+    const guidance = buildLocksmithStaticPromptGuidance(buildConfigWithProjectedTools({}));
+
+    expect(guidance).toContain("Call `locksmith_call` directly");
+    expect(guidance).toContain("Do not use web_fetch, curl, fetch");
+    expect(guidance).toContain("Do not send Authorization headers, bearer tokens, or raw API keys");
+    expect(guidance).toContain("wait for the returned tool result");
+    expect(guidance).toContain("Parameters: `tool`, `path`, `method`");
+    expect(guidance).toContain('"tool": "github"');
+  });
+
   it("static prompt guidance does not depend on Locksmith service state", async () => {
     const cfg = buildConfigWithProjectedTools({ github: { enabled: true } });
     const baseline = buildLocksmithStaticPromptGuidance(cfg);
