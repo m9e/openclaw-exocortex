@@ -667,6 +667,54 @@ describe("locksmith client error mapping", () => {
     });
   });
 
+  it("maps Locksmith unknown-tool 404 envelopes to tool-absent for relative paths", async () => {
+    vi.spyOn(globalThis, "fetch").mockResolvedValue(
+      new Response(
+        JSON.stringify({
+          error: {
+            message: "Unknown tool: github",
+            type: "not_found",
+          },
+        }),
+        {
+          status: 404,
+          headers: { "content-type": "application/json" },
+        },
+      ),
+    );
+    await expect(callLocksmith({ cfg, tool: "github", path: "user" })).rejects.toMatchObject({
+      code: "tool-absent",
+      status: 404,
+    });
+  });
+
+  it("returns upstream 404 responses for proxied relative paths", async () => {
+    vi.spyOn(globalThis, "fetch").mockResolvedValue(
+      new Response(
+        JSON.stringify({
+          message: "Not Found",
+          documentation_url: "https://docs.github.com/rest/repos/repos#get-a-repository",
+        }),
+        {
+          status: 404,
+          statusText: "Not Found",
+          headers: { "content-type": "application/json; charset=utf-8" },
+        },
+      ),
+    );
+    await expect(
+      callLocksmith({ cfg, tool: "github", path: "repos/FreerangeGPT/firestorm" }),
+    ).resolves.toMatchObject({
+      ok: false,
+      status: 404,
+      statusText: "Not Found",
+      bodyType: "json",
+      data: {
+        message: "Not Found",
+      },
+    });
+  });
+
   it("maps a 403 service-disabled error.type to service-disabled", async () => {
     vi.spyOn(globalThis, "fetch").mockResolvedValue(
       new Response(

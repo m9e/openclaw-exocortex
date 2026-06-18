@@ -367,36 +367,35 @@ export async function fetchLocksmithHealth(cfg?: OpenClawConfig): Promise<Locksm
   });
 }
 
-async function readResponseErrorBody(response: Response): Promise<unknown> {
-  try {
-    const text = await response.text();
-    if (!text) {
-      return undefined;
-    }
-    const contentType = response.headers.get("content-type") ?? "";
-    if (isJsonContentType(contentType)) {
-      try {
-        return JSON.parse(text);
-      } catch {
-        return text;
-      }
-    }
-    return text;
-  } catch {
-    return undefined;
-  }
-}
-
-function extractServiceErrorType(payload: unknown): string | undefined {
+function getErrorEnvelope(payload: unknown): Record<string, unknown> | undefined {
   if (!payload || typeof payload !== "object" || Array.isArray(payload)) {
     return undefined;
   }
   const error = (payload as { error?: unknown }).error;
-  if (!error || typeof error !== "object" || Array.isArray(error)) {
+  return error && typeof error === "object" && !Array.isArray(error)
+    ? (error as Record<string, unknown>)
+    : undefined;
+}
+
+function extractServiceErrorType(payload: unknown): string | undefined {
+  const error = getErrorEnvelope(payload);
+  if (!error) {
     return undefined;
   }
-  const type = (error as { type?: unknown }).type;
+  const type = error.type;
   return typeof type === "string" ? type : undefined;
+}
+
+function isLocksmithToolAbsentPayload(payload: unknown): boolean {
+  const errorType = extractServiceErrorType(payload);
+  if (errorType === "tool-absent" || errorType === "tool_absent") {
+    return true;
+  }
+  if (errorType !== "not_found") {
+    return false;
+  }
+  const message = getErrorEnvelope(payload)?.message;
+  return typeof message === "string" && /^Unknown tool:/iu.test(message);
 }
 
 export async function callLocksmith(params: LocksmithCallParams): Promise<LocksmithCallResult> {
@@ -466,14 +465,16 @@ export async function callLocksmith(params: LocksmithCallParams): Promise<Locksm
   const { response } = guarded;
   try {
     if (response.status === 404) {
-      const payload = await readResponseErrorBody(response);
-      throw new LocksmithError({
-        code: "tool-absent",
-        status: 404,
-        tool: params.tool,
-        message: `Locksmith tool "${params.tool}" is not active on the service`,
-        cause: payload,
-      });
+      const payload = await peekJsonBody(response);
+      if (!relativePath || isLocksmithToolAbsentPayload(payload)) {
+        throw new LocksmithError({
+          code: "tool-absent",
+          status: 404,
+          tool: params.tool,
+          message: `Locksmith tool "${params.tool}" is not active on the service`,
+          cause: payload,
+        });
+      }
     }
     if (response.status === 403) {
       const payload = await peekJsonBody(response);
