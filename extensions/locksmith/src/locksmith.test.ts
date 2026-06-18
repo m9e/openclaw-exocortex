@@ -2,6 +2,7 @@ import type { OpenClawConfig } from "openclaw/plugin-sdk/config-runtime";
 import type { AnyAgentTool, OpenClawPluginToolContext } from "openclaw/plugin-sdk/plugin-entry";
 import type { OpenClawPluginApi } from "openclaw/plugin-sdk/plugin-runtime";
 import { beforeEach, describe, expect, it, vi } from "vitest";
+import locksmithPlugin from "../index.js";
 import {
   callLocksmith,
   fetchLocksmithHealth,
@@ -351,6 +352,31 @@ describe("locksmith projection / prompt-cache stability", () => {
     expect(Array.isArray(result)).toBe(true);
     const tools = result as AnyAgentTool[];
     expect(tools.map((tool) => tool.name)).toEqual(["locksmith_github", "locksmith_tavily"]);
+  });
+
+  it("registers configured projected tools as default-visible", () => {
+    const cfg = buildConfigWithProjectedTools({
+      github: { enabled: true, description: "GitHub REST API" },
+    });
+    const registrations: Array<{
+      opts?: { names?: string[]; optional?: boolean };
+    }> = [];
+    const api = {
+      config: cfg,
+      registerTool(_tool: unknown, opts?: { names?: string[]; optional?: boolean }) {
+        registrations.push({ opts });
+      },
+      registerCli() {},
+      on() {},
+    } as unknown as OpenClawPluginApi;
+
+    locksmithPlugin.register(api);
+
+    const projected = registrations.find((entry) =>
+      entry.opts?.names?.includes("locksmith_github"),
+    );
+    expect(projected?.opts?.names).toEqual(["locksmith_github"]);
+    expect(projected?.opts?.optional).not.toBe(true);
   });
 
   it("synthetic factory does not call the Locksmith service during registration", () => {

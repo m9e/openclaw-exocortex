@@ -27,7 +27,6 @@ export default definePluginEntry({
     if (projected.length > 0) {
       api.registerTool(createLocksmithProjectedToolFactory(api), {
         names: projected.map((entry) => entry.toolName),
-        optional: true,
       });
     }
 

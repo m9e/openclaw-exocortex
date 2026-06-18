@@ -213,6 +213,11 @@ by default.
 Locksmith slugs may use lowercase letters, numbers, hyphens, and underscores.
 The OpenClaw tool name is always `locksmith_<slug>`.
 
+Configured projections are default-visible for normal tool policy. If an agent
+uses a restrictive `tools.profile` or explicit `tools.allow`, include the exact
+projected tool name in `tools.allow`/`tools.alsoAllow` so the profile filter does
+not remove it.
+
 Environment fallbacks:
 
 - `LOCKSMITH_BASE_URL`
