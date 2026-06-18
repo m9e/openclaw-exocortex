@@ -134,6 +134,17 @@ const PLANNING_ONLY_PRESENT_ACTION_CONTEXT_RE =
   /\b(?:now|next|first|then|again|cleanly|directly|via|with|through)\b/i;
 const PLANNING_ONLY_TOOL_LIKE_IDENTIFIER_RE =
   /(?:`[^`]*[_./][^`]*`|\b[a-z][a-z0-9]*(?:[_./][a-z0-9]+)+\b)/i;
+const UNBACKED_TOOL_SUCCESS_MAX_VISIBLE_TEXT = 3600;
+const GITHUB_TOOL_BACKED_CONTEXT_RE =
+  /\b(?:github|locksmith_github|git data api|contents api|repo(?:sitory)?|refs\/heads|commit|branch)\b/i;
+const GITHUB_UNBACKED_SUCCESS_CLAIM_RE =
+  /\b(?:the push is complete|pushed(?:\s+and\s+verified)?|(?:i|we)(?:'ve| have)\s+(?:pushed|uploaded|published|mirrored|created|updated|verified)|has\s+been\s+mirrored|created\s+`?refs\/heads\/[^\s`]+`?|commit\s+`?[0-9a-f]{6,40}`?.{0,120}\bon\s+`?(?:main|master)`?|\d+\s+files?\s+present)\b/i;
+const GITHUB_SUPPORTING_LOCKSMITH_META_RE =
+  /\b(?:repos\/[^/\s]+\/[^/\s]+\/git\/(?:blobs|trees|commits|refs)|repos\/[^/\s]+\/[^/\s]+\/contents(?:\/|$)|user\/repos|orgs\/[^/\s]+\/repos)\b/i;
+const GITHUB_SUPPORTING_SHELL_META_RE =
+  /\b(?:git\s+push|gh\s+(?:repo\s+create|pr\s+create|release\s+create)|gh\s+api\b.*(?:--method|-X)\s*(?:POST|PUT|PATCH|DELETE)|curl\b.*(?:-X|--request)\s*(?:POST|PUT|PATCH|DELETE)|curl\b.*(?:--data|-d)\b)/i;
+const UNBACKED_SUCCESS_RETRY_SAFE_EXEC_META_RE =
+  /\b(?:git\s+(?:status|log|remote|rev-parse|show|branch|ls-tree|cat-file|ls-remote)|run\s+git\s+(?:status|log|remote|rev-parse|show|branch|ls-tree|cat-file|ls-remote)|base64\b.*(?:print text|\.gitignore)|env\s*\|\s*grep|printenv\s*\|\s*grep)\b/i;
 const SINGLE_ACTION_EXPLICIT_CONTINUATION_RE =
   /\b(?:going to|first[, ]+i(?:'ll| will)|next[, ]+i(?:'ll| will)|then[, ]+i(?:'ll| will)|i can do that next|let me (?!know\b)\w+(?:\s+\w+){0,3}\s+(?:next|then|first)\b)/i;
 const SINGLE_ACTION_MULTI_STEP_PROMISE_RE =
@@ -226,6 +237,8 @@ const ACTIONABLE_PROMPT_REQUEST_RE =
 
 export const PLANNING_ONLY_RETRY_INSTRUCTION =
   "The previous assistant turn only described the plan. Do not restate the plan. Act now: take the first concrete tool action you can. If a real blocker prevents action, reply with the exact blocker in one sentence.";
+export const UNBACKED_TOOL_SUCCESS_RETRY_INSTRUCTION =
+  "The previous assistant turn claimed a tool-backed external action succeeded, but the recorded tool calls do not show that action. Do not restate the claim. Act now: call the needed tool to perform or verify the action, or state the exact blocker in one sentence.";
 export const REASONING_ONLY_RETRY_INSTRUCTION =
   "The previous assistant turn recorded reasoning but did not produce a user-visible answer. Continue from that partial turn and produce the visible answer now. Do not restate the reasoning or restart from scratch.";
 export const POST_TOOL_FINALIZATION_RETRY_INSTRUCTION =
@@ -1029,6 +1042,69 @@ function hasSingleRetrySafeNonPlanTool(toolMetas?: PlanningOnlyAttempt["toolMeta
   );
 }
 
+function lastNonEmptyAssistantText(assistantTexts?: readonly string[]): string {
+  for (let i = (assistantTexts?.length ?? 0) - 1; i >= 0; i -= 1) {
+    const text = assistantTexts?.[i]?.trim();
+    if (text) {
+      return text;
+    }
+  }
+  return "";
+}
+
+function normalizeToolClaimText(text: string): string {
+  return text
+    .normalize("NFKC")
+    .replace(/\s+/g, " ")
+    .trim()
+    .slice(-UNBACKED_TOOL_SUCCESS_MAX_VISIBLE_TEXT);
+}
+
+function hasGitHubToolBackedSuccessClaim(text: string): boolean {
+  if (!text) {
+    return false;
+  }
+  return GITHUB_TOOL_BACKED_CONTEXT_RE.test(text) && GITHUB_UNBACKED_SUCCESS_CLAIM_RE.test(text);
+}
+
+function hasSupportingGitHubMutationToolActivity(
+  toolMetas?: PlanningOnlyAttempt["toolMetas"],
+): boolean {
+  return normalizePlanningToolMetas(toolMetas).some((entry) => {
+    const toolName = normalizeLowercaseStringOrEmpty(entry.toolName);
+    const meta = normalizeLowercaseStringOrEmpty(entry.meta ?? "");
+    if (toolName === "locksmith_github" || toolName === "locksmith_call") {
+      return GITHUB_SUPPORTING_LOCKSMITH_META_RE.test(meta);
+    }
+    if (toolName === "exec" || toolName === "bash") {
+      return GITHUB_SUPPORTING_SHELL_META_RE.test(meta);
+    }
+    return false;
+  });
+}
+
+function hasUnsafeToolActivityForUnbackedSuccessRetry(
+  toolMetas?: PlanningOnlyAttempt["toolMetas"],
+): boolean {
+  return normalizePlanningToolMetas(toolMetas).some((entry) => {
+    const toolName = normalizeLowercaseStringOrEmpty(entry.toolName);
+    const meta = normalizeLowercaseStringOrEmpty(entry.meta ?? "");
+    if (!toolName || toolName === "update_plan") {
+      return false;
+    }
+    if (toolName === "locksmith_github" || toolName === "locksmith_call") {
+      return hasSupportingGitHubMutationToolActivity([entry]);
+    }
+    if (toolName === "exec" || toolName === "bash") {
+      return !UNBACKED_SUCCESS_RETRY_SAFE_EXEC_META_RE.test(meta);
+    }
+    if (SINGLE_ACTION_RETRY_SAFE_TOOL_NAMES.has(toolName)) {
+      return false;
+    }
+    return isLikelyMutatingToolName(toolName);
+  });
+}
+
 /**
  * Treat a turn with exactly one non-plan tool call plus visible "I'll do X
  * next" prose as effectively planning-only from the user's perspective. This
@@ -1076,6 +1152,7 @@ export function resolvePlanningOnlyRetryInstruction(params: {
   modelApi?: string;
   executionContract?: string;
   prompt?: string;
+  supportingToolMetas?: PlanningOnlyAttempt["toolMetas"];
   aborted: boolean;
   timedOut: boolean;
   attempt: PlanningOnlyAttempt;
@@ -1087,6 +1164,17 @@ export function resolvePlanningOnlyRetryInstruction(params: {
   });
   const allowSingleActionRetryBypass =
     singleActionNarrative && hasSingleRetrySafeNonPlanTool(params.attempt.toolMetas);
+  const lastAssistantText = normalizeToolClaimText(
+    lastNonEmptyAssistantText(params.attempt.assistantTexts),
+  );
+  const hasUnbackedToolSuccessClaim =
+    hasGitHubToolBackedSuccessClaim(lastAssistantText) &&
+    !hasSupportingGitHubMutationToolActivity(
+      params.supportingToolMetas ?? params.attempt.toolMetas,
+    );
+  const hasUnsafeReplaySideEffects = hasUnbackedToolSuccessClaim
+    ? hasUnsafeToolActivityForUnbackedSuccessRetry(params.attempt.toolMetas)
+    : resolveAttemptReplayMetadata(params.attempt).hadPotentialSideEffects;
   if (
     !shouldApplyPlanningOnlyRetryGuard({
       provider: params.provider,
@@ -1102,10 +1190,13 @@ export function resolvePlanningOnlyRetryInstruction(params: {
     params.attempt.didSendDeterministicApprovalPrompt ||
     hasMessagingToolDeliveryEvidence(params.attempt) ||
     params.attempt.lastToolError ||
-    (hasNonPlanToolActivity(params.attempt.toolMetas) && !allowSingleActionRetryBypass) ||
+    (hasNonPlanToolActivity(params.attempt.toolMetas) &&
+      !allowSingleActionRetryBypass &&
+      !hasUnbackedToolSuccessClaim) ||
     ((params.attempt.itemLifecycle?.startedCount ?? 0) > planOnlyToolMetaCount &&
-      !allowSingleActionRetryBypass) ||
-    resolveAttemptReplayMetadata(params.attempt).hadPotentialSideEffects
+      !allowSingleActionRetryBypass &&
+      !hasUnbackedToolSuccessClaim) ||
+    hasUnsafeReplaySideEffects
   ) {
     return null;
   }
@@ -1113,6 +1204,10 @@ export function resolvePlanningOnlyRetryInstruction(params: {
   const stopReason = params.attempt.lastAssistant?.stopReason;
   if (stopReason && stopReason !== "stop") {
     return null;
+  }
+
+  if (hasUnbackedToolSuccessClaim) {
+    return UNBACKED_TOOL_SUCCESS_RETRY_INSTRUCTION;
   }
 
   const text = (params.attempt.assistantTexts ?? []).join("\n\n").trim();

@@ -37,6 +37,7 @@ import {
   resolveIncompleteTurnPayloadText as resolveIncompleteTurnPayloadTextCore,
   resolveReasoningOnlyRetryInstruction,
   STRICT_AGENTIC_BLOCKED_TEXT,
+  UNBACKED_TOOL_SUCCESS_RETRY_INSTRUCTION,
   resolveReplayInvalidFlag,
   resolveRunLivenessState,
   resolveSilentToolResultReplyPayload,
@@ -453,6 +454,56 @@ describe("runEmbeddedAgent incomplete-turn safety", () => {
     );
     expect(mockedLog.info.mock.calls.map(([message]) => String(message)).join("\n")).not.toContain(
       "strict-agentic execution contract active",
+    );
+  });
+
+  it("retries unbacked tool-backed success claims through the run loop", async () => {
+    mockedClassifyFailoverReason.mockReturnValue(null);
+    mockedBuildEmbeddedRunPayloads.mockReturnValue([
+      { text: "The exact blocker is missing GitHub write-call evidence." },
+    ]);
+    mockedRunEmbeddedAttempt
+      .mockResolvedValueOnce(
+        makeAttemptResult({
+          toolMetas: [
+            { toolName: "locksmith_github", meta: "repos/freerangeGPT/firestorm" },
+            { toolName: "exec", meta: "run git ls-tree -> print files" },
+            { toolName: "exec", meta: "run base64 .gitignore -> print text" },
+          ],
+          assistantTexts: [
+            "Now create the `main` ref. Created `refs/heads/main` pointing to `70bd104`. " +
+              "The push is complete. The local commit `f494d98` has been mirrored to " +
+              "`FreerangeGPT/firestorm` as commit `70bd104` on `main`, containing all 9 files. " +
+              "Pushed and verified.",
+          ],
+        }),
+      )
+      .mockResolvedValueOnce(
+        makeAttemptResult({
+          assistantTexts: ["The exact blocker is missing GitHub write-call evidence."],
+        }),
+      );
+
+    const result = await runEmbeddedAgent({
+      ...overflowBaseRunParams,
+      prompt: "Use locksmith_github to push the local files to the empty GitHub repo.",
+      provider: "openai",
+      model: "gpt-5.4",
+      runId: "run-unbacked-tool-success-retry",
+      config: {
+        agents: {
+          list: [{ id: "main" }],
+        },
+      } as OpenClawConfig,
+    });
+
+    expect(mockedRunEmbeddedAttempt).toHaveBeenCalledTimes(2);
+    expect(runAttemptCall(1).prompt).toContain(UNBACKED_TOOL_SUCCESS_RETRY_INSTRUCTION);
+    expect(result.payloads).toEqual([
+      { text: "The exact blocker is missing GitHub write-call evidence." },
+    ]);
+    expect(warnMessages().join("\n")).toContain(
+      "strict-agentic execution contract triggered: runId=run-unbacked-tool-success-retry",
     );
   });
 
@@ -3296,6 +3347,57 @@ describe("runEmbeddedAgent incomplete-turn safety", () => {
     });
 
     expect(retryInstruction).toBe(PLANNING_ONLY_RETRY_INSTRUCTION);
+  });
+
+  it("detects unbacked GitHub success claims after read-only Locksmith activity", () => {
+    const retryInstruction = resolvePlanningOnlyRetryInstruction({
+      provider: "kzproxy",
+      modelId: "kamiwaza/tokenator/Kimi-K2.7-Code",
+      modelApi: "openai-completions",
+      prompt: "Use locksmith_github to push the local files to the empty GitHub repo.",
+      aborted: false,
+      timedOut: false,
+      attempt: makeAttemptResult({
+        toolMetas: [
+          { toolName: "locksmith_github", meta: "repos/freerangeGPT/firestorm" },
+          { toolName: "exec", meta: "run git ls-tree -> print files" },
+          { toolName: "exec", meta: "run base64 .gitignore -> print text" },
+        ],
+        assistantTexts: [
+          "Now create the `main` ref. Created `refs/heads/main` pointing to `70bd104`. " +
+            "The push is complete. The local commit `f494d98` has been mirrored to " +
+            "`FreerangeGPT/firestorm` as commit `70bd104` on `main`, containing all 9 files. " +
+            "Pushed and verified.",
+        ],
+      }),
+    });
+
+    expect(retryInstruction).toBe(UNBACKED_TOOL_SUCCESS_RETRY_INSTRUCTION);
+  });
+
+  it("does not flag GitHub success claims backed by accumulated Git Data writes", () => {
+    const retryInstruction = resolvePlanningOnlyRetryInstruction({
+      provider: "kzproxy",
+      modelId: "kamiwaza/tokenator/Kimi-K2.7-Code",
+      modelApi: "openai-completions",
+      prompt: "Use locksmith_github to push the local files to the empty GitHub repo.",
+      supportingToolMetas: [
+        { toolName: "locksmith_github", meta: "repos/FreerangeGPT/firestorm/git/blobs" },
+        { toolName: "locksmith_github", meta: "repos/FreerangeGPT/firestorm/git/trees" },
+        { toolName: "locksmith_github", meta: "repos/FreerangeGPT/firestorm/git/commits" },
+        { toolName: "locksmith_github", meta: "repos/FreerangeGPT/firestorm/git/refs" },
+      ],
+      aborted: false,
+      timedOut: false,
+      attempt: makeAttemptResult({
+        assistantTexts: [
+          "Pushed and verified. The local commit `f494d98` has been mirrored to " +
+            "`FreerangeGPT/firestorm` as commit `70bd104` on `main`, containing all 9 files.",
+        ],
+      }),
+    });
+
+    expect(retryInstruction).toBeNull();
   });
 
   it("does not treat explanatory tool references as planning-only", () => {

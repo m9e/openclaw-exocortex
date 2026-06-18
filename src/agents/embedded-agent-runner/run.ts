@@ -3194,6 +3194,7 @@ export async function runEmbeddedAgent(
                 modelApi: effectiveModel.api,
                 executionContract,
                 prompt: params.prompt,
+                supportingToolMetas: accumulatedToolMetasForSummary,
                 aborted,
                 timedOut,
                 attempt,
