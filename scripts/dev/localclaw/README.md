@@ -216,9 +216,11 @@ heads-up and you are prompted for your password if no sudo creds are cached. The
 inbound token for `creds list` / `tool list` reads come from the yod-readable
 `~/.openclaw/.env`, so listing never needs sudo. After a change clawctl restarts
 the root daemon (`sudo launchctl kickstart -k system/com.exocortex.locksmith`)
-and, for `tool add`, the gateway, so the change takes effect. `locksmith_*` is
-already in the guard plugin's `toolNames`, so every Locksmith result is still
-run through the fail-closed untrusted-content guard before it reaches the agent.
+and, for `tool add`, the gateway, so the change takes effect. The installer adds
+`locksmith_*` to the main agent's `tools.alsoAllow` and to the guard plugin's
+`toolNames`, so projected Locksmith tools stay visible to the agent and every
+Locksmith result is still run through the fail-closed untrusted-content guard
+before it reaches the agent.
 
 ## Fleet foreman
 

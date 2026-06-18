@@ -269,9 +269,9 @@ lc.catalogTtlSeconds = 600;
 // the gateway dotenv. Preserve any operator-added tools.
 if (!isRecord(lc.tools)) lc.tools = {};
 
-// Projected locksmith_<slug> tools are registered optional; optional tools are
-// policy-hidden from the agent unless explicitly opted in. alsoAllow adds them
-// to the default tool set without converting to a restrictive allow-list.
+// Restrictive profiles or explicit allow-lists can still hide projected
+// locksmith_<slug> tools. alsoAllow keeps them available without converting to
+// a restrictive allow-list.
 const agents = ensureRecord(cfg, "agents");
 const list = Array.isArray(agents.list) ? agents.list : (agents.list = []);
 let main = list.find((a) => isRecord(a) && a.id === "main");
