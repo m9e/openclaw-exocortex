@@ -36,6 +36,8 @@ const PROJECTED_GUIDANCE = [
 const GITHUB_PROJECTED_PROXY_GUIDANCE = [
   "GitHub write guidance for `locksmith_github`:",
   "- Create a user repo with `POST user/repos`; create an org repo with `POST orgs/{org}/repos`.",
+  '- For multi-file pushes, prefer the helper shape `{ "operation": "commit_files", "owner": "OWNER", "repo": "REPO", "branch": "main", "message": "Commit message", "files": [{ "path": "README.md", "content": "...", "encoding": "text" }] }`; it writes serially through Locksmith and verifies the final branch commit.',
+  '- Use `deletePaths` with `operation: "commit_files"` to delete files in the same verified push.',
   "- For a single file, use the Contents API: `PUT repos/{owner}/{repo}/contents/{path}` with JSON containing `message`, base64 `content`, and `branch`; include the current file `sha` when updating an existing file.",
   "- For a multi-file commit on an existing branch, use the Git Data API sequence: `POST repos/{owner}/{repo}/git/blobs`, `POST repos/{owner}/{repo}/git/trees`, `POST repos/{owner}/{repo}/git/commits`, then create or update the branch ref.",
   '- Empty repo first push: GitHub may return 409 "Git Repository is empty" for Git Data writes. Initialize the default branch with the Contents API `PUT repos/{owner}/{repo}/contents/{path}` first, then verify and continue with Contents API or Git Data based on the created branch ref.',
@@ -60,6 +62,7 @@ function buildProjectedUsageExamples(projected: LocksmithProjectedTool[]): strin
       '- `locksmith_github` authenticated user: `{ "method": "GET", "path": "user" }`.',
       '- `locksmith_github` list repositories: `{ "method": "GET", "path": "user/repos", "query": { "type": "owner", "sort": "updated" } }`.',
       '- `locksmith_github` create repository: `{ "method": "POST", "path": "user/repos", "json": { "name": "repo-name", "private": true } }`.',
+      '- `locksmith_github` verified multi-file push: `{ "operation": "commit_files", "owner": "OWNER", "repo": "REPO", "branch": "main", "message": "Commit message", "files": [{ "path": "README.md", "content": "hello", "encoding": "text" }] }`.',
       '- `locksmith_github` create one file: `{ "method": "PUT", "path": "repos/OWNER/REPO/contents/README.md", "json": { "message": "Initial commit", "content": "<base64>", "branch": "main" } }`.',
       '- `locksmith_github` verify branch: `{ "method": "GET", "path": "repos/OWNER/REPO/commits/main" }`.',
     );

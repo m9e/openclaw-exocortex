@@ -281,6 +281,13 @@ function fakeCtx(agentId = "agent-test"): OpenClawPluginToolContext {
   return { agentId } as OpenClawPluginToolContext;
 }
 
+function jsonResponse(payload: unknown, status = 200): Response {
+  return new Response(JSON.stringify(payload), {
+    status,
+    headers: { "content-type": "application/json" },
+  });
+}
+
 describe("locksmith projection / prompt-cache stability", () => {
   beforeEach(() => {
     vi.restoreAllMocks();
@@ -363,6 +370,7 @@ describe("locksmith projection / prompt-cache stability", () => {
 
     expect(tool.name).toBe("locksmith_github");
     expect(tool.description).toContain("GitHub REST API");
+    expect(tool.description).toContain('operation: "commit_files"');
     expect(tool.description).toContain("POST user/repos");
     expect(tool.description).toContain("PUT repos/{owner}/{repo}/contents/{path}");
     expect(tool.description).toContain("Git Data API blobs, tree, commit, then refs");
@@ -370,6 +378,17 @@ describe("locksmith projection / prompt-cache stability", () => {
     expect(tool.description).toContain("Git Repository is empty");
     expect(tool.description).toContain("initialize the default branch with the Contents API");
     expect(tool.description).toContain("follow-up GET verifies the external state");
+  });
+
+  it("exposes commit_files parameters on the projected GitHub tool", () => {
+    const cfg = buildConfigWithProjectedTools({
+      github: { enabled: true, description: "GitHub REST API" },
+    });
+    const factory = createLocksmithProjectedToolFactory(fakeApi(cfg));
+    const [tool] = factory(fakeCtx()) as AnyAgentTool[];
+
+    expect(JSON.stringify(tool.parameters)).toContain("commit_files");
+    expect(JSON.stringify(tool.parameters)).toContain("deletePaths");
   });
 
   it("registers configured projected tools as default-visible", () => {
@@ -446,6 +465,146 @@ describe("locksmith projection / prompt-cache stability", () => {
         gl: "us",
       }),
     );
+  });
+
+  it("commit_files pushes existing branches through serial Git Data API calls", async () => {
+    const fetchMock = vi
+      .spyOn(globalThis, "fetch")
+      .mockResolvedValueOnce(jsonResponse({ object: { sha: "parent-sha" } }))
+      .mockResolvedValueOnce(jsonResponse({ tree: { sha: "base-tree-sha" } }))
+      .mockResolvedValueOnce(jsonResponse({ sha: "blob-one-sha" }, 201))
+      .mockResolvedValueOnce(jsonResponse({ sha: "blob-two-sha" }, 201))
+      .mockResolvedValueOnce(jsonResponse({ sha: "new-tree-sha" }, 201))
+      .mockResolvedValueOnce(jsonResponse({ sha: "commit-sha" }, 201))
+      .mockResolvedValueOnce(jsonResponse({ object: { sha: "commit-sha" } }))
+      .mockResolvedValueOnce(jsonResponse({ sha: "commit-sha" }));
+    const cfg = buildConfigWithProjectedTools({
+      github: { enabled: true },
+    });
+    const factory = createLocksmithProjectedToolFactory(fakeApi(cfg));
+    const [tool] = factory(fakeCtx("agent-github")) as AnyAgentTool[];
+
+    const result = (await tool.execute("call-commit", {
+      operation: "commit_files",
+      owner: "FreerangeGPT",
+      repo: "firestorm",
+      branch: "main",
+      message: "push config",
+      files: [
+        { path: "README.md", content: "hello", encoding: "text" },
+        { path: "config/openclaw.json", content: "e30=", encoding: "base64" },
+      ],
+      deletePaths: ["old.txt"],
+    })) as { details?: Record<string, unknown> };
+
+    expect(result.details).toMatchObject({
+      ok: true,
+      operation: "commit_files",
+      owner: "FreerangeGPT",
+      repo: "firestorm",
+      branch: "main",
+      mode: "git-data",
+      commitSha: "commit-sha",
+      filesCommitted: ["README.md", "config/openclaw.json"],
+      filesDeleted: ["old.txt"],
+      verification: {
+        ok: true,
+        status: 200,
+        commitSha: "commit-sha",
+      },
+    });
+    expect(JSON.stringify(result.details)).not.toContain("hello");
+    expect(fetchMock).toHaveBeenCalledTimes(8);
+    expect(fetchMock.mock.calls.map((call) => call[0])).toEqual([
+      "http://127.0.0.1:9200/api/github/repos/FreerangeGPT/firestorm/git/ref/heads/main",
+      "http://127.0.0.1:9200/api/github/repos/FreerangeGPT/firestorm/git/commits/parent-sha",
+      "http://127.0.0.1:9200/api/github/repos/FreerangeGPT/firestorm/git/blobs",
+      "http://127.0.0.1:9200/api/github/repos/FreerangeGPT/firestorm/git/blobs",
+      "http://127.0.0.1:9200/api/github/repos/FreerangeGPT/firestorm/git/trees",
+      "http://127.0.0.1:9200/api/github/repos/FreerangeGPT/firestorm/git/commits",
+      "http://127.0.0.1:9200/api/github/repos/FreerangeGPT/firestorm/git/ref/heads/main",
+      "http://127.0.0.1:9200/api/github/repos/FreerangeGPT/firestorm/commits/main",
+    ]);
+    expect(fetchMock.mock.calls[2]?.[1]?.method).toBe("POST");
+    expect(JSON.parse(fetchMock.mock.calls[2]?.[1]?.body as string)).toEqual({
+      content: "hello",
+      encoding: "utf-8",
+    });
+    expect(JSON.parse(fetchMock.mock.calls[4]?.[1]?.body as string)).toMatchObject({
+      base_tree: "base-tree-sha",
+      tree: [
+        { path: "README.md", mode: "100644", type: "blob", sha: "blob-one-sha" },
+        {
+          path: "config/openclaw.json",
+          mode: "100644",
+          type: "blob",
+          sha: "blob-two-sha",
+        },
+        { path: "old.txt", mode: "100644", type: "blob", sha: null },
+      ],
+    });
+  });
+
+  it("commit_files initializes empty repos with Contents API before remaining Git Data writes", async () => {
+    const fetchMock = vi
+      .spyOn(globalThis, "fetch")
+      .mockResolvedValueOnce(jsonResponse({ message: "Not Found" }, 404))
+      .mockResolvedValueOnce(jsonResponse({ commit: { sha: "init-sha" } }, 201))
+      .mockResolvedValueOnce(jsonResponse({ object: { sha: "init-sha" } }))
+      .mockResolvedValueOnce(jsonResponse({ tree: { sha: "init-tree-sha" } }))
+      .mockResolvedValueOnce(jsonResponse({ sha: "blob-two-sha" }, 201))
+      .mockResolvedValueOnce(jsonResponse({ sha: "new-tree-sha" }, 201))
+      .mockResolvedValueOnce(jsonResponse({ sha: "commit-sha" }, 201))
+      .mockResolvedValueOnce(jsonResponse({ object: { sha: "commit-sha" } }))
+      .mockResolvedValueOnce(jsonResponse({ sha: "commit-sha" }));
+    const cfg = buildConfigWithProjectedTools({
+      github: { enabled: true },
+    });
+    const factory = createLocksmithProjectedToolFactory(fakeApi(cfg));
+    const [tool] = factory(fakeCtx("agent-github")) as AnyAgentTool[];
+
+    const result = (await tool.execute("call-empty", {
+      operation: "commit_files",
+      owner: "FreerangeGPT",
+      repo: "firestorm",
+      branch: "main",
+      message: "initial push",
+      files: [
+        { path: "README.md", content: "hello", encoding: "text" },
+        { path: "AGENTS.md", content: "agent notes", encoding: "text" },
+      ],
+    })) as { details?: Record<string, unknown> };
+
+    expect(result.details).toMatchObject({
+      ok: true,
+      mode: "contents-initialized-then-git-data",
+      initializedCommitSha: "init-sha",
+      commitSha: "commit-sha",
+      filesCommitted: ["README.md", "AGENTS.md"],
+      verification: {
+        ok: true,
+        status: 200,
+        commitSha: "commit-sha",
+      },
+    });
+    expect(fetchMock).toHaveBeenCalledTimes(9);
+    expect(fetchMock.mock.calls.map((call) => call[0])).toEqual([
+      "http://127.0.0.1:9200/api/github/repos/FreerangeGPT/firestorm/git/ref/heads/main",
+      "http://127.0.0.1:9200/api/github/repos/FreerangeGPT/firestorm/contents/README.md",
+      "http://127.0.0.1:9200/api/github/repos/FreerangeGPT/firestorm/git/ref/heads/main",
+      "http://127.0.0.1:9200/api/github/repos/FreerangeGPT/firestorm/git/commits/init-sha",
+      "http://127.0.0.1:9200/api/github/repos/FreerangeGPT/firestorm/git/blobs",
+      "http://127.0.0.1:9200/api/github/repos/FreerangeGPT/firestorm/git/trees",
+      "http://127.0.0.1:9200/api/github/repos/FreerangeGPT/firestorm/git/commits",
+      "http://127.0.0.1:9200/api/github/repos/FreerangeGPT/firestorm/git/ref/heads/main",
+      "http://127.0.0.1:9200/api/github/repos/FreerangeGPT/firestorm/commits/main",
+    ]);
+    expect(fetchMock.mock.calls[1]?.[1]?.method).toBe("PUT");
+    expect(JSON.parse(fetchMock.mock.calls[1]?.[1]?.body as string)).toMatchObject({
+      message: "initial push",
+      content: Buffer.from("hello", "utf8").toString("base64"),
+      branch: "main",
+    });
   });
 
   it("static prompt guidance is byte-stable across object insertion order", () => {

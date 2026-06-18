@@ -467,6 +467,81 @@ describe("untrusted-content tool result transform", () => {
     expect(fetchMock).toHaveBeenCalledTimes(1);
   });
 
+  it("labels Locksmith results as API data and keeps trusted proxy metadata visible", async () => {
+    const fetchMock = vi.spyOn(globalThis, "fetch").mockResolvedValue(
+      new Response(
+        JSON.stringify(
+          buildPipelineResponse({
+            id: "scan-locksmith-1",
+            clean: true,
+            quarantined: false,
+            content: '{"ok":true,"status":201,"data":{"sha":"abc123"}}',
+          }),
+        ),
+        {
+          status: 200,
+          headers: { "content-type": "application/json" },
+        },
+      ),
+    );
+
+    const result = (await maybeTransformToolResult({
+      cfg: buildConfig({
+        baseUrl: "http://127.0.0.1:8787",
+        toolNames: ["locksmith_*"],
+      }),
+      toolName: "locksmith_github",
+      params: { operation: "commit_files" },
+      toolCallId: "call-locksmith-1",
+      result: {
+        content: [
+          {
+            type: "text",
+            text: '{"ok":true,"status":201,"data":{"sha":"abc123"}}',
+          },
+        ],
+        details: {
+          ok: true,
+          status: 201,
+          operation: "commit_files",
+          owner: "FreerangeGPT",
+          repo: "firestorm",
+          branch: "main",
+          commitSha: "abc123",
+          verification: {
+            ok: true,
+            status: 200,
+            commitSha: "abc123",
+          },
+        },
+      },
+    })) as Record<string, unknown>;
+
+    const content = result.content as Array<{ text: string }>;
+    expect(content[0]?.text).toContain("[locksmith] Trusted proxy metadata");
+    expect(content[0]?.text).toContain("operation: commit_files");
+    expect(content[0]?.text).toContain("ok: true");
+    expect(content[0]?.text).toContain("status: 201");
+    expect(content[0]?.text).toContain("commitSha: abc123");
+    expect(content[0]?.text).toContain("[wrapped:api:warn]");
+    expect(result.untrustedContentGuard).toMatchObject({
+      guard: "untrusted-content",
+      toolName: "locksmith_github",
+      quarantined: false,
+    });
+    const guard = result.untrustedContentGuard as { blocks?: Array<Record<string, unknown>> };
+    expect(guard.blocks?.[0]).toMatchObject({ clean: true, contentId: "scan-locksmith-1" });
+
+    const requestBody = fetchMock.mock.calls[0]?.[1]?.body;
+    expect(typeof requestBody).toBe("string");
+    expect(JSON.parse(requestBody as string)).toMatchObject({
+      input: {
+        source: "api",
+        content_id: "call-locksmith-1:0",
+      },
+    });
+  });
+
   it("summarizes medium-risk content and records a summarize incident with a code", async () => {
     const { api, store } = createFakeApi("a guarded summary of the page");
     vi.spyOn(globalThis, "fetch").mockResolvedValue(

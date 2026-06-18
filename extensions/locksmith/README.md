@@ -221,6 +221,12 @@ Common write paths:
 
 - Create a user repo: `POST user/repos`
 - Create an org repo: `POST orgs/{org}/repos`
+- Push multiple files with the helper operation:
+  `{"operation":"commit_files","owner":"OWNER","repo":"REPO","branch":"main","message":"Commit message","files":[{"path":"README.md","content":"hello","encoding":"text"}]}`.
+  Add `deletePaths` to remove files in the same verified push. This helper
+  performs serial writes through Locksmith, avoids parallel Contents API branch
+  races, initializes empty repositories with the Contents API when needed, and
+  verifies the final branch commit before returning `ok: true`.
 - Create or update one file: `PUT repos/{owner}/{repo}/contents/{path}` with
   JSON containing `message`, base64 `content`, and `branch`; include the current
   file `sha` when updating an existing file.
