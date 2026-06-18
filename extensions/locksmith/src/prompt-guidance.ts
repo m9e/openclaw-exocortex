@@ -39,6 +39,7 @@ const GITHUB_PROJECTED_PROXY_GUIDANCE = [
   '- Empty repo first push: `POST repos/{owner}/{repo}/git/blobs` for file contents, `POST repos/{owner}/{repo}/git/trees`, `POST repos/{owner}/{repo}/git/commits`, then `POST repos/{owner}/{repo}/git/refs` with `ref: "refs/heads/main"`.',
   "- Existing branch push: read the current ref/commit/tree, create blobs/tree/commit with the current commit as parent, then `PATCH repos/{owner}/{repo}/git/refs/heads/main`.",
   "- Treat 200/201/204 mutation responses as pending until verified by a read such as `GET repos/{owner}/{repo}/commits/{branch}` or `GET repos/{owner}/{repo}/contents/{path}`.",
+  '- If GitHub returns 403 with "Resource not accessible by personal access token", report a credential permission blocker instead of retrying or claiming success.',
   "- Never report that a repo, commit, branch, PR, issue, or file was created/pushed unless the matching Locksmith mutation result succeeded and a follow-up read proves the external state.",
 ].join("\n");
 

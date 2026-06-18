@@ -491,6 +491,8 @@ describe("locksmith projection / prompt-cache stability", () => {
     expect(guidance).toContain("POST repos/{owner}/{repo}/git/blobs");
     expect(guidance).toContain("POST repos/{owner}/{repo}/git/refs");
     expect(guidance).toContain("PATCH repos/{owner}/{repo}/git/refs/heads/main");
+    expect(guidance).toContain("Resource not accessible by personal access token");
+    expect(guidance).toContain("report a credential permission blocker");
     expect(guidance).toContain("follow-up read proves the external state");
   });
 

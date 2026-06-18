@@ -237,6 +237,20 @@ repo, branch, commit, issue, PR, or file was created/pushed unless the matching
 Locksmith mutation returned success and a follow-up read proves the external
 state.
 
+Credential requirements depend on the GitHub token type and endpoint:
+
+- Classic PATs need `public_repo` or `repo` to create public repositories,
+  `repo` to create private repositories, and `delete_repo` to delete
+  repositories.
+- Fine-grained PATs need repository **Administration: write** for
+  `POST user/repos` and repository deletion, and **Contents: write** for
+  `PUT repos/{owner}/{repo}/contents/{path}`. The token must also be scoped to
+  the relevant resource owner/repositories.
+- A 403 response such as `Resource not accessible by personal access token`
+  means the Locksmith route and inbound auth worked, but GitHub rejected the
+  upstream token permissions. Report that as a credential blocker rather than a
+  tool-call failure.
+
 Locksmith slugs may use lowercase letters, numbers, hyphens, and underscores.
 The OpenClaw tool name is always `locksmith_<slug>`.
 
