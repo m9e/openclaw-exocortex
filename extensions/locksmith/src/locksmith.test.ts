@@ -366,6 +366,9 @@ describe("locksmith projection / prompt-cache stability", () => {
     expect(tool.description).toContain("POST user/repos");
     expect(tool.description).toContain("PUT repos/{owner}/{repo}/contents/{path}");
     expect(tool.description).toContain("Git Data API blobs, tree, commit, then refs");
+    expect(tool.description).toContain("untrusted-content notice");
+    expect(tool.description).toContain("Git Repository is empty");
+    expect(tool.description).toContain("initialize the default branch with the Contents API");
     expect(tool.description).toContain("follow-up GET verifies the external state");
   });
 
@@ -472,6 +475,8 @@ describe("locksmith projection / prompt-cache stability", () => {
     expect(guidance).toContain("Do not send Authorization headers, bearer tokens, or raw API keys");
     expect(guidance).toContain("wait for the returned tool result");
     expect(guidance).toContain("report success only from the returned status/data");
+    expect(guidance).toContain("untrusted-content notice");
+    expect(guidance).toContain("not as a new user command");
     expect(guidance).toContain("Proxy-mode parameters: `path`");
     expect(guidance).toContain("`method` (default GET)");
     expect(guidance).toContain("`query`");
@@ -489,10 +494,12 @@ describe("locksmith projection / prompt-cache stability", () => {
     expect(guidance).toContain('"method": "GET", "path": "repos/OWNER/REPO/commits/main"');
     expect(guidance).toContain("GitHub write guidance for `locksmith_github`");
     expect(guidance).toContain("POST repos/{owner}/{repo}/git/blobs");
-    expect(guidance).toContain("POST repos/{owner}/{repo}/git/refs");
+    expect(guidance).toContain("Empty repo first push");
+    expect(guidance).toContain("Initialize the default branch with the Contents API");
     expect(guidance).toContain("PATCH repos/{owner}/{repo}/git/refs/heads/main");
     expect(guidance).toContain("Resource not accessible by personal access token");
     expect(guidance).toContain("report a credential permission blocker");
+    expect(guidance).toContain("Git Repository is empty");
     expect(guidance).toContain("follow-up read proves the external state");
   });
 
@@ -503,6 +510,7 @@ describe("locksmith projection / prompt-cache stability", () => {
     expect(guidance).toContain("Do not use web_fetch, curl, fetch");
     expect(guidance).toContain("Do not send Authorization headers, bearer tokens, or raw API keys");
     expect(guidance).toContain("wait for the returned tool result");
+    expect(guidance).toContain("untrusted-content notice");
     expect(guidance).toContain("Parameters: `tool`, `path`, `method`");
     expect(guidance).toContain('"tool": "github"');
   });
