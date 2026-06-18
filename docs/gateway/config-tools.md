@@ -432,7 +432,7 @@ Controls inline attachment support for `sessions_spawn`.
 
 ### `tools.experimental`
 
-Experimental built-in tool flags. Default off unless a strict-agentic GPT-5 auto-enable rule applies.
+Experimental built-in tool flags. Default off unless a strict-agentic auto-enable rule applies.
 
 ```json5
 {
@@ -445,7 +445,7 @@ Experimental built-in tool flags. Default off unless a strict-agentic GPT-5 auto
 ```
 
 - `planTool`: enables the structured `update_plan` tool for non-trivial multi-step work tracking.
-- Default: `false` unless `agents.defaults.embeddedAgent.executionContract` (or a per-agent override) is set to `"strict-agentic"` for an OpenAI or OpenAI Codex GPT-5-family run. Set `true` to force the tool on outside that scope, or `false` to keep it off even for strict-agentic GPT-5 runs.
+- Default: `false` unless `agents.defaults.embeddedAgent.executionContract` (or a per-agent override) resolves to `"strict-agentic"`. GPT-5-family OpenAI runs auto-activate that contract when unspecified; other tool-capable lanes can opt in explicitly. Set `true` to force the tool on outside that scope, or `false` to keep it off even for strict-agentic runs.
 - When enabled, the system prompt also adds usage guidance so the model only uses it for substantial work and keeps at most one step `in_progress`.
 
 ### `agents.defaults.subagents`

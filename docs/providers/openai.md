@@ -1028,8 +1028,8 @@ the Server-side compaction accordion below.
 
   </Accordion>
 
-  <Accordion title="Strict-agentic GPT mode">
-    For GPT-5-family runs on `openai/*`, OpenClaw can use a stricter embedded execution contract:
+  <Accordion title="Strict-agentic mode">
+    For GPT-5-family runs on `openai/*`, OpenClaw auto-activates a stricter embedded execution contract unless explicitly opted out. Operators can also opt other tool-capable embedded agents into the same contract:
 
     ```json5
     {
@@ -1048,7 +1048,7 @@ the Server-side compaction accordion below.
     - Surfaces an explicit blocked state if the model keeps planning without acting
 
     <Note>
-    Scoped to OpenAI and Codex GPT-5-family runs only. Other providers and older model families keep default behavior.
+    Auto-activation is scoped to OpenAI and Codex GPT-5-family runs. Other providers and older model families keep default behavior unless explicitly configured with `executionContract: "strict-agentic"`.
     </Note>
 
   </Accordion>

@@ -1256,6 +1256,7 @@ export async function runEmbeddedAgent(
       const ackExecutionFastPathInstruction = resolveAckExecutionFastPathInstruction({
         provider,
         modelId,
+        modelApi: effectiveModel.api,
         prompt: params.prompt,
       });
       let rateLimitProfileRotations = 0;
@@ -3144,6 +3145,7 @@ export async function runEmbeddedAgent(
             : resolvePlanningOnlyRetryInstruction({
                 provider,
                 modelId,
+                modelApi: effectiveModel.api,
                 executionContract,
                 prompt: params.prompt,
                 aborted,

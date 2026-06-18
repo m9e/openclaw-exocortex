@@ -165,6 +165,7 @@ const RETRY_GUARD_MODEL_APIS = new Set([
   "openclaw-openai-responses-transport",
   "openclaw-azure-openai-responses-transport",
 ]);
+const PLANNING_ONLY_RETRY_GUARD_MODEL_APIS = new Set(["openai-completions", "anthropic-messages"]);
 const DEFAULT_PLANNING_ONLY_RETRY_LIMIT = 1;
 const STRICT_AGENTIC_PLANNING_ONLY_RETRY_LIMIT = 2;
 // Allow one immediate continuation plus one follow-up continuation before
@@ -767,9 +768,15 @@ export function resolveEmptyResponseRetryInstruction(params: {
 function shouldApplyPlanningOnlyRetryGuard(params: {
   provider?: string;
   modelId?: string;
+  modelApi?: string;
   executionContract?: string;
 }): boolean {
   if (params.executionContract === "strict-agentic") {
+    return true;
+  }
+  if (
+    PLANNING_ONLY_RETRY_GUARD_MODEL_APIS.has(normalizeLowercaseStringOrEmpty(params.modelApi ?? ""))
+  ) {
     return true;
   }
   return isIncompleteTurnRecoverySupportedProviderModel({
@@ -853,12 +860,14 @@ function isLikelyActionableUserPrompt(text: string): boolean {
 export function resolveAckExecutionFastPathInstruction(params: {
   provider?: string;
   modelId?: string;
+  modelApi?: string;
   prompt: string;
 }): string | null {
   if (
     !shouldApplyPlanningOnlyRetryGuard({
       provider: params.provider,
       modelId: params.modelId,
+      modelApi: params.modelApi,
     }) ||
     !isLikelyExecutionAckPrompt(params.prompt)
   ) {
@@ -976,6 +985,7 @@ export function resolvePlanningOnlyRetryLimit(
 export function resolvePlanningOnlyRetryInstruction(params: {
   provider?: string;
   modelId?: string;
+  modelApi?: string;
   executionContract?: string;
   prompt?: string;
   aborted: boolean;
@@ -993,6 +1003,7 @@ export function resolvePlanningOnlyRetryInstruction(params: {
     !shouldApplyPlanningOnlyRetryGuard({
       provider: params.provider,
       modelId: params.modelId,
+      modelApi: params.modelApi,
       executionContract: params.executionContract,
     }) ||
     (typeof params.prompt === "string" && !isLikelyActionableUserPrompt(params.prompt)) ||

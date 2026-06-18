@@ -10,6 +10,7 @@ import {
   loadRunOverflowCompactionHarness,
   mockedClassifyFailoverReason,
   mockedGlobalHookRunner,
+  mockedBuildEmbeddedRunPayloads,
   mockedLog,
   mockedRunEmbeddedAttempt,
   mockedResolveModelAsync,
@@ -489,6 +490,75 @@ describe("runEmbeddedAgent incomplete-turn safety", () => {
     for (const text of payloadTexts) {
       expect(text).not.toContain("plan-only turns");
     }
+  });
+
+  it("retries openai-compatible planning-only turns by model API before delivering text", async () => {
+    mockedClassifyFailoverReason.mockReturnValue(null);
+    mockedResolveModelAsync.mockResolvedValue({
+      model: {
+        id: "kamiwaza/tokenator/Kimi-K2.7-Code",
+        provider: "kzproxy",
+        contextWindow: 200000,
+        api: "openai-completions",
+      },
+      error: null,
+      authStorage: {
+        setRuntimeApiKey: vi.fn(),
+      },
+      modelRegistry: {},
+    });
+    mockedBuildEmbeddedRunPayloads.mockImplementation((params) =>
+      params.assistantTexts
+        .map((text) => text.trim())
+        .filter((text) => text.length > 0)
+        .map((text) => ({ text })),
+    );
+    mockedRunEmbeddedAttempt.mockResolvedValueOnce(
+      makeAttemptResult({
+        assistantTexts: [
+          "Repo is created and empty. I'll verify via Locksmith, add remote, then push.",
+        ],
+        lastAssistant: {
+          role: "assistant",
+          api: "openai-completions",
+          stopReason: "stop",
+          provider: "kzproxy",
+          model: "kamiwaza/tokenator/Kimi-K2.7-Code",
+          content: [
+            {
+              type: "text",
+              text: "Repo is created and empty. I'll verify via Locksmith, add remote, then push.",
+            },
+          ],
+        } as unknown as EmbeddedRunAttemptResult["lastAssistant"],
+      }),
+    );
+    mockedRunEmbeddedAttempt.mockResolvedValueOnce(
+      makeAttemptResult({
+        assistantTexts: ["Pushed the empty repo to GitHub."],
+        lastAssistant: {
+          role: "assistant",
+          api: "openai-completions",
+          stopReason: "stop",
+          provider: "kzproxy",
+          model: "kamiwaza/tokenator/Kimi-K2.7-Code",
+          content: [{ type: "text", text: "Pushed the empty repo to GitHub." }],
+        } as unknown as EmbeddedRunAttemptResult["lastAssistant"],
+      }),
+    );
+
+    const result = await runEmbeddedAgent({
+      ...overflowBaseRunParams,
+      prompt: "The repo exists and is empty; verify via Locksmith, add remote, and push.",
+      provider: "openai",
+      model: "kamiwaza/tokenator/Kimi-K2.7-Code",
+      runId: "run-openai-compatible-planning-only-retry",
+    });
+
+    expect(mockedRunEmbeddedAttempt).toHaveBeenCalledTimes(2);
+    expect(runAttemptCall(1).prompt).toContain(PLANNING_ONLY_RETRY_INSTRUCTION);
+    expect(result.payloads).toEqual([{ text: "Pushed the empty repo to GitHub." }]);
+    expectWarnMessageWith("planning-only turn detected");
   });
 
   it("detects replay-safe planning-only GPT turns", () => {
@@ -2925,6 +2995,24 @@ describe("runEmbeddedAgent incomplete-turn safety", () => {
     });
 
     expect(retryInstruction).toContain("Do not restate the plan");
+  });
+
+  it("detects replay-safe planning-only OpenAI-compatible turns from model API", () => {
+    const retryInstruction = resolvePlanningOnlyRetryInstruction({
+      provider: "kzproxy",
+      modelId: "kamiwaza/tokenator/Kimi-K2.7-Code",
+      modelApi: "openai-completions",
+      prompt: "The repo exists and is empty; verify via Locksmith, add remote, and push.",
+      aborted: false,
+      timedOut: false,
+      attempt: makeAttemptResult({
+        assistantTexts: [
+          "Repo is created and empty. I'll verify via Locksmith, add remote, then push.",
+        ],
+      }),
+    });
+
+    expect(retryInstruction).toBe(PLANNING_ONLY_RETRY_INSTRUCTION);
   });
 
   it("does not enable incomplete-turn recovery for non-Gemini Google models", () => {

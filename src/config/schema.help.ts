@@ -1534,11 +1534,11 @@ export const FIELD_HELP: Record<string, string> = {
   "agents.defaults.embeddedAgent.projectSettingsPolicy":
     'How embedded OpenClaw handles workspace-local `.openclaw/settings.json`: "sanitize" (default) strips shellPath/shellCommandPrefix, "ignore" disables project settings entirely, and "trusted" applies project settings as-is.',
   "agents.defaults.embeddedAgent.executionContract":
-    'Embedded OpenClaw execution contract: "default" keeps the standard runner behavior, while "strict-agentic" keeps OpenAI/OpenAI Codex GPT-5-family runs acting until they hit a real blocker instead of stopping at plans or filler.',
+    'Embedded OpenClaw execution contract: "default" keeps the standard runner behavior, while "strict-agentic" keeps tool-capable embedded runs acting until they hit a real blocker instead of stopping at plans or filler. GPT-5-family OpenAI runs auto-activate this when unspecified.',
   "agents.list[].embeddedAgent":
-    "Optional per-agent embedded OpenClaw overrides. Use this to opt specific agents into stricter GPT-5 execution behavior without changing the global default.",
+    "Optional per-agent embedded OpenClaw overrides. Use this to opt specific agents into stricter execution behavior without changing the global default.",
   "agents.list[].embeddedAgent.executionContract":
-    'Optional per-agent embedded OpenClaw execution contract override. Set "strict-agentic" to keep that agent acting through plan-only turns on OpenAI/OpenAI Codex GPT-5-family runs, or "default" to inherit the standard runner behavior.',
+    'Optional per-agent embedded OpenClaw execution contract override. Set "strict-agentic" to keep that agent acting through plan-only turns, or "default" to inherit the standard runner behavior.',
   "agents.defaults.humanDelay.mode": 'Delay style for block replies ("off", "natural", "custom").',
   "agents.defaults.humanDelay.minMs": "Minimum delay in ms for custom humanDelay (default: 800).",
   "agents.defaults.humanDelay.maxMs": "Maximum delay in ms for custom humanDelay (default: 2500).",
