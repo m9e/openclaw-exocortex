@@ -139,6 +139,17 @@ export type SlackSocketModeConfig = {
   pingPongLoggingEnabled?: boolean;
 };
 
+export type SlackCredentialProxyConfig = {
+  /** Enable fake-token credential transport for this Slack account. Default: true when URLs are set. */
+  enabled?: boolean;
+  /** Slack Web API-compatible base URL for bot-token calls. */
+  botApiUrl?: string;
+  /** Slack Web API-compatible base URL for app-token Socket Mode bootstrap calls. */
+  appApiUrl?: string;
+  /** Slack Web API-compatible base URL for optional user-token calls. */
+  userApiUrl?: string;
+};
+
 export type SlackAccountConfig = {
   /** Optional display name for this account (used in CLI/UI lists). */
   name?: string;
@@ -146,6 +157,8 @@ export type SlackAccountConfig = {
   mode?: "socket" | "http";
   /** Slack SDK Socket Mode transport options. Ignored in HTTP mode. */
   socketMode?: SlackSocketModeConfig;
+  /** Optional fake-token credential transport. Keeps real Slack tokens outside OpenClaw. */
+  credentialProxy?: SlackCredentialProxyConfig;
   /** Slack signing secret (required for HTTP mode). */
   signingSecret?: string;
   /** Slack Events API webhook path (default: /slack/events). */

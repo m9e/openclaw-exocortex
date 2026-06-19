@@ -29,7 +29,11 @@ import {
   resolveSlackAccountDmPolicy,
 } from "../accounts.js";
 import { isSlackAnyNativeApprovalClientEnabled } from "../approval-native-gates.js";
-import { resolveSlackWebClientOptions } from "../client-options.js";
+import {
+  resolveSlackSocketModeWebSocketAgent,
+  resolveSlackWebClientOptions,
+} from "../client-options.js";
+import { resolveSlackCredentialProxyClientOptions } from "../credential-proxy.js";
 import { normalizeSlackWebhookPath, registerSlackHttpHandler } from "../http/index.js";
 import { SLACK_TEXT_LIMIT } from "../limits.js";
 import { resolveSlackChannelAllowlist } from "../resolve-channels.js";
@@ -245,7 +249,16 @@ export async function monitorSlackProvider(opts: MonitorSlackOpts = {}) {
   const typingReaction = slackCfg.typingReaction?.trim() ?? "";
   const mediaMaxBytes = (opts.mediaMaxMb ?? slackCfg.mediaMaxMb ?? 20) * 1024 * 1024;
   const removeAckAfterReply = cfg.messages?.removeAckAfterReply ?? false;
-  const clientOptions = resolveSlackWebClientOptions();
+  const botClientOptions = resolveSlackWebClientOptions(
+    resolveSlackCredentialProxyClientOptions(slackCfg.credentialProxy, "bot"),
+  );
+  const appClientOptions = resolveSlackWebClientOptions(
+    resolveSlackCredentialProxyClientOptions(slackCfg.credentialProxy, "app"),
+  );
+  const socketModeWebSocketAgent =
+    slackMode === "socket" && slackCfg.credentialProxy
+      ? resolveSlackSocketModeWebSocketAgent()
+      : undefined;
   const { app, receiver, socketModeLogger } = createSlackBoltApp({
     interop: await getSlackBoltInterop(),
     slackMode,
@@ -253,7 +266,9 @@ export async function monitorSlackProvider(opts: MonitorSlackOpts = {}) {
     appToken: appToken ?? undefined,
     signingSecret: signingSecret ?? undefined,
     slackWebhookPath,
-    clientOptions: clientOptions as Record<string, unknown>,
+    clientOptions: botClientOptions as Record<string, unknown>,
+    appClientOptions: appClientOptions as Record<string, unknown>,
+    socketModeWebSocketAgent,
     ...(slackCfg.socketMode ? { socketMode: slackCfg.socketMode } : {}),
   });
 
@@ -300,7 +315,7 @@ export async function monitorSlackProvider(opts: MonitorSlackOpts = {}) {
   let authTestFailed = false;
   let authTestError: string | undefined;
   try {
-    const auth = await app.client.auth.test({ token: botToken });
+    const auth = await app.client.auth.test();
     botUserId = auth.user_id ?? "";
     botId = (auth as { bot_id?: string }).bot_id ?? "";
     teamId = auth.team_id ?? "";

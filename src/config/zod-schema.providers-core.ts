@@ -955,11 +955,21 @@ export const SlackSocketModeSchema = z
   })
   .strict();
 
+export const SlackCredentialProxySchema = z
+  .object({
+    enabled: z.boolean().optional(),
+    botApiUrl: z.string().min(1).optional(),
+    appApiUrl: z.string().min(1).optional(),
+    userApiUrl: z.string().min(1).optional(),
+  })
+  .strict();
+
 export const SlackAccountSchema = z
   .object({
     name: z.string().optional(),
     mode: z.enum(["socket", "http"]).optional(),
     socketMode: SlackSocketModeSchema.optional(),
+    credentialProxy: SlackCredentialProxySchema.optional(),
     signingSecret: SecretInputSchema.optional().register(sensitive),
     webhookPath: z.string().optional(),
     capabilities: SlackCapabilitiesSchema.optional(),

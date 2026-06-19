@@ -1,4 +1,5 @@
 // Slack provider module implements model/runtime integration.
+import type { Agent } from "node:http";
 import { asOptionalRecord as asRecord } from "openclaw/plugin-sdk/string-coerce-runtime";
 import type { SlackChannelResolution } from "../resolve-channels.js";
 import type { SlackUserResolution } from "../resolve-users.js";
@@ -111,6 +112,21 @@ function installSlackNativeReconnectFailureObserver(receiver: unknown) {
       });
     },
   );
+}
+
+function installSlackSocketModeWebSocketAgent(receiver: unknown, agent: Agent | undefined) {
+  if (!agent || !receiver || typeof receiver !== "object") {
+    return;
+  }
+  const client = Reflect.get(receiver, "client");
+  if (!client || typeof client !== "object") {
+    return;
+  }
+  const webClientOptions = Reflect.get(client, "webClientOptions");
+  if (!webClientOptions || typeof webClientOptions !== "object") {
+    return;
+  }
+  Reflect.set(webClientOptions, "agent", agent);
 }
 
 function resolveSlackBoltModule(value: unknown): SlackBoltResolvedExports | null {
@@ -302,6 +318,8 @@ export function createSlackBoltApp(params: {
   signingSecret?: string;
   slackWebhookPath: string;
   clientOptions: Record<string, unknown>;
+  appClientOptions?: Record<string, unknown>;
+  socketModeWebSocketAgent?: Agent;
   socketMode?: SlackSocketModeConfig;
 }) {
   const socketModeLogger = createSlackSocketModeLogger();
@@ -312,7 +330,7 @@ export function createSlackBoltApp(params: {
       params.socketMode?.clientPingTimeout ?? OPENCLAW_SLACK_CLIENT_PING_TIMEOUT_MS,
     logger: socketModeLogger,
     installerOptions: {
-      clientOptions: params.clientOptions,
+      clientOptions: params.appClientOptions ?? params.clientOptions,
     },
   };
   if (params.socketMode?.serverPingTimeout !== undefined) {
@@ -331,6 +349,7 @@ export function createSlackBoltApp(params: {
         });
   if (params.slackMode === "socket") {
     installSlackNativeReconnectFailureObserver(receiver);
+    installSlackSocketModeWebSocketAgent(receiver, params.socketModeWebSocketAgent);
   }
   const app = new params.interop.App({
     token: params.botToken,

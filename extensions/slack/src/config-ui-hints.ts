@@ -70,6 +70,22 @@ export const slackChannelConfigUiHints = {
     label: "Slack Socket Mode Transport",
     help: "Slack Socket Mode transport tuning passed to the Slack SDK. Use only when investigating ping/pong timeout or stale websocket behavior.",
   },
+  credentialProxy: {
+    label: "Slack Credential Proxy",
+    help: "Fake-token credential transport for Slack Web API calls. Use this when real Slack tokens live in an external credential proxy such as Locksmith.",
+  },
+  "credentialProxy.botApiUrl": {
+    label: "Slack Bot Proxy API URL",
+    help: "Slack Web API-compatible base URL for bot-token calls, for example a Locksmith credential transport URL ending in /.",
+  },
+  "credentialProxy.appApiUrl": {
+    label: "Slack App Proxy API URL",
+    help: "Slack Web API-compatible base URL for app-token Socket Mode bootstrap calls.",
+  },
+  "credentialProxy.userApiUrl": {
+    label: "Slack User Proxy API URL",
+    help: "Slack Web API-compatible base URL for optional user-token calls.",
+  },
   "socketMode.clientPingTimeout": {
     label: "Slack Socket Mode Pong Timeout",
     help: "Milliseconds the Slack SDK waits for a pong after its client ping before treating the websocket as stale (OpenClaw default: 15000). Increase on hosts with event-loop starvation or slow network scheduling.",

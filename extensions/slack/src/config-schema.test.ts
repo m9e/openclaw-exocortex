@@ -111,6 +111,29 @@ describe("slack config schema", () => {
     });
   });
 
+  it("accepts credential proxy URLs at root and account level", () => {
+    expectSlackConfigValid({
+      botToken: "xoxb-locksmith-fake",
+      appToken: "xapp-locksmith-fake",
+      credentialProxy: {
+        botApiUrl: "http://127.0.0.1:9200/transport/slack-bot/",
+        appApiUrl: "http://127.0.0.1:9200/transport/slack-app/",
+      },
+      accounts: {
+        ops: {
+          botToken: "xoxb-locksmith-ops",
+          appToken: "xapp-locksmith-ops",
+          credentialProxy: {
+            enabled: true,
+            botApiUrl: "http://127.0.0.1:9200/transport/slack-bot-ops/",
+            appApiUrl: "http://127.0.0.1:9200/transport/slack-app-ops/",
+            userApiUrl: "http://127.0.0.1:9200/transport/slack-user-ops/",
+          },
+        },
+      },
+    });
+  });
+
   it("rejects invalid Socket Mode ping/pong transport tuning", () => {
     expectSlackConfigIssue(
       {

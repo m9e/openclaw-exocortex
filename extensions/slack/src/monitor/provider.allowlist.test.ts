@@ -4,6 +4,7 @@ import type { ChannelRuntimeSurface } from "openclaw/plugin-sdk/channel-contract
 import { beforeEach, describe, expect, it, vi } from "vitest";
 import {
   flush,
+  getSlackClient,
   getSlackHandlerOrThrow,
   getSlackTestState,
   resetSlackTestState,
@@ -69,6 +70,22 @@ describe("slack allowlist log formatting", () => {
 });
 
 describe("slack startup user allowlist resolution", () => {
+  it("uses the WebClient constructor token for startup auth.test", async () => {
+    const monitor = startSlackMonitor(monitorSlackProvider, {
+      botToken: "xoxb-locksmith-main",
+      appToken: "xapp-locksmith-main",
+    });
+    try {
+      await getSlackHandlerOrThrow("message");
+      await flush();
+
+      expect(slackTestState.resolveSlackUserAllowlistMock).not.toHaveBeenCalled();
+      expect(getSlackClient().auth.test).toHaveBeenCalledWith();
+    } finally {
+      await stopSlackMonitor(monitor);
+    }
+  });
+
   it("registers the native approval runtime for plugin-only Slack approvals", async () => {
     resetSlackTestState({
       channels: {

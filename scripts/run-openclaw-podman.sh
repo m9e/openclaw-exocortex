@@ -179,7 +179,7 @@ load_podman_env_file() {
     key="${key%"${key##*[![:space:]]}"}"
     [[ "$key" =~ ^[A-Za-z_][A-Za-z0-9_]*$ ]] || continue
     case "$key" in
-      OPENCLAW_GATEWAY_TOKEN|OPENCLAW_PODMAN_CONTAINER|OPENCLAW_PODMAN_IMAGE|OPENCLAW_IMAGE|OPENCLAW_PODMAN_PULL|OPENCLAW_PODMAN_RUN_TIMEOUT|OPENCLAW_PODMAN_GATEWAY_HOST_PORT|OPENCLAW_GATEWAY_PORT|OPENCLAW_PODMAN_BRIDGE_HOST_PORT|OPENCLAW_BRIDGE_PORT|OPENCLAW_GATEWAY_BIND|OPENCLAW_PODMAN_USERNS|OPENCLAW_BIND_MOUNT_OPTIONS|OPENCLAW_PODMAN_PUBLISH_HOST)
+      OPENCLAW_GATEWAY_TOKEN|OPENCLAW_PODMAN_CONTAINER|OPENCLAW_PODMAN_IMAGE|OPENCLAW_IMAGE|OPENCLAW_PODMAN_PULL|OPENCLAW_PODMAN_RUN_TIMEOUT|OPENCLAW_PODMAN_GATEWAY_HOST_PORT|OPENCLAW_GATEWAY_PORT|OPENCLAW_PODMAN_BRIDGE_HOST_PORT|OPENCLAW_BRIDGE_PORT|OPENCLAW_GATEWAY_BIND|OPENCLAW_PODMAN_USERNS|OPENCLAW_BIND_MOUNT_OPTIONS|OPENCLAW_PODMAN_PUBLISH_HOST|TELEGRAM_BOT_TOKEN|LOCKSMITH_INBOUND_TOKEN|LOCKSMITH_AGENT_TOKEN)
         ;;
       *)
         continue
@@ -529,6 +529,13 @@ else
   echo "Starting container without --user (OPENCLAW_PODMAN_USERNS=$PODMAN_USERNS), mounts may require ownership fixes." >&2
 fi
 
+OPTIONAL_ENV_ARGS=()
+for key in TELEGRAM_BOT_TOKEN LOCKSMITH_INBOUND_TOKEN LOCKSMITH_AGENT_TOKEN; do
+  if [[ -n "${!key:-}" ]]; then
+    OPTIONAL_ENV_ARGS+=("-e" "$key")
+  fi
+done
+
 SELINUX_MOUNT_OPTS=""
 if [[ -z "${OPENCLAW_BIND_MOUNT_OPTIONS:-}" ]]; then
   if [[ "$(uname -s 2>/dev/null)" == "Linux" ]] && command -v getenforce >/dev/null 2>&1; then
@@ -550,6 +557,7 @@ if [[ "$RUN_SETUP" == true ]]; then
     -e HOME=/home/node -e TERM=xterm-256color -e BROWSER=echo \
     -e NPM_CONFIG_CACHE=/home/node/.openclaw/.npm \
     -e OPENCLAW_NO_RESPAWN=1 \
+    "${OPTIONAL_ENV_ARGS[@]}" \
     --env-file "$TOKEN_ENV_FILE" \
     -v "$CONFIG_DIR:/home/node/.openclaw:rw${SELINUX_MOUNT_OPTS}" \
     -v "$WORKSPACE_DIR:/home/node/.openclaw/workspace:rw${SELINUX_MOUNT_OPTS}" \
@@ -566,6 +574,7 @@ run_podman_detached --pull="$PODMAN_PULL" -d --replace \
   -e HOME=/home/node -e TERM=xterm-256color \
   -e NPM_CONFIG_CACHE=/home/node/.openclaw/.npm \
   -e OPENCLAW_NO_RESPAWN=1 \
+  "${OPTIONAL_ENV_ARGS[@]}" \
   --env-file "$TOKEN_ENV_FILE" \
   -v "$CONFIG_DIR:/home/node/.openclaw:rw${SELINUX_MOUNT_OPTS}" \
   -v "$WORKSPACE_DIR:/home/node/.openclaw/workspace:rw${SELINUX_MOUNT_OPTS}" \

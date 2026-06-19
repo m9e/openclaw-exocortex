@@ -17,6 +17,8 @@ import {
 import { resolveAccountEntry } from "openclaw/plugin-sdk/routing";
 import { normalizeOptionalString } from "openclaw/plugin-sdk/string-coerce-runtime";
 import type { SlackAccountSurfaceFields } from "./account-surface-fields.js";
+import { registerSlackTokenClientOptions } from "./client.js";
+import { resolveSlackCredentialProxyClientOptions } from "./credential-proxy.js";
 import type { SlackAccountConfig } from "./runtime-api.js";
 import { resolveSlackAppToken, resolveSlackBotToken, resolveSlackUserToken } from "./token.js";
 
@@ -230,6 +232,18 @@ export function resolveSlackAccount(params: {
   const botTokenSource: SlackTokenSource = configBot ? "config" : envBot ? "env" : "none";
   const appTokenSource: SlackTokenSource = configApp ? "config" : envApp ? "env" : "none";
   const userTokenSource: SlackTokenSource = configUser ? "config" : envUser ? "env" : "none";
+  registerSlackTokenClientOptions(
+    botToken,
+    resolveSlackCredentialProxyClientOptions(merged.credentialProxy, "bot"),
+  );
+  registerSlackTokenClientOptions(
+    appToken,
+    resolveSlackCredentialProxyClientOptions(merged.credentialProxy, "app"),
+  );
+  registerSlackTokenClientOptions(
+    userToken,
+    resolveSlackCredentialProxyClientOptions(merged.credentialProxy, "user"),
+  );
 
   return {
     accountId,

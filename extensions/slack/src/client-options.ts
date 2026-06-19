@@ -30,11 +30,11 @@ export const SLACK_WRITE_RETRY_OPTIONS: RetryOptions = {
  * Returns `undefined` when no proxy env var is configured or when Slack hosts
  * are excluded by `NO_PROXY`.
  */
-function resolveSlackProxyAgent(): Agent | undefined {
+function resolveSlackProxyAgent(targetUrl = "https://slack.com/"): Agent | undefined {
   try {
     return createNodeProxyAgent({
       mode: "env",
-      targetUrl: "https://slack.com/",
+      targetUrl,
       protocol: "https",
     });
   } catch {
@@ -44,18 +44,24 @@ function resolveSlackProxyAgent(): Agent | undefined {
 }
 
 export function resolveSlackWebClientOptions(options: WebClientOptions = {}): WebClientOptions {
+  const targetUrl = options.slackApiUrl ?? "https://slack.com/";
   return {
     ...options,
-    agent: options.agent ?? resolveSlackProxyAgent(),
+    agent: options.agent ?? resolveSlackProxyAgent(targetUrl),
     retryConfig: options.retryConfig ?? SLACK_DEFAULT_RETRY_OPTIONS,
   };
 }
 
 export function resolveSlackWriteClientOptions(options: WebClientOptions = {}): WebClientOptions {
+  const targetUrl = options.slackApiUrl ?? "https://slack.com/";
   return {
     ...options,
-    agent: options.agent ?? resolveSlackProxyAgent(),
+    agent: options.agent ?? resolveSlackProxyAgent(targetUrl),
     retryConfig: options.retryConfig ?? SLACK_WRITE_RETRY_OPTIONS,
     maxRequestConcurrency: options.maxRequestConcurrency ?? 1,
   };
+}
+
+export function resolveSlackSocketModeWebSocketAgent(): Agent | undefined {
+  return resolveSlackProxyAgent("wss://wss-primary.slack.com/");
 }

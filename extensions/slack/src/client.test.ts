@@ -21,6 +21,7 @@ let createSlackWriteClient: typeof import("./client.js").createSlackWriteClient;
 let createSlackTokenCacheKey: typeof import("./client.js").createSlackTokenCacheKey;
 let getSlackWriteClient: typeof import("./client.js").getSlackWriteClient;
 let clearSlackWriteClientCacheForTest: typeof import("./client.js").clearSlackWriteClientCacheForTest;
+let registerSlackTokenClientOptions: typeof import("./client.js").registerSlackTokenClientOptions;
 let resolveSlackWebClientOptions: typeof import("./client.js").resolveSlackWebClientOptions;
 let resolveSlackWriteClientOptions: typeof import("./client.js").resolveSlackWriteClientOptions;
 let SLACK_DEFAULT_RETRY_OPTIONS: typeof import("./client.js").SLACK_DEFAULT_RETRY_OPTIONS;
@@ -79,6 +80,7 @@ beforeAll(async () => {
     createSlackTokenCacheKey,
     getSlackWriteClient,
     clearSlackWriteClientCacheForTest,
+    registerSlackTokenClientOptions,
     resolveSlackWebClientOptions,
     resolveSlackWriteClientOptions,
     SLACK_DEFAULT_RETRY_OPTIONS,
@@ -199,6 +201,47 @@ describe("slack web client config", () => {
     expect(first).toMatch(/^sha256:/);
     expect(first).not.toContain(token);
     expect(createSlackTokenCacheKey("xoxb-other-token")).not.toBe(first);
+  });
+
+  it("applies registered credential proxy options for a fake token", () => {
+    clearProxyEnvForTest();
+    try {
+      registerSlackTokenClientOptions("xoxb-locksmith-fake", {
+        slackApiUrl: "http://127.0.0.1:9200/transport/slack-bot/",
+        allowAbsoluteUrls: false,
+      });
+
+      createSlackWebClient("xoxb-locksmith-fake", { timeout: 1234 });
+
+      expect(WebClient).toHaveBeenCalledWith("xoxb-locksmith-fake", {
+        agent: undefined,
+        allowAbsoluteUrls: false,
+        retryConfig: SLACK_DEFAULT_RETRY_OPTIONS,
+        slackApiUrl: "http://127.0.0.1:9200/transport/slack-bot/",
+        timeout: 1234,
+      });
+    } finally {
+      restoreProxyEnvForTest();
+    }
+  });
+
+  it("separates cached write clients by registered credential proxy URL", () => {
+    clearProxyEnvForTest();
+    try {
+      registerSlackTokenClientOptions("xoxb-locksmith-fake", {
+        slackApiUrl: "http://127.0.0.1:9200/transport/slack-bot/",
+      });
+      const first = getSlackWriteClient("xoxb-locksmith-fake");
+      registerSlackTokenClientOptions("xoxb-locksmith-fake", {
+        slackApiUrl: "http://127.0.0.1:9200/transport/slack-bot-2/",
+      });
+      const second = getSlackWriteClient("xoxb-locksmith-fake");
+
+      expect(second).not.toBe(first);
+      expect(WebClient).toHaveBeenCalledTimes(2);
+    } finally {
+      restoreProxyEnvForTest();
+    }
   });
 });
 
