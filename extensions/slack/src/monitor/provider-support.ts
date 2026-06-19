@@ -314,6 +314,8 @@ export function createSlackBoltApp(params: {
   interop: SlackBoltResolvedExports;
   slackMode: "socket" | "http";
   botToken: string;
+  botId?: string;
+  botUserId?: string;
   appToken?: string;
   signingSecret?: string;
   slackWebhookPath: string;
@@ -353,6 +355,8 @@ export function createSlackBoltApp(params: {
   }
   const app = new params.interop.App({
     token: params.botToken,
+    ...(params.botId !== undefined ? { botId: params.botId } : {}),
+    ...(params.botUserId !== undefined ? { botUserId: params.botUserId } : {}),
     receiver,
     clientOptions: params.clientOptions,
     ignoreSelf: false,

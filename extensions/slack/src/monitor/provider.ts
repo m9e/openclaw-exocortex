@@ -33,6 +33,7 @@ import {
   resolveSlackSocketModeWebSocketAgent,
   resolveSlackWebClientOptions,
 } from "../client-options.js";
+import { createSlackWebClient } from "../client.js";
 import { resolveSlackCredentialProxyClientOptions } from "../credential-proxy.js";
 import { normalizeSlackWebhookPath, registerSlackHttpHandler } from "../http/index.js";
 import { SLACK_TEXT_LIMIT } from "../limits.js";
@@ -259,10 +260,48 @@ export async function monitorSlackProvider(opts: MonitorSlackOpts = {}) {
     slackMode === "socket" && slackCfg.credentialProxy
       ? resolveSlackSocketModeWebSocketAgent()
       : undefined;
+  let botUserId = "";
+  let botId = "";
+  let teamId = "";
+  let apiAppId = "";
+  const expectedApiAppIdFromAppToken = parseApiAppIdFromAppToken(appToken);
+  let authTestFailed = false;
+  let authTestError: string | undefined;
+  try {
+    const auth = await createSlackWebClient(botToken, botClientOptions).auth.test();
+    botUserId = auth.user_id ?? "";
+    botId = (auth as { bot_id?: string }).bot_id ?? "";
+    teamId = auth.team_id ?? "";
+    apiAppId = (auth as { api_app_id?: string }).api_app_id ?? "";
+    if (!botUserId) {
+      authTestFailed = true;
+      authTestError = "auth.test returned no user_id";
+    }
+  } catch (err) {
+    authTestFailed = true;
+    authTestError = err instanceof Error ? err.message : String(err);
+  }
+  if (authTestFailed) {
+    runtime.log?.(
+      warn(
+        `[${account.accountId}] slack auth.test failed at boot (${authTestError ?? "unknown error"}); ` +
+          "explicit bot-mention detection will be disabled until restart with a valid bot token",
+      ),
+    );
+  }
+
+  if (apiAppId && expectedApiAppIdFromAppToken && apiAppId !== expectedApiAppIdFromAppToken) {
+    runtime.error?.(
+      `slack token mismatch: bot token api_app_id=${apiAppId} but app token looks like api_app_id=${expectedApiAppIdFromAppToken}`,
+    );
+  }
+
   const { app, receiver, socketModeLogger } = createSlackBoltApp({
     interop: await getSlackBoltInterop(),
     slackMode,
     botToken,
+    botId,
+    botUserId,
     appToken: appToken ?? undefined,
     signingSecret: signingSecret ?? undefined,
     slackWebhookPath,
@@ -306,42 +345,6 @@ export async function monitorSlackProvider(opts: MonitorSlackOpts = {}) {
         }
       : null;
   let unregisterHttpHandler: (() => void) | null = null;
-
-  let botUserId = "";
-  let botId = "";
-  let teamId = "";
-  let apiAppId = "";
-  const expectedApiAppIdFromAppToken = parseApiAppIdFromAppToken(appToken);
-  let authTestFailed = false;
-  let authTestError: string | undefined;
-  try {
-    const auth = await app.client.auth.test();
-    botUserId = auth.user_id ?? "";
-    botId = (auth as { bot_id?: string }).bot_id ?? "";
-    teamId = auth.team_id ?? "";
-    apiAppId = (auth as { api_app_id?: string }).api_app_id ?? "";
-    if (!botUserId) {
-      authTestFailed = true;
-      authTestError = "auth.test returned no user_id";
-    }
-  } catch (err) {
-    authTestFailed = true;
-    authTestError = err instanceof Error ? err.message : String(err);
-  }
-  if (authTestFailed) {
-    runtime.log?.(
-      warn(
-        `[${account.accountId}] slack auth.test failed at boot (${authTestError ?? "unknown error"}); ` +
-          "explicit bot-mention detection will be disabled until restart with a valid bot token",
-      ),
-    );
-  }
-
-  if (apiAppId && expectedApiAppIdFromAppToken && apiAppId !== expectedApiAppIdFromAppToken) {
-    runtime.error?.(
-      `slack token mismatch: bot token api_app_id=${apiAppId} but app token looks like api_app_id=${expectedApiAppIdFromAppToken}`,
-    );
-  }
 
   const ctx = createSlackMonitorContext({
     cfg,

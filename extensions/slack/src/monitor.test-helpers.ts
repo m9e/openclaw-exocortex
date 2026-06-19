@@ -288,6 +288,14 @@ vi.mock("./monitor/send.runtime.js", () => {
   };
 });
 
+vi.mock("./client.js", async () => {
+  const actual = await vi.importActual<typeof import("./client.js")>("./client.js");
+  return {
+    ...actual,
+    createSlackWebClient: () => getSlackClient(),
+  };
+});
+
 vi.mock("./monitor/conversation.runtime.js", async () => {
   const actual = await vi.importActual<typeof import("./monitor/conversation.runtime.js")>(
     "./monitor/conversation.runtime.js",

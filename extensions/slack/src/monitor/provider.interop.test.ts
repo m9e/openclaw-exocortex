@@ -181,6 +181,33 @@ describe("createSlackBoltApp", () => {
     expect((app as unknown as FakeApp).middleware).toHaveLength(1);
   });
 
+  it("passes resolved bot identity into Bolt authorization", () => {
+    const { app } = createSlackBoltApp({
+      interop: {
+        App: FakeApp as never,
+        HTTPReceiver: FakeHTTPReceiver as never,
+        SocketModeReceiver: FakeSocketModeReceiver as never,
+      },
+      slackMode: "socket",
+      botToken: "xoxb-test",
+      botId: "B123",
+      botUserId: "U123",
+      appToken: "xapp-test",
+      slackWebhookPath: "/slack/events",
+      clientOptions: {},
+    });
+
+    expect((app as unknown as FakeApp).args).toEqual({
+      token: "xoxb-test",
+      botId: "B123",
+      botUserId: "U123",
+      receiver: expect.any(FakeSocketModeReceiver),
+      clientOptions: {},
+      ignoreSelf: false,
+      tokenVerificationEnabled: false,
+    });
+  });
+
   it("routes native reconnect start failures through the socket disconnect event", async () => {
     const startError = new Error("invalid_auth");
     class FakeSocketModeClient {
