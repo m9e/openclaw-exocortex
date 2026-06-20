@@ -190,6 +190,27 @@ export type PromotionCandidate = {
   components: PromotionComponents;
 };
 
+export type AssociativeRecallCandidate = {
+  key: string;
+  path: string;
+  startLine: number;
+  endLine: number;
+  snippet: string;
+  recallCount: number;
+  dailyCount: number;
+  groundedCount: number;
+  signalCount: number;
+  score: number;
+  maxScore: number;
+  lastRecalledAt: string;
+};
+
+export type SampleAssociativeRecallCandidatesResult = {
+  storePath: string;
+  eligibleCount: number;
+  selected: AssociativeRecallCandidate[];
+};
+
 type ShortTermAuditIssue = {
   severity: "warn" | "error";
   code:
@@ -338,6 +359,18 @@ function clampScore(value: number): number {
   return Math.max(0, Math.min(1, value));
 }
 
+function hashUnitInterval(seed: string): number {
+  const hex = createHash("sha256").update(seed).digest("hex").slice(0, 13);
+  const value = Number.parseInt(hex, 16);
+  return Number.isFinite(value) ? value / 0x10000000000000 : 0;
+}
+
+function deterministicWeightedPriority(seed: string, key: string, weight: number): number {
+  const boundedWeight = Math.max(0.000001, weight);
+  const u = Math.max(Number.EPSILON, hashUnitInterval(`${seed}:${key}`));
+  return Math.log(u) / boundedWeight;
+}
+
 function toFiniteScore(value: unknown, fallback: number): number {
   const num = Number(value);
   if (!Number.isFinite(num)) {
@@ -362,6 +395,17 @@ function truncateShortTermSnippet(snippet: string): string {
     return snippet;
   }
   return snippet.slice(0, SHORT_TERM_RECALL_MAX_SNIPPET_CHARS).trimEnd();
+}
+
+function truncateAssociativeRecallSnippet(snippet: string, maxChars: number): string {
+  const normalized = normalizeSnippet(snippet);
+  const limit = Math.max(40, Math.min(SHORT_TERM_RECALL_MAX_SNIPPET_CHARS, Math.floor(maxChars)));
+  if (normalized.length <= limit) {
+    return normalized;
+  }
+  const bounded = normalized.slice(0, limit).trimEnd();
+  const lastBoundary = bounded.search(/\s\S*$/);
+  return (lastBoundary > 0 ? bounded.slice(0, lastBoundary) : bounded).trimEnd();
 }
 
 function enforceShortTermRecallSnippetCap(store: ShortTermRecallStore): void {
@@ -1875,6 +1919,114 @@ export async function rankShortTermPromotionCandidates(
     ? Math.max(0, Math.floor(options.limit as number))
     : sorted.length;
   return sorted.slice(0, limit);
+}
+
+export async function sampleAssociativeRecallCandidates(params: {
+  workspaceDir: string;
+  seed: string;
+  limit?: number;
+  minSignalCount?: number;
+  minScore?: number;
+  maxAgeDays?: number;
+  includePromoted?: boolean;
+  recencyHalfLifeDays?: number;
+  maxSnippetChars?: number;
+  nowMs?: number;
+}): Promise<SampleAssociativeRecallCandidatesResult> {
+  const workspaceDir = params.workspaceDir.trim();
+  const limit = Number.isFinite(params.limit) ? Math.max(0, Math.floor(params.limit as number)) : 1;
+  if (!workspaceDir || limit <= 0) {
+    return {
+      storePath: workspaceDir ? resolveStorePath(workspaceDir) : "",
+      eligibleCount: 0,
+      selected: [],
+    };
+  }
+
+  const seed = params.seed.trim() || "associative-recall";
+  const candidates = await rankShortTermPromotionCandidates({
+    workspaceDir,
+    limit: SHORT_TERM_RECALL_MAX_ENTRIES,
+    minScore: params.minScore ?? 0,
+    minRecallCount: params.minSignalCount ?? 1,
+    minUniqueQueries: 0,
+    maxAgeDays: params.maxAgeDays,
+    includePromoted: params.includePromoted,
+    recencyHalfLifeDays: params.recencyHalfLifeDays,
+    nowMs: params.nowMs,
+  });
+  const liveEntries = await filterLiveShortTermRecallEntries({
+    workspaceDir,
+    entries: candidates.map((candidate) => ({
+      key: candidate.key,
+      path: candidate.path,
+      startLine: candidate.startLine,
+      endLine: candidate.endLine,
+      source: candidate.source,
+      snippet: candidate.snippet,
+      recallCount: candidate.recallCount,
+      dailyCount: candidate.dailyCount ?? 0,
+      groundedCount: candidate.groundedCount ?? 0,
+      totalScore: candidate.avgScore * Math.max(1, candidate.signalCount ?? candidate.recallCount),
+      maxScore: candidate.maxScore,
+      firstRecalledAt: candidate.firstRecalledAt,
+      lastRecalledAt: candidate.lastRecalledAt,
+      queryHashes: [],
+      recallDays: candidate.recallDays,
+      conceptTags: candidate.conceptTags,
+      ...(candidate.claimHash ? { claimHash: candidate.claimHash } : {}),
+      ...(candidate.promotedAt ? { promotedAt: candidate.promotedAt } : {}),
+    })),
+  });
+  const liveKeys = new Set(liveEntries.map((entry) => entry.key));
+  const eligible = candidates
+    .filter((candidate) => liveKeys.has(candidate.key))
+    .map((candidate) => ({
+      candidate,
+      priority: deterministicWeightedPriority(
+        seed,
+        candidate.key,
+        Math.max(0.001, candidate.score),
+      ),
+    }))
+    .toSorted((left, right) => {
+      if (right.priority !== left.priority) {
+        return right.priority - left.priority;
+      }
+      return left.candidate.key.localeCompare(right.candidate.key);
+    });
+
+  const selected = eligible.slice(0, limit).map(({ candidate }) => ({
+    key: candidate.key,
+    path: candidate.path,
+    startLine: candidate.startLine,
+    endLine: candidate.endLine,
+    snippet: truncateAssociativeRecallSnippet(
+      candidate.snippet,
+      params.maxSnippetChars ?? SHORT_TERM_RECALL_MAX_SNIPPET_CHARS,
+    ),
+    recallCount: candidate.recallCount,
+    dailyCount: Math.max(0, Math.floor(candidate.dailyCount ?? 0)),
+    groundedCount: Math.max(0, Math.floor(candidate.groundedCount ?? 0)),
+    signalCount: Math.max(
+      0,
+      Math.floor(
+        candidate.signalCount ??
+          candidate.recallCount +
+            Math.max(0, Math.floor(candidate.dailyCount ?? 0)) +
+            Math.max(0, Math.floor(candidate.groundedCount ?? 0)),
+      ),
+    ),
+    score: clampScore(candidate.score),
+    maxScore: clampScore(candidate.maxScore),
+    lastRecalledAt: candidate.lastRecalledAt,
+  }));
+
+  return {
+    storePath: resolveStorePath(workspaceDir),
+    eligibleCount: eligible.length,
+    selected,
+  };
 }
 
 export async function readShortTermRecallEntries(params: {

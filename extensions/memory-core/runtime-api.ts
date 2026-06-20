@@ -23,6 +23,7 @@ export {
   loadShortTermPromotionDreamingStats,
   removeGroundedShortTermCandidates,
   repairShortTermPromotionArtifacts,
+  sampleAssociativeRecallCandidates,
 } from "./src/short-term-promotion.js";
 export type { BuiltinMemoryEmbeddingProviderDoctorMetadata } from "./src/memory/provider-adapters.js";
 export type {
@@ -31,6 +32,8 @@ export type {
 } from "./src/dreaming-repair.js";
 export type {
   RepairShortTermPromotionArtifactsResult,
+  AssociativeRecallCandidate,
+  SampleAssociativeRecallCandidatesResult,
   ShortTermDreamingStats,
   ShortTermDreamingStatsEntry,
   ShortTermAuditSummary,

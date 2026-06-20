@@ -37,6 +37,24 @@ export type MemoryHostPromotionAppliedEvent = {
   }>;
 };
 
+/** Event emitted when active-memory injects an unbidden associative recall. */
+export type MemoryHostAssociativeRecallInjectedEvent = {
+  type: "memory.associative_recall.injected";
+  timestamp: string;
+  seed: string;
+  selectedCount: number;
+  candidates: Array<{
+    key: string;
+    path: string;
+    startLine: number;
+    endLine: number;
+    score: number;
+    signalCount: number;
+  }>;
+  sessionKey?: string;
+  sessionId?: string;
+};
+
 /** Event emitted after a dreaming phase writes inline memory and/or reports. */
 export type MemoryHostDreamCompletedEvent = {
   type: "memory.dream.completed";
@@ -52,6 +70,7 @@ export type MemoryHostDreamCompletedEvent = {
 export type MemoryHostEvent =
   | MemoryHostRecallRecordedEvent
   | MemoryHostPromotionAppliedEvent
+  | MemoryHostAssociativeRecallInjectedEvent
   | MemoryHostDreamCompletedEvent;
 
 /** Resolve the event log path inside a workspace without touching the filesystem. */

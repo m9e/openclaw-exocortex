@@ -40,6 +40,18 @@ type RuntimeFacadeModule = {
     nowMs: number;
     timezone?: string;
   }) => Promise<ShortTermDreamingStats>;
+  sampleAssociativeRecallCandidates: (params: {
+    workspaceDir: string;
+    seed: string;
+    limit?: number;
+    minSignalCount?: number;
+    minScore?: number;
+    maxAgeDays?: number;
+    includePromoted?: boolean;
+    recencyHalfLifeDays?: number;
+    maxSnippetChars?: number;
+    nowMs?: number;
+  }) => Promise<SampleAssociativeRecallCandidatesResult>;
   repairDreamingArtifacts: (params: {
     workspaceDir: string;
     archiveDiary?: boolean;
@@ -97,6 +109,27 @@ type PromotionCandidate = {
   firstRecalledAt: string;
   lastRecalledAt: string;
   promotedAt?: string;
+};
+
+export type AssociativeRecallCandidate = {
+  key: string;
+  path: string;
+  startLine: number;
+  endLine: number;
+  snippet: string;
+  recallCount: number;
+  dailyCount: number;
+  groundedCount: number;
+  signalCount: number;
+  score: number;
+  maxScore: number;
+  lastRecalledAt: string;
+};
+
+export type SampleAssociativeRecallCandidatesResult = {
+  storePath: string;
+  eligibleCount: number;
+  selected: AssociativeRecallCandidate[];
 };
 
 export type ShortTermDreamingStatsEntry = {
@@ -264,6 +297,12 @@ export const loadShortTermPromotionDreamingStats: RuntimeFacadeModule["loadShort
     loadRuntimeFacadeModule().loadShortTermPromotionDreamingStats(
       ...args,
     )) as RuntimeFacadeModule["loadShortTermPromotionDreamingStats"];
+/** Sample reinforced short-term memories for unbidden associative recall. */
+export const sampleAssociativeRecallCandidates: RuntimeFacadeModule["sampleAssociativeRecallCandidates"] =
+  ((...args) =>
+    loadRuntimeFacadeModule().sampleAssociativeRecallCandidates(
+      ...args,
+    )) as RuntimeFacadeModule["sampleAssociativeRecallCandidates"];
 /** Repair or archive problematic dreaming artifacts through the bundled runtime facade. */
 export const repairDreamingArtifacts: RuntimeFacadeModule["repairDreamingArtifacts"] = ((...args) =>
   loadRuntimeFacadeModule().repairDreamingArtifacts(

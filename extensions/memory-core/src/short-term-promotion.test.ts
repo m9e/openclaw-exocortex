@@ -29,6 +29,7 @@ import {
   readLightStagedKeys,
   removeGroundedShortTermCandidates,
   repairShortTermPromotionArtifacts,
+  sampleAssociativeRecallCandidates,
   testing,
 } from "./short-term-promotion.js";
 
@@ -1192,6 +1193,103 @@ describe("short-term promotion", () => {
       } finally {
         await configureMemoryCoreDreamingStateForTests();
       }
+    });
+  });
+
+  it("samples associative recall candidates deterministically without changing recall counts", async () => {
+    await withTempWorkspace(async (workspaceDir) => {
+      const nowMs = Date.parse("2026-04-05T10:00:00.000Z");
+      await writeDailyMemoryNote(workspaceDir, "2026-04-01", [
+        "The ramen shop near the airport stays open late.",
+        "Use the hardened gateway token from the fresh dashboard URL.",
+      ]);
+      await recordShortTermRecalls({
+        workspaceDir,
+        query: "late food",
+        nowMs,
+        results: [
+          {
+            path: "memory/2026-04-01.md",
+            startLine: 1,
+            endLine: 1,
+            score: 0.9,
+            snippet: "The ramen shop near the airport stays open late.",
+            source: "memory",
+          },
+        ],
+      });
+      await recordShortTermRecalls({
+        workspaceDir,
+        query: "gateway auth",
+        nowMs,
+        results: [
+          {
+            path: "memory/2026-04-01.md",
+            startLine: 2,
+            endLine: 2,
+            score: 0.8,
+            snippet: "Use the hardened gateway token from the fresh dashboard URL.",
+            source: "memory",
+          },
+        ],
+      });
+      const before = await readRecallStoreEntries(workspaceDir);
+
+      const first = await sampleAssociativeRecallCandidates({
+        workspaceDir,
+        seed: "stable-seed",
+        limit: 1,
+        nowMs,
+      });
+      const second = await sampleAssociativeRecallCandidates({
+        workspaceDir,
+        seed: "stable-seed",
+        limit: 1,
+        nowMs,
+      });
+      const after = await readRecallStoreEntries(workspaceDir);
+
+      expect(first.eligibleCount).toBe(2);
+      expect(first.selected).toHaveLength(1);
+      expect(second.selected.map((entry) => entry.key)).toEqual(
+        first.selected.map((entry) => entry.key),
+      );
+      expect(after).toEqual(before);
+    });
+  });
+
+  it("skips associative recall candidates whose source note is missing", async () => {
+    await withTempWorkspace(async (workspaceDir) => {
+      const nowMs = Date.parse("2026-04-05T10:00:00.000Z");
+      const notePath = await writeDailyMemoryNote(workspaceDir, "2026-04-01", [
+        "This source will be deleted before sampling.",
+      ]);
+      await recordShortTermRecalls({
+        workspaceDir,
+        query: "deleted source",
+        nowMs,
+        results: [
+          {
+            path: "memory/2026-04-01.md",
+            startLine: 1,
+            endLine: 1,
+            score: 0.9,
+            snippet: "This source will be deleted before sampling.",
+            source: "memory",
+          },
+        ],
+      });
+      await fs.rm(notePath);
+
+      const sampled = await sampleAssociativeRecallCandidates({
+        workspaceDir,
+        seed: "missing-source",
+        limit: 1,
+        nowMs,
+      });
+
+      expect(sampled.eligibleCount).toBe(0);
+      expect(sampled.selected).toEqual([]);
     });
   });
 

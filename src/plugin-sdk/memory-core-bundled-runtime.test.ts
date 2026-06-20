@@ -9,6 +9,7 @@ const createEmbeddingProviderImpl = vi.hoisted(() => vi.fn());
 const registerBuiltInMemoryEmbeddingProvidersImpl = vi.hoisted(() => vi.fn());
 const removeGroundedShortTermCandidatesImpl = vi.hoisted(() => vi.fn());
 const loadShortTermPromotionDreamingStatsImpl = vi.hoisted(() => vi.fn());
+const sampleAssociativeRecallCandidatesImpl = vi.hoisted(() => vi.fn());
 const previewGroundedRemMarkdownImpl = vi.hoisted(() => vi.fn());
 const writeBackfillDiaryEntriesImpl = vi.hoisted(() => vi.fn());
 const removeBackfillDiaryEntriesImpl = vi.hoisted(() => vi.fn());
@@ -30,6 +31,7 @@ describe("plugin-sdk memory-core bundled runtime", () => {
     registerBuiltInMemoryEmbeddingProvidersImpl.mockReset();
     removeGroundedShortTermCandidatesImpl.mockReset().mockResolvedValue({ removed: 1 });
     loadShortTermPromotionDreamingStatsImpl.mockReset().mockResolvedValue({ shortTermCount: 0 });
+    sampleAssociativeRecallCandidatesImpl.mockReset().mockResolvedValue({ selected: [] });
     previewGroundedRemMarkdownImpl.mockReset().mockResolvedValue({ files: [] });
     writeBackfillDiaryEntriesImpl.mockReset().mockResolvedValue({ writtenCount: 1 });
     removeBackfillDiaryEntriesImpl.mockReset().mockResolvedValue({ removedCount: 1 });
@@ -45,6 +47,7 @@ describe("plugin-sdk memory-core bundled runtime", () => {
             registerBuiltInMemoryEmbeddingProviders: registerBuiltInMemoryEmbeddingProvidersImpl,
             removeGroundedShortTermCandidates: removeGroundedShortTermCandidatesImpl,
             loadShortTermPromotionDreamingStats: loadShortTermPromotionDreamingStatsImpl,
+            sampleAssociativeRecallCandidates: sampleAssociativeRecallCandidatesImpl,
           };
         }
         if (artifactBasename === "api.js") {
@@ -79,11 +82,13 @@ describe("plugin-sdk memory-core bundled runtime", () => {
     await module.previewGroundedRemMarkdown({} as never);
     await module.removeGroundedShortTermCandidates({} as never);
     await module.loadShortTermPromotionDreamingStats({} as never);
+    await module.sampleAssociativeRecallCandidates({} as never);
     module.registerBuiltInMemoryEmbeddingProviders({} as never);
 
     expect(previewGroundedRemMarkdownImpl).toHaveBeenCalledWith({} as never);
     expect(removeGroundedShortTermCandidatesImpl).toHaveBeenCalledWith({} as never);
     expect(loadShortTermPromotionDreamingStatsImpl).toHaveBeenCalledWith({} as never);
+    expect(sampleAssociativeRecallCandidatesImpl).toHaveBeenCalledWith({} as never);
     expect(registerBuiltInMemoryEmbeddingProvidersImpl).toHaveBeenCalledWith({} as never);
     expect(loadBundledPluginPublicSurfaceModuleSync).toHaveBeenCalledWith({
       dirName: "memory-core",

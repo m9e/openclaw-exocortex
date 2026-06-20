@@ -74,6 +74,21 @@
       "logging": { "type": "boolean" },
       "persistTranscripts": { "type": "boolean" },
       "transcriptDir": { "type": "string" },
+      "associativeRecall": {
+        "type": "object",
+        "additionalProperties": false,
+        "properties": {
+          "enabled": { "type": "boolean" },
+          "intrusionRate": { "type": "number", "minimum": 0, "maximum": 1 },
+          "maxSnippets": { "type": "integer", "minimum": 1, "maximum": 3 },
+          "maxSnippetChars": { "type": "integer", "minimum": 40, "maximum": 1000 },
+          "minSignalCount": { "type": "integer", "minimum": 1, "maximum": 100 },
+          "minScore": { "type": "number", "minimum": 0, "maximum": 1 },
+          "maxAgeDays": { "type": "integer", "minimum": 1, "maximum": 3650 },
+          "includePromoted": { "type": "boolean" },
+          "recencyHalfLifeDays": { "type": "integer", "minimum": 1, "maximum": 3650 }
+        }
+      },
       "cacheTtlMs": { "type": "integer", "minimum": 1000, "maximum": 120000 },
       "circuitBreakerMaxTimeouts": { "type": "integer", "minimum": 1, "maximum": 20 },
       "circuitBreakerCooldownMs": { "type": "integer", "minimum": 5000, "maximum": 600000 },
@@ -177,7 +192,31 @@
       "label": "Transcript Directory",
       "help": "Relative directory under the agent sessions folder used when transcript persistence is enabled."
     },
-    "qmd.searchMode": {
+    "associativeRecall.enabled": {
+      "label": "Associative Recall",
+      "help": "Inject occasional reinforced short-term memories from memory-core as untrusted prompt metadata. Disabled by default."
+    },
+    "associativeRecall.intrusionRate": {
+      "label": "Associative Recall Rate",
+      "help": "Fraction of eligible turns that sample an unbidden memory. Core default is 0.07 when associative recall is enabled."
+    },
+    "associativeRecall.maxSnippets": {
+      "label": "Associative Recall Snippets",
+      "help": "Maximum associative memory snippets to inject on a triggered turn."
+    },
+    "associativeRecall.maxSnippetChars": {
+      "label": "Associative Recall Snippet Characters",
+      "help": "Maximum characters copied from each reinforced snippet."
+    },
+    "associativeRecall.minSignalCount": {
+      "label": "Associative Recall Minimum Signals",
+      "help": "Minimum combined recall, daily, and grounded signal count before a snippet can resurface."
+    },
+    "associativeRecall.maxAgeDays": {
+      "label": "Associative Recall Max Age",
+      "help": "Do not resurface snippets last recalled more than this many days ago."
+    },
+      "qmd.searchMode": {
       "label": "QMD Search Mode",
       "help": "Override the QMD search mode used by the blocking memory sub-agent. Defaults to fast lexical search; use inherit to match the main memory backend setting."
     }
