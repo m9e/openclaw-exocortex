@@ -110,6 +110,7 @@ export type MemoryDeepDreamingConfig = {
   minUniqueQueries: number;
   recencyHalfLifeDays: number;
   maxAgeDays?: number;
+  promotionTargetPath?: string;
   maxPromotedSnippetTokens?: number;
   sources: MemoryDeepDreamingSource[];
   recovery: MemoryDeepDreamingRecoveryConfig;
@@ -391,6 +392,7 @@ export function resolveMemoryDreamingConfig(params: {
   const rem = asNullableRecord(phases?.rem);
   const deepRecovery = asNullableRecord(deep?.recovery);
   const maxAgeDays = normalizeOptionalPositiveInt(deep?.maxAgeDays);
+  const promotionTargetPath = normalizeTrimmedString(deep?.promotionTargetPath);
   const maxPromotedSnippetTokens = normalizeOptionalPositiveInt(deep?.maxPromotedSnippetTokens);
 
   return {
@@ -458,6 +460,7 @@ export function resolveMemoryDreamingConfig(params: {
           : typeof DEFAULT_MEMORY_DEEP_DREAMING_MAX_AGE_DAYS === "number"
             ? { maxAgeDays: DEFAULT_MEMORY_DEEP_DREAMING_MAX_AGE_DAYS }
             : {}),
+        ...(promotionTargetPath ? { promotionTargetPath } : {}),
         maxPromotedSnippetTokens:
           maxPromotedSnippetTokens ?? DEFAULT_MEMORY_DEEP_DREAMING_MAX_PROMOTED_SNIPPET_TOKENS,
         sources: normalizeStringArray(

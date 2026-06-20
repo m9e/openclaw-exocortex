@@ -1367,6 +1367,7 @@ export async function runMemoryPromote(opts: MemoryPromoteCommandOptions) {
             minRecallCount: opts.minRecallCount ?? dreaming.minRecallCount,
             minUniqueQueries: opts.minUniqueQueries ?? dreaming.minUniqueQueries,
             maxAgeDays: dreaming.maxAgeDays,
+            promotionTargetPath: dreaming.promotionTargetPath,
             maxPromotedSnippetTokens: dreaming.maxPromotedSnippetTokens,
             timezone: dreaming.timezone,
           });
@@ -1700,6 +1701,7 @@ export async function runMemoryRemHarness(opts: MemoryRemHarnessOptions) {
               minUniqueQueries: preview.deepConfig.minUniqueQueries,
               recencyHalfLifeDays: preview.deepConfig.recencyHalfLifeDays,
               maxAgeDays: preview.deepConfig.maxAgeDays ?? null,
+              promotionTargetPath: preview.deepConfig.promotionTargetPath ?? null,
               maxPromotedSnippetTokens: preview.deepConfig.maxPromotedSnippetTokens,
             },
             rem: { skipped: preview.remSkipped, ...remPreview },

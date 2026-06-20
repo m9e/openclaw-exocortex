@@ -39,6 +39,8 @@ describe("memory-core manifest config schema", () => {
               minUniqueQueries: 3,
               recencyHalfLifeDays: 14,
               maxAgeDays: 30,
+              promotionTargetPath: "memory/promoted.md",
+              maxPromotedSnippetTokens: 160,
             },
             rem: {
               enabled: true,

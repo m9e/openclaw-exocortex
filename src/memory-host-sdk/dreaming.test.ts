@@ -31,6 +31,7 @@ describe("memory dreaming host helpers", () => {
               minUniqueQueries: "2",
               recencyHalfLifeDays: "21",
               maxAgeDays: "30",
+              promotionTargetPath: " memory/promoted.md ",
             },
           },
         },
@@ -55,6 +56,7 @@ describe("memory dreaming host helpers", () => {
     expect(resolved.phases.deep.minUniqueQueries).toBe(2);
     expect(resolved.phases.deep.recencyHalfLifeDays).toBe(21);
     expect(resolved.phases.deep.maxAgeDays).toBe(30);
+    expect(resolved.phases.deep.promotionTargetPath).toBe("memory/promoted.md");
   });
 
   it("lets execution defaults and phase execution override the top-level dreaming model", () => {

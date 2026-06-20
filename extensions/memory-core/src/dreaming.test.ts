@@ -330,6 +330,7 @@ describe("short-term dreaming config", () => {
               minUniqueQueries: 3,
               recencyHalfLifeDays: 21,
               maxAgeDays: 30,
+              promotionTargetPath: "memory/promoted.md",
               maxPromotedSnippetTokens: 333,
             },
           },
@@ -346,6 +347,7 @@ describe("short-term dreaming config", () => {
       minUniqueQueries: 3,
       recencyHalfLifeDays: 21,
       maxAgeDays: 30,
+      promotionTargetPath: "memory/promoted.md",
       maxPromotedSnippetTokens: 333,
       verboseLogging: true,
       storage: {

@@ -112,6 +112,7 @@ type ShortTermPromotionDreamingConfig = {
   minUniqueQueries: number;
   recencyHalfLifeDays?: number;
   maxAgeDays?: number;
+  promotionTargetPath?: string;
   maxPromotedSnippetTokens?: number;
   verboseLogging: boolean;
   storage?: {
@@ -158,7 +159,7 @@ function formatRepairSummary(repair: {
 function resolveManagedCronDescription(config: ShortTermPromotionDreamingConfig): string {
   const recencyHalfLifeDays =
     config.recencyHalfLifeDays ?? DEFAULT_MEMORY_DREAMING_RECENCY_HALF_LIFE_DAYS;
-  return `${MANAGED_DREAMING_CRON_TAG} Promote weighted short-term recalls into MEMORY.md (limit=${config.limit}, minScore=${config.minScore.toFixed(3)}, minRecallCount=${config.minRecallCount}, minUniqueQueries=${config.minUniqueQueries}, recencyHalfLifeDays=${recencyHalfLifeDays}, maxAgeDays=${config.maxAgeDays ?? "none"}).`;
+  return `${MANAGED_DREAMING_CRON_TAG} Promote weighted short-term recalls into ${config.promotionTargetPath ?? "MEMORY.md"} (limit=${config.limit}, minScore=${config.minScore.toFixed(3)}, minRecallCount=${config.minRecallCount}, minUniqueQueries=${config.minUniqueQueries}, recencyHalfLifeDays=${recencyHalfLifeDays}, maxAgeDays=${config.maxAgeDays ?? "none"}).`;
 }
 
 function buildManagedDreamingCronJob(
@@ -400,6 +401,7 @@ export function resolveShortTermPromotionDreamingConfig(params: {
     minUniqueQueries: resolved.minUniqueQueries,
     recencyHalfLifeDays: resolved.recencyHalfLifeDays,
     ...(typeof resolved.maxAgeDays === "number" ? { maxAgeDays: resolved.maxAgeDays } : {}),
+    ...(resolved.promotionTargetPath ? { promotionTargetPath: resolved.promotionTargetPath } : {}),
     maxPromotedSnippetTokens:
       resolved.maxPromotedSnippetTokens ?? DEFAULT_MEMORY_DREAMING_MAX_PROMOTED_SNIPPET_TOKENS,
     verboseLogging: resolved.verboseLogging,
@@ -545,7 +547,7 @@ export async function runShortTermDreamingPromotionIfTriggered(params: {
 
   if (params.config.verboseLogging) {
     params.logger.info(
-      `memory-core: dreaming verbose enabled (cron=${params.config.cron}, limit=${params.config.limit}, minScore=${params.config.minScore.toFixed(3)}, minRecallCount=${params.config.minRecallCount}, minUniqueQueries=${params.config.minUniqueQueries}, recencyHalfLifeDays=${recencyHalfLifeDays}, maxAgeDays=${params.config.maxAgeDays ?? "none"}, workspaces=${workspaces.length}).`,
+      `memory-core: dreaming verbose enabled (cron=${params.config.cron}, limit=${params.config.limit}, minScore=${params.config.minScore.toFixed(3)}, minRecallCount=${params.config.minRecallCount}, minUniqueQueries=${params.config.minUniqueQueries}, recencyHalfLifeDays=${recencyHalfLifeDays}, maxAgeDays=${params.config.maxAgeDays ?? "none"}, promotionTarget=${params.config.promotionTargetPath ?? "MEMORY.md"}, workspaces=${workspaces.length}).`,
     );
   }
 
@@ -624,12 +626,13 @@ export async function runShortTermDreamingPromotionIfTriggered(params: {
         minRecallCount: params.config.minRecallCount,
         minUniqueQueries: params.config.minUniqueQueries,
         maxAgeDays: params.config.maxAgeDays,
+        promotionTargetPath: params.config.promotionTargetPath,
         maxPromotedSnippetTokens: params.config.maxPromotedSnippetTokens,
         timezone: params.config.timezone,
         nowMs: sweepNowMs,
       });
       totalApplied += applied.applied;
-      reportLines.push(`- Promoted ${applied.applied} candidate(s) into MEMORY.md.`);
+      reportLines.push(`- Promoted ${applied.applied} candidate(s) into ${applied.memoryPath}.`);
       if (params.config.verboseLogging) {
         const appliedSummary =
           applied.appliedCandidates.length > 0
@@ -755,6 +758,7 @@ export function registerShortTermPromotionDreaming(api: OpenClawPluginApi): void
       String(config.minUniqueQueries),
       String(config.recencyHalfLifeDays ?? ""),
       String(config.maxAgeDays ?? ""),
+      config.promotionTargetPath ?? "",
       config.verboseLogging ? "verbose" : "quiet",
       config.storage?.mode ?? "",
       config.storage?.separateReports ? "separate" : "inline",

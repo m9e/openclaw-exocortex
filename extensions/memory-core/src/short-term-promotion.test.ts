@@ -1795,6 +1795,105 @@ describe("short-term promotion", () => {
     });
   });
 
+  it("applies promotion candidates to a configured warm memory target", async () => {
+    await withTempWorkspace(async (workspaceDir) => {
+      await writeDailyMemoryNote(workspaceDir, "2026-04-01", [
+        "alpha",
+        "beta",
+        "gamma",
+        "delta",
+        "Keep generated promotions out of hot memory.",
+      ]);
+      await recordShortTermRecalls({
+        workspaceDir,
+        query: "promotion target",
+        results: [
+          {
+            path: "memory/2026-04-01.md",
+            startLine: 5,
+            endLine: 5,
+            score: 0.92,
+            snippet: "Keep generated promotions out of hot memory.",
+            source: "memory",
+          },
+        ],
+      });
+
+      const ranked = await rankShortTermPromotionCandidates({
+        workspaceDir,
+        minScore: 0,
+        minRecallCount: 0,
+        minUniqueQueries: 0,
+      });
+      const applied = await applyShortTermPromotions({
+        workspaceDir,
+        candidates: ranked,
+        minScore: 0,
+        minRecallCount: 0,
+        minUniqueQueries: 0,
+        promotionTargetPath: "memory/promoted.md",
+      });
+
+      expect(applied.applied).toBe(1);
+      expect(applied.memoryPath).toBe(path.join(workspaceDir, "memory", "promoted.md"));
+      const promotedText = await fs.readFile(applied.memoryPath, "utf-8");
+      expect(promotedText).toContain("Promoted From Short-Term Memory");
+      expect(promotedText).toContain("Keep generated promotions out of hot memory.");
+      await expectEnoent(fs.readFile(path.join(workspaceDir, "MEMORY.md"), "utf-8"));
+    });
+  });
+
+  it("rejects unsafe promotion target paths before writing", async () => {
+    await withTempWorkspace(async (workspaceDir) => {
+      await writeDailyMemoryNote(workspaceDir, "2026-04-01", [
+        "alpha",
+        "beta",
+        "Never write outside the workspace.",
+      ]);
+      await recordShortTermRecalls({
+        workspaceDir,
+        query: "promotion target",
+        results: [
+          {
+            path: "memory/2026-04-01.md",
+            startLine: 3,
+            endLine: 3,
+            score: 0.92,
+            snippet: "Never write outside the workspace.",
+            source: "memory",
+          },
+        ],
+      });
+      const ranked = await rankShortTermPromotionCandidates({
+        workspaceDir,
+        minScore: 0,
+        minRecallCount: 0,
+        minUniqueQueries: 0,
+      });
+
+      for (const promotionTargetPath of [
+        "../MEMORY.md",
+        "../../etc/passwd",
+        path.resolve(workspaceDir, "memory", "promoted.md"),
+        "memory/\0promoted.md",
+      ]) {
+        await expect(
+          applyShortTermPromotions({
+            workspaceDir,
+            candidates: ranked,
+            minScore: 0,
+            minRecallCount: 0,
+            minUniqueQueries: 0,
+            promotionTargetPath,
+          }),
+        ).rejects.toThrow(/promotionTargetPath/u);
+      }
+
+      await expectEnoent(fs.readFile(path.join(workspaceDir, "MEMORY.md"), "utf-8"));
+      await expectEnoent(fs.readFile(path.join(workspaceDir, "memory", "promoted.md"), "utf-8"));
+    });
+  });
+
   it("does not double-prefix promoted snippets that are already markdown bullets", async () => {
     await withTempWorkspace(async (workspaceDir) => {
       await writeDailyMemoryNote(workspaceDir, "2026-04-01", [
@@ -3180,6 +3279,79 @@ describe("short-term promotion", () => {
   });
 
   describe("MEMORY.md budget compaction (#73691)", () => {
+    it("compacts the configured promotion target without touching MEMORY.md", async () => {
+      await withTempWorkspace(async (workspaceDir) => {
+        await writeDailyMemoryNote(workspaceDir, "2026-04-29", [
+          "Notes",
+          "",
+          "Keep hot memory untouched while promoted memory is bounded.",
+        ]);
+
+        const memoryPath = path.join(workspaceDir, "MEMORY.md");
+        const promotedPath = path.join(workspaceDir, "memory", "promoted.md");
+        const hotMemory = "# Long-Term Memory\n\nHuman curated tier-one note.\n";
+        await fs.writeFile(memoryPath, hotMemory, "utf-8");
+        const filler = "x".repeat(600);
+        await fs.writeFile(
+          promotedPath,
+          [
+            "# Long-Term Memory",
+            "",
+            "## Promoted From Short-Term Memory (2026-04-10)",
+            "<!-- openclaw-memory-promotion:legacy-old -->",
+            `- ${filler}`,
+            "",
+            "## Promoted From Short-Term Memory (2026-04-20)",
+            "<!-- openclaw-memory-promotion:legacy-newer -->",
+            `- ${filler}`,
+            "",
+          ].join("\n"),
+          "utf-8",
+        );
+
+        await recordShortTermRecalls({
+          workspaceDir,
+          query: "bounded promoted memory",
+          nowMs: Date.parse("2026-04-29T10:00:00.000Z"),
+          results: [
+            {
+              path: "memory/2026-04-29.md",
+              startLine: 3,
+              endLine: 3,
+              score: 0.96,
+              snippet: "Keep hot memory untouched while promoted memory is bounded.",
+              source: "memory",
+            },
+          ],
+        });
+
+        const ranked = await rankShortTermPromotionCandidates({
+          workspaceDir,
+          minScore: 0,
+          minRecallCount: 0,
+          minUniqueQueries: 0,
+        });
+
+        const applied = await applyShortTermPromotions({
+          workspaceDir,
+          candidates: ranked,
+          minScore: 0,
+          minRecallCount: 0,
+          minUniqueQueries: 0,
+          nowMs: Date.parse("2026-04-29T10:00:00.000Z"),
+          memoryFileMaxChars: 1_400,
+          promotionTargetPath: "memory/promoted.md",
+        });
+
+        expect(applied.memoryPath).toBe(promotedPath);
+        expect(applied.compactedSections).toBeGreaterThan(0);
+        await expect(fs.readFile(memoryPath, "utf-8")).resolves.toBe(hotMemory);
+        const promotedText = await fs.readFile(promotedPath, "utf-8");
+        expect(promotedText).not.toContain("legacy-old");
+        expect(promotedText).toContain("Keep hot memory untouched");
+      });
+    });
+
     it("drops the oldest promoted section before write when memoryFileMaxChars would be exceeded", async () => {
       await withTempWorkspace(async (workspaceDir) => {
         // Source daily note that the candidate references (rehydrate reads it).

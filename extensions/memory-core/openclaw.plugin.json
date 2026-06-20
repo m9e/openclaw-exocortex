@@ -148,7 +148,11 @@
                   "maxPromotedSnippetTokens": {
                     "type": "integer",
                     "minimum": 1,
-                    "description": "Maximum estimated token count for each short-term recall snippet promoted into MEMORY.md. Provenance metadata remains attached to the entry."
+                    "description": "Maximum estimated token count for each short-term recall snippet promoted into the configured promotion target. Provenance metadata remains attached to the entry."
+                  },
+                  "promotionTargetPath": {
+                    "type": "string",
+                    "description": "Workspace-relative file that receives deep promotions. Defaults to MEMORY.md for compatibility; hardened deployments commonly use memory/promoted.md."
                   },
                   "execution": {
                     "type": "object",

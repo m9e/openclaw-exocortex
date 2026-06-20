@@ -47,6 +47,7 @@ const DEFAULT_RECENCY_HALF_LIFE_DAYS = 14;
 export const DEFAULT_PROMOTION_MIN_SCORE = 0.75;
 export const DEFAULT_PROMOTION_MIN_RECALL_COUNT = 3;
 export const DEFAULT_PROMOTION_MIN_UNIQUE_QUERIES = 2;
+export const DEFAULT_PROMOTION_TARGET_PATH = "MEMORY.md";
 const PROMOTION_MARKER_PREFIX = "openclaw-memory-promotion:";
 const PROMOTED_SNIPPET_CHARS_PER_TOKEN_ESTIMATE = 4;
 const MAX_QUERY_HASHES = 32;
@@ -258,16 +259,21 @@ type ApplyShortTermPromotionsOptions = {
   nowMs?: number;
   timezone?: string;
   /**
-   * Maximum size of MEMORY.md on disk after a promotion write, in
+   * Workspace-relative file that receives machine-generated promotions.
+   * Defaults to MEMORY.md for backwards compatibility. Hardened deployments
+   * can set this to memory/promoted.md so hot MEMORY.md stays human-curated.
+   */
+  promotionTargetPath?: string;
+  /**
+   * Maximum size of the promotion target on disk after a promotion write, in
    * characters. When the post-write size would exceed this budget, the
    * oldest auto-promotion sections are compacted out before write so the
-   * file stays bounded and bootstrap injection keeps reaching new
-   * sessions. Pass `0` to disable compaction. Defaults to
+   * file stays bounded. Pass `0` to disable compaction. Defaults to
    * `DEFAULT_MEMORY_FILE_MAX_CHARS`. See #73691.
    */
   memoryFileMaxChars?: number;
   /**
-   * Maximum visible size of each promoted short-term snippet in MEMORY.md, in
+   * Maximum visible size of each promoted short-term snippet in the target, in
    * estimated tokens. This keeps daily journal ranges from being copied
    * wholesale into long-term memory while preserving the candidate's provenance
    * metadata.
@@ -276,6 +282,7 @@ type ApplyShortTermPromotionsOptions = {
 };
 
 type ApplyShortTermPromotionsResult = {
+  /** Absolute promotion target path. Historically this was always MEMORY.md. */
   memoryPath: string;
   applied: number;
   appended: number;
@@ -2219,7 +2226,7 @@ async function rehydratePromotionCandidate(
     // Managed dreaming blocks in daily memory files are scratchwork, not durable
     // content. If rehydration lands inside an openclaw:dreaming fence (for example
     // because file edits shifted lines between ranking and apply), refuse the
-    // candidate so dream artifacts cannot be promoted into MEMORY.md.
+    // candidate so dream artifacts cannot be promoted into durable memory.
     if (lineRangeOverlapsDreamingFence(lines, relocated.startLine, relocated.endLine)) {
       continue;
     }
@@ -2302,6 +2309,42 @@ function withTrailingNewline(content: string): string {
   return content.endsWith("\n") ? content : `${content}\n`;
 }
 
+function normalizePromotionTargetPath(rawPath?: string): string {
+  const candidate =
+    typeof rawPath === "string" && rawPath.trim() ? rawPath.trim() : DEFAULT_PROMOTION_TARGET_PATH;
+  if (candidate.includes("\0")) {
+    throw new Error("promotionTargetPath must not contain NUL bytes");
+  }
+  if (path.isAbsolute(candidate) || path.win32.isAbsolute(candidate)) {
+    throw new Error("promotionTargetPath must be workspace-relative");
+  }
+  const slashCandidate = candidate.replaceAll("\\", "/");
+  if (slashCandidate.split("/").includes("..")) {
+    throw new Error("promotionTargetPath must not contain parent-directory segments");
+  }
+  const normalized = path.posix.normalize(slashCandidate);
+  if (!normalized || normalized === "." || normalized === ".." || normalized.startsWith("../")) {
+    throw new Error("promotionTargetPath must resolve inside the workspace");
+  }
+  return normalized;
+}
+
+function resolvePromotionTargetPath(workspaceDir: string, rawPath?: string): string {
+  const workspaceRoot = path.resolve(workspaceDir);
+  const relativeTarget = normalizePromotionTargetPath(rawPath);
+  const targetPath = path.resolve(workspaceRoot, ...relativeTarget.split("/"));
+  const containment = path.relative(workspaceRoot, targetPath);
+  if (
+    !containment ||
+    containment === ".." ||
+    containment.startsWith(`..${path.sep}`) ||
+    path.isAbsolute(containment)
+  ) {
+    throw new Error("promotionTargetPath must resolve to a file inside the workspace");
+  }
+  return targetPath;
+}
+
 function extractPromotionMarkers(memoryText: string): Set<string> {
   const markers = new Set<string>();
   // Marker keys include source paths, so spaces are valid. Capture until the
@@ -2336,7 +2379,7 @@ export async function applyShortTermPromotions(
     DEFAULT_PROMOTION_MIN_UNIQUE_QUERIES,
   );
   const maxAgeDays = toFiniteNonNegativeInt(options.maxAgeDays, -1);
-  const memoryPath = path.join(workspaceDir, "MEMORY.md");
+  const memoryPath = resolvePromotionTargetPath(workspaceDir, options.promotionTargetPath);
 
   return await withShortTermLock(workspaceDir, async () => {
     const store = await readStore(workspaceDir, nowIso);
@@ -2430,6 +2473,7 @@ export async function applyShortTermPromotions(
       compactedDates = compaction.droppedDates;
       const baseMemory = compaction.compacted;
       const header = baseMemory.trim().length > 0 ? "" : "# Long-Term Memory\n\n";
+      await fs.mkdir(path.dirname(memoryPath), { recursive: true });
       await fs.writeFile(
         memoryPath,
         `${header}${withTrailingNewline(baseMemory)}${section}`,

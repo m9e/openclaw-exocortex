@@ -21,17 +21,17 @@ Dreaming keeps two kinds of output:
 - **Machine state** in `memory/.dreams/` (recall store, phase signals, ingestion checkpoints, locks).
 - **Human-readable output** in `DREAMS.md` (or existing `dreams.md`) and optional phase report files under `memory/dreaming/<phase>/YYYY-MM-DD.md`.
 
-Long-term promotion still writes only to `MEMORY.md`.
+Long-term promotion writes to `phases.deep.promotionTargetPath`, which defaults to `MEMORY.md` for compatibility. Hardened deployments can set it to a warm file such as `memory/promoted.md` so the hot bootstrap file stays human-curated.
 
 ## Phase model
 
 Dreaming uses three cooperative phases:
 
-| Phase | Purpose                                   | Durable write     |
-| ----- | ----------------------------------------- | ----------------- |
-| Light | Sort and stage recent short-term material | No                |
-| Deep  | Score and promote durable candidates      | Yes (`MEMORY.md`) |
-| REM   | Reflect on themes and recurring ideas     | No                |
+| Phase | Purpose                                   | Durable write                         |
+| ----- | ----------------------------------------- | ------------------------------------- |
+| Light | Sort and stage recent short-term material | No                                    |
+| Deep  | Score and promote durable candidates      | Yes, to the configured promotion file |
+| REM   | Reflect on themes and recurring ideas     | No                                    |
 
 These phases are internal implementation details, not separate user-configured "modes."
 
@@ -42,7 +42,7 @@ These phases are internal implementation details, not separate user-configured "
     - Reads from short-term recall state, recent daily memory files, and redacted session transcripts when available.
     - Writes a managed `## Light Sleep` block when storage includes inline output.
     - Records reinforcement signals for later deep ranking.
-    - Never writes to `MEMORY.md`.
+    - Never writes to the promotion target.
 
   </Accordion>
   <Accordion title="Deep phase">
@@ -51,7 +51,7 @@ These phases are internal implementation details, not separate user-configured "
     - Ranks candidates using weighted scoring and threshold gates.
     - Requires `minScore`, `minRecallCount`, and `minUniqueQueries` to pass.
     - Rehydrates snippets from live daily files before writing, so stale/deleted snippets are skipped.
-    - Appends promoted entries to `MEMORY.md`.
+    - Appends promoted entries to the configured promotion target (`MEMORY.md` by default).
     - Writes a `## Deep Sleep` summary into `DREAMS.md` and optionally writes `memory/dreaming/deep/YYYY-MM-DD.md`.
 
   </Accordion>
@@ -61,7 +61,7 @@ These phases are internal implementation details, not separate user-configured "
     - Builds theme and reflection summaries from recent short-term traces.
     - Writes a managed `## REM Sleep` block when storage includes inline output.
     - Records REM reinforcement signals used by deep ranking.
-    - Never writes to `MEMORY.md`.
+    - Never writes to the promotion target.
 
   </Accordion>
 </AccordionGroup>
@@ -75,7 +75,7 @@ Dreaming can ingest redacted session transcripts into the dreaming corpus. When 
 Dreaming also keeps a narrative **Dream Diary** in `DREAMS.md`. After each phase has enough material, `memory-core` runs a best-effort background subagent turn and appends a short diary entry. It uses the default runtime model unless `dreaming.model` is configured. If the configured model is unavailable, Dream Diary retries once with the session default model.
 
 <Note>
-This diary is for human reading in the Dreams UI, not a promotion source. Dreaming-generated diary/report artifacts are excluded from short-term promotion. Only grounded memory snippets are eligible to promote into `MEMORY.md`.
+This diary is for human reading in the Dreams UI, not a promotion source. Dreaming-generated diary/report artifacts are excluded from short-term promotion. Only grounded memory snippets are eligible to promote into the configured promotion target.
 </Note>
 
 There is also a grounded historical backfill lane for review and recovery work:
@@ -112,7 +112,7 @@ signal before any durable write. A helpful trial gives the candidate a small
 bounded boost, a neutral trial keeps it deferred, and a harmful trial marks it
 as rejected for that scoring pass. This signal is still report-only: it can
 change candidate ordering or review metadata, but it does not write to
-`MEMORY.md` or promote the candidate by itself.
+the promotion target or promote the candidate by itself.
 
 ## QA shadow trial report coverage
 
@@ -122,7 +122,7 @@ an agent to compare a baseline answer with an answer that can use the candidate
 memory, then write a local report with a verdict, reason, and risk flags.
 
 This coverage is intentionally scoped to QA. It verifies that the report artifact
-stays separate from `MEMORY.md` and that the agent does not claim the candidate
+stays separate from the promotion target and that the agent does not claim the candidate
 was promoted. It does not add production shadow-trial behavior or change the
 deep-phase promotion engine.
 
@@ -132,7 +132,7 @@ baseline outcome, candidate outcome, verdict, reason, risk flags, and evidence
 references, then writes a report with `promotion action: report-only`. Helpful
 verdicts map to a `promote` recommendation, neutral verdicts map to `defer`, and
 harmful verdicts map to `reject`; none of those recommendations writes to
-`MEMORY.md` or applies deep-phase promotion.
+the promotion target or applies deep-phase promotion.
 
 ## Scheduling
 
@@ -178,6 +178,28 @@ Default cadence behavior:
                 "enabled": true,
                 "timezone": "America/Los_Angeles",
                 "frequency": "0 */6 * * *"
+              }
+            }
+          }
+        }
+      }
+    }
+    ```
+  </Tab>
+  <Tab title="Hardened promotion target">
+    ```json
+    {
+      "plugins": {
+        "entries": {
+          "memory-core": {
+            "config": {
+              "dreaming": {
+                "enabled": true,
+                "phases": {
+                  "deep": {
+                    "promotionTargetPath": "memory/promoted.md"
+                  }
+                }
               }
             }
           }
@@ -245,7 +267,10 @@ All settings live under `plugins.entries.memory-core.config.dreaming`.
   Optional Dream Diary subagent model override. Use a canonical `provider/model` value when also setting a subagent `allowedModels` allowlist.
 </ParamField>
 <ParamField path="phases.deep.maxPromotedSnippetTokens" type="number" default="160">
-  Maximum estimated token count kept from each short-term recall snippet promoted into `MEMORY.md`. Ranking provenance remains visible.
+  Maximum estimated token count kept from each short-term recall snippet promoted into the configured target. Ranking provenance remains visible.
+</ParamField>
+<ParamField path="phases.deep.promotionTargetPath" type="string" default="MEMORY.md">
+  Workspace-relative file that receives deep-phase promotions. Use `memory/promoted.md` when automated promotion should stay out of the always-injected hot memory file.
 </ParamField>
 
 <Warning>

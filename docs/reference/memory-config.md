@@ -582,12 +582,13 @@ For conceptual behavior and slash commands, see [Dreaming](/concepts/dreaming).
 
 ### User settings
 
-| Key                                    | Type      | Default       | Description                                                                                                                      |
-| -------------------------------------- | --------- | ------------- | -------------------------------------------------------------------------------------------------------------------------------- |
-| `enabled`                              | `boolean` | `false`       | Enable or disable dreaming entirely                                                                                              |
-| `frequency`                            | `string`  | `0 3 * * *`   | Optional cron cadence for the full dreaming sweep                                                                                |
-| `model`                                | `string`  | default model | Optional Dream Diary subagent model override                                                                                     |
-| `phases.deep.maxPromotedSnippetTokens` | `number`  | `160`         | Maximum estimated tokens kept from each short-term recall snippet promoted into `MEMORY.md`; provenance metadata remains visible |
+| Key                                    | Type      | Default       | Description                                                                                                                               |
+| -------------------------------------- | --------- | ------------- | ----------------------------------------------------------------------------------------------------------------------------------------- |
+| `enabled`                              | `boolean` | `false`       | Enable or disable dreaming entirely                                                                                                       |
+| `frequency`                            | `string`  | `0 3 * * *`   | Optional cron cadence for the full dreaming sweep                                                                                         |
+| `model`                                | `string`  | default model | Optional Dream Diary subagent model override                                                                                              |
+| `phases.deep.promotionTargetPath`      | `string`  | `MEMORY.md`   | Workspace-relative file that receives deep promotions; hardened deployments commonly set `memory/promoted.md`                             |
+| `phases.deep.maxPromotedSnippetTokens` | `number`  | `160`         | Maximum estimated tokens kept from each short-term recall snippet promoted into the promotion target; provenance metadata remains visible |
 
 ### Example
 
@@ -605,6 +606,11 @@ For conceptual behavior and slash commands, see [Dreaming](/concepts/dreaming).
             enabled: true,
             frequency: "0 3 * * *",
             model: "anthropic/claude-sonnet-4-6",
+            phases: {
+              deep: {
+                promotionTargetPath: "memory/promoted.md",
+              },
+            },
           },
         },
       },

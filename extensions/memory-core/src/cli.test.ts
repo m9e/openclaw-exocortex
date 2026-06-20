@@ -544,7 +544,9 @@ describe("memory cli", () => {
     expect(helpText).toContain('openclaw memory search --query "deployment" --max-results 20');
     expect(helpText).toContain("Limit results for focused troubleshooting.");
     expect(helpText).toContain("openclaw memory promote --apply");
-    expect(helpText).toContain("Append top-ranked short-term candidates into MEMORY.md.");
+    expect(helpText).toContain(
+      "Append top-ranked short-term candidates into the configured promotion target.",
+    );
     expect(helpText).toContain('openclaw memory promote-explain "router vlan"');
     expect(helpText).toContain("Explain why a specific candidate would or would not promote.");
     expect(helpText).toContain("openclaw memory rem-harness --json");
