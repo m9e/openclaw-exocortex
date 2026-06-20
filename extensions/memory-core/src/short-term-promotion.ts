@@ -69,6 +69,11 @@ export const SHORT_TERM_LOCK_RELATIVE_PATH = path.join(
   ".dreams",
   "short-term-promotion.lock",
 );
+export const GRAPH_STRUCTURAL_RECALL_RELATIVE_PATH = path.join(
+  "memory",
+  "graph",
+  "structural-recall.jsonl",
+);
 const SHORT_TERM_LOCK_WAIT_TIMEOUT_MS = 10_000;
 const SHORT_TERM_LOCK_STALE_MS = 60_000;
 const SHORT_TERM_LOCK_RETRY_DELAY_MS = 40;
@@ -196,6 +201,8 @@ export type AssociativeRecallCandidate = {
   startLine: number;
   endLine: number;
   snippet: string;
+  source?: "short-term" | "graph" | "pykeen";
+  provenance?: string;
   recallCount: number;
   dailyCount: number;
   groundedCount: number;
@@ -406,6 +413,192 @@ function truncateAssociativeRecallSnippet(snippet: string, maxChars: number): st
   const bounded = normalized.slice(0, limit).trimEnd();
   const lastBoundary = bounded.search(/\s\S*$/);
   return (lastBoundary > 0 ? bounded.slice(0, lastBoundary) : bounded).trimEnd();
+}
+
+function resolveWorkspaceRelativePath(workspaceDir: string, rawPath: string): string | null {
+  const normalized = normalizeMemoryPath(rawPath).trim();
+  if (!normalized || normalized.includes("\0")) {
+    return null;
+  }
+  if (path.isAbsolute(rawPath)) {
+    const relative = path.relative(workspaceDir, rawPath).replaceAll("\\", "/");
+    if (relative.startsWith("../") || relative === ".." || path.isAbsolute(relative)) {
+      return null;
+    }
+    return normalizeMemoryPath(relative);
+  }
+  const resolved = path.resolve(workspaceDir, normalized);
+  const relative = path.relative(workspaceDir, resolved).replaceAll("\\", "/");
+  if (relative.startsWith("../") || relative === ".." || path.isAbsolute(relative)) {
+    return null;
+  }
+  return relative;
+}
+
+function normalizeGraphStructuralRecallSource(value: unknown): "graph" | "pykeen" {
+  return value === "pykeen" ? "pykeen" : "graph";
+}
+
+function normalizeGraphStructuralRecallTimestamp(value: unknown, fallback: string): string {
+  if (typeof value !== "string" || !value.trim()) {
+    return fallback;
+  }
+  const parsed = Date.parse(value);
+  return Number.isFinite(parsed) ? new Date(parsed).toISOString() : fallback;
+}
+
+function normalizeGraphStructuralRecallLine(value: unknown, fallback: number): number {
+  const num = Number(value);
+  if (!Number.isFinite(num) || num <= 0) {
+    return fallback;
+  }
+  return Math.floor(num);
+}
+
+async function readJsonlRecords(filePath: string): Promise<unknown[]> {
+  let text = "";
+  try {
+    text = await fs.readFile(filePath, "utf-8");
+  } catch (error) {
+    if ((error as NodeJS.ErrnoException).code === "ENOENT") {
+      return [];
+    }
+    throw error;
+  }
+  const records: unknown[] = [];
+  for (const line of text.split(/\r?\n/u)) {
+    const trimmed = line.trim();
+    if (!trimmed) {
+      continue;
+    }
+    try {
+      records.push(JSON.parse(trimmed));
+    } catch {
+      continue;
+    }
+  }
+  return records;
+}
+
+async function loadGraphStructuralRecallCandidates(params: {
+  workspaceDir: string;
+  seed: string;
+  minScore?: number;
+  maxAgeDays?: number;
+  maxSnippetChars?: number;
+  nowMs?: number;
+}): Promise<AssociativeRecallCandidate[]> {
+  const workspaceDir = params.workspaceDir.trim();
+  if (!workspaceDir) {
+    return [];
+  }
+  const nowMs = resolveMemoryCoreNowMs(params.nowMs);
+  const nowIso = resolveMemoryCoreTimestamp(nowMs);
+  const artifactPath = path.join(workspaceDir, GRAPH_STRUCTURAL_RECALL_RELATIVE_PATH);
+  const records = await readJsonlRecords(artifactPath);
+  const minScore = toFiniteScore(params.minScore, 0);
+  const maxAgeDays = toFiniteNonNegativeInt(params.maxAgeDays, -1);
+  const candidates: AssociativeRecallCandidate[] = [];
+  const seen = new Set<string>();
+
+  for (const raw of records) {
+    const record = asRecord(raw);
+    if (!record) {
+      continue;
+    }
+    const rawPath = typeof record.path === "string" ? record.path : "";
+    const relativePath = resolveWorkspaceRelativePath(workspaceDir, rawPath);
+    if (!relativePath) {
+      continue;
+    }
+    const sourcePath = path.resolve(workspaceDir, relativePath);
+    try {
+      await fs.access(sourcePath);
+    } catch {
+      continue;
+    }
+    const rawSnippet = typeof record.snippet === "string" ? record.snippet : "";
+    const snippet = truncateAssociativeRecallSnippet(
+      rawSnippet,
+      params.maxSnippetChars ?? SHORT_TERM_RECALL_MAX_SNIPPET_CHARS,
+    );
+    if (!snippet || isContaminatedDreamingSnippet(snippet)) {
+      continue;
+    }
+    const score = toFiniteScore(record.score, 0);
+    if (score < minScore) {
+      continue;
+    }
+    const lastSeenAt = normalizeGraphStructuralRecallTimestamp(
+      record.lastSeenAt ?? record.updatedAt ?? record.timestamp,
+      nowIso,
+    );
+    const lastSeenAtMs = Date.parse(lastSeenAt);
+    const ageDays = Number.isFinite(lastSeenAtMs)
+      ? Math.max(0, (nowMs - lastSeenAtMs) / DAY_MS)
+      : 0;
+    if (maxAgeDays >= 0 && ageDays > maxAgeDays) {
+      continue;
+    }
+    const startLine = normalizeGraphStructuralRecallLine(record.startLine, 1);
+    const endLine = Math.max(
+      startLine,
+      normalizeGraphStructuralRecallLine(record.endLine, startLine),
+    );
+    const source = normalizeGraphStructuralRecallSource(record.source);
+    const baseKey =
+      typeof record.key === "string" && record.key.trim()
+        ? record.key.trim()
+        : `${source}:${relativePath}:${startLine}:${endLine}:${buildClaimHash(snippet)}`;
+    const key = `${source}:${baseKey}`;
+    if (seen.has(key)) {
+      continue;
+    }
+    seen.add(key);
+    const signalCount = Math.max(1, toFiniteNonNegativeInt(record.signalCount, 1));
+    const provenanceEntries = [
+      typeof record.entity === "string" && record.entity.trim()
+        ? `entity=${record.entity.trim()}`
+        : "",
+      typeof record.relation === "string" && record.relation.trim()
+        ? `relation=${record.relation.trim()}`
+        : "",
+      typeof record.polarity === "string" && record.polarity.trim()
+        ? `polarity=${record.polarity.trim()}`
+        : "",
+      typeof record.extraction === "string" && record.extraction.trim()
+        ? `extraction=${record.extraction.trim()}`
+        : "",
+      typeof record.neighbor === "string" && record.neighbor.trim()
+        ? `neighbor=${record.neighbor.trim()}`
+        : "",
+    ].filter(Boolean);
+    candidates.push({
+      key,
+      path: relativePath,
+      startLine,
+      endLine,
+      snippet,
+      source,
+      provenance: provenanceEntries.join(" "),
+      recallCount: 0,
+      dailyCount: 0,
+      groundedCount: signalCount,
+      signalCount,
+      score: clampScore(score),
+      maxScore: clampScore(toFiniteScore(record.maxScore, score)),
+      lastRecalledAt: lastSeenAt,
+    });
+  }
+
+  return candidates.toSorted((a, b) => {
+    const aPriority = deterministicWeightedPriority(params.seed, a.key, Math.max(0.001, a.score));
+    const bPriority = deterministicWeightedPriority(params.seed, b.key, Math.max(0.001, b.score));
+    if (bPriority !== aPriority) {
+      return bPriority - aPriority;
+    }
+    return a.key.localeCompare(b.key);
+  });
 }
 
 function enforceShortTermRecallSnippetCap(store: ShortTermRecallStore): void {
@@ -1929,6 +2122,7 @@ export async function sampleAssociativeRecallCandidates(params: {
   minScore?: number;
   maxAgeDays?: number;
   includePromoted?: boolean;
+  includeStructural?: boolean;
   recencyHalfLifeDays?: number;
   maxSnippetChars?: number;
   nowMs?: number;
@@ -1979,8 +2173,48 @@ export async function sampleAssociativeRecallCandidates(params: {
     })),
   });
   const liveKeys = new Set(liveEntries.map((entry) => entry.key));
-  const eligible = candidates
+  const shortTermEligible = candidates
     .filter((candidate) => liveKeys.has(candidate.key))
+    .map(
+      (candidate): AssociativeRecallCandidate => ({
+        key: candidate.key,
+        path: candidate.path,
+        startLine: candidate.startLine,
+        endLine: candidate.endLine,
+        snippet: truncateAssociativeRecallSnippet(
+          candidate.snippet,
+          params.maxSnippetChars ?? SHORT_TERM_RECALL_MAX_SNIPPET_CHARS,
+        ),
+        source: "short-term",
+        recallCount: candidate.recallCount,
+        dailyCount: Math.max(0, Math.floor(candidate.dailyCount ?? 0)),
+        groundedCount: Math.max(0, Math.floor(candidate.groundedCount ?? 0)),
+        signalCount: Math.max(
+          0,
+          Math.floor(
+            candidate.signalCount ??
+              candidate.recallCount +
+                Math.max(0, Math.floor(candidate.dailyCount ?? 0)) +
+                Math.max(0, Math.floor(candidate.groundedCount ?? 0)),
+          ),
+        ),
+        score: clampScore(candidate.score),
+        maxScore: clampScore(candidate.maxScore),
+        lastRecalledAt: candidate.lastRecalledAt,
+      }),
+    );
+  const structuralCandidates =
+    params.includeStructural === false
+      ? []
+      : await loadGraphStructuralRecallCandidates({
+          workspaceDir,
+          seed,
+          minScore: params.minScore ?? 0,
+          maxAgeDays: params.maxAgeDays,
+          maxSnippetChars: params.maxSnippetChars,
+          nowMs: params.nowMs,
+        });
+  const eligible = [...shortTermEligible, ...structuralCandidates]
     .map((candidate) => ({
       candidate,
       priority: deterministicWeightedPriority(
@@ -1996,31 +2230,7 @@ export async function sampleAssociativeRecallCandidates(params: {
       return left.candidate.key.localeCompare(right.candidate.key);
     });
 
-  const selected = eligible.slice(0, limit).map(({ candidate }) => ({
-    key: candidate.key,
-    path: candidate.path,
-    startLine: candidate.startLine,
-    endLine: candidate.endLine,
-    snippet: truncateAssociativeRecallSnippet(
-      candidate.snippet,
-      params.maxSnippetChars ?? SHORT_TERM_RECALL_MAX_SNIPPET_CHARS,
-    ),
-    recallCount: candidate.recallCount,
-    dailyCount: Math.max(0, Math.floor(candidate.dailyCount ?? 0)),
-    groundedCount: Math.max(0, Math.floor(candidate.groundedCount ?? 0)),
-    signalCount: Math.max(
-      0,
-      Math.floor(
-        candidate.signalCount ??
-          candidate.recallCount +
-            Math.max(0, Math.floor(candidate.dailyCount ?? 0)) +
-            Math.max(0, Math.floor(candidate.groundedCount ?? 0)),
-      ),
-    ),
-    score: clampScore(candidate.score),
-    maxScore: clampScore(candidate.maxScore),
-    lastRecalledAt: candidate.lastRecalledAt,
-  }));
+  const selected = eligible.slice(0, limit).map(({ candidate }) => candidate);
 
   return {
     storePath: resolveStorePath(workspaceDir),

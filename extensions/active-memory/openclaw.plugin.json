@@ -86,6 +86,7 @@
           "minScore": { "type": "number", "minimum": 0, "maximum": 1 },
           "maxAgeDays": { "type": "integer", "minimum": 1, "maximum": 3650 },
           "includePromoted": { "type": "boolean" },
+          "includeStructural": { "type": "boolean" },
           "recencyHalfLifeDays": { "type": "integer", "minimum": 1, "maximum": 3650 }
         }
       },
@@ -216,7 +217,11 @@
       "label": "Associative Recall Max Age",
       "help": "Do not resurface snippets last recalled more than this many days ago."
     },
-      "qmd.searchMode": {
+    "associativeRecall.includeStructural": {
+      "label": "Associative Recall Structural Memory",
+      "help": "Blend graph/PyKEEN structural recall artifacts from memory/graph/structural-recall.jsonl when present."
+    },
+    "qmd.searchMode": {
       "label": "QMD Search Mode",
       "help": "Override the QMD search mode used by the blocking memory sub-agent. Defaults to fast lexical search; use inherit to match the main memory backend setting."
     }

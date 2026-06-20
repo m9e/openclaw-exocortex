@@ -2880,6 +2880,9 @@ describe("active-memory plugin", () => {
           startLine: 4,
           endLine: 5,
           snippet: "User prefers the ramen shop after late flights.",
+          source: "pykeen",
+          provenance:
+            "entity=User relation=PREFERS polarity=affirmed extraction=heuristic neighbor=ramen",
           recallCount: 2,
           dailyCount: 0,
           groundedCount: 0,
@@ -2905,12 +2908,17 @@ describe("active-memory plugin", () => {
     const prependContext = requirePrependContext(result);
     expect(prependContext).toContain("<associative_recall>");
     expect(prependContext).toContain('path="memory/2026-06-18.md"');
+    expect(prependContext).toContain('source="pykeen"');
+    expect(prependContext).toContain(
+      'provenance="entity=User relation=PREFERS polarity=affirmed extraction=heuristic neighbor=ramen"',
+    );
     expect(prependContext).toContain("User prefers the ramen shop after late flights.");
     expect(prependContext).not.toContain("<active_memory_plugin>");
     expect(hoisted.sampleAssociativeRecallCandidates).toHaveBeenCalledWith(
       expect.objectContaining({
         minSignalCount: 1,
         maxSnippetChars: 240,
+        includeStructural: true,
       }),
     );
     expect(hoisted.appendMemoryHostEvent).toHaveBeenCalledWith(
@@ -2919,6 +2927,13 @@ describe("active-memory plugin", () => {
         type: "memory.associative_recall.injected",
         selectedCount: 1,
         sessionKey: "agent:main:main",
+        candidates: [
+          expect.objectContaining({
+            source: "pykeen",
+            provenance:
+              "entity=User relation=PREFERS polarity=affirmed extraction=heuristic neighbor=ramen",
+          }),
+        ],
       }),
     );
   });

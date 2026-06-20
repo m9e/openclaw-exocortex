@@ -1293,6 +1293,85 @@ describe("short-term promotion", () => {
     });
   });
 
+  it("samples graph structural recall artifacts for associative recall", async () => {
+    await withTempWorkspace(async (workspaceDir) => {
+      const nowMs = Date.parse("2026-04-05T10:00:00.000Z");
+      await writeDailyMemoryNote(workspaceDir, "2026-04-01", [
+        "Graph memory says the Locksmith route depends on Pipelock credential injection.",
+      ]);
+      await fs.mkdir(path.join(workspaceDir, "memory", "graph"), { recursive: true });
+      await fs.writeFile(
+        path.join(workspaceDir, "memory", "graph", "structural-recall.jsonl"),
+        `${JSON.stringify({
+          source: "pykeen",
+          key: "Locksmith::Pipelock",
+          path: "memory/2026-04-01.md",
+          startLine: 1,
+          endLine: 1,
+          snippet:
+            "Graph memory says the Locksmith route depends on Pipelock credential injection.",
+          score: 0.92,
+          signalCount: 4,
+          entity: "Locksmith",
+          neighbor: "Pipelock",
+          relation: "DEPENDS_ON",
+          polarity: "affirmed",
+          extraction: "heuristic",
+          lastSeenAt: "2026-04-05T09:00:00.000Z",
+        })}\n`,
+        "utf-8",
+      );
+
+      const sampled = await sampleAssociativeRecallCandidates({
+        workspaceDir,
+        seed: "graph-structural",
+        limit: 1,
+        nowMs,
+      });
+
+      expect(sampled.eligibleCount).toBe(1);
+      expect(sampled.selected).toEqual([
+        expect.objectContaining({
+          source: "pykeen",
+          path: "memory/2026-04-01.md",
+          signalCount: 4,
+          provenance:
+            "entity=Locksmith relation=DEPENDS_ON polarity=affirmed extraction=heuristic neighbor=Pipelock",
+        }),
+      ]);
+    });
+  });
+
+  it("skips graph structural recall artifacts whose source note is missing", async () => {
+    await withTempWorkspace(async (workspaceDir) => {
+      await fs.mkdir(path.join(workspaceDir, "memory", "graph"), { recursive: true });
+      await fs.writeFile(
+        path.join(workspaceDir, "memory", "graph", "structural-recall.jsonl"),
+        `${JSON.stringify({
+          source: "graph",
+          key: "missing",
+          path: "memory/2026-04-99.md",
+          startLine: 1,
+          endLine: 1,
+          snippet: "Missing graph source should never be injected.",
+          score: 0.99,
+          signalCount: 3,
+        })}\n`,
+        "utf-8",
+      );
+
+      const sampled = await sampleAssociativeRecallCandidates({
+        workspaceDir,
+        seed: "graph-missing-source",
+        limit: 1,
+        nowMs: Date.parse("2026-04-05T10:00:00.000Z"),
+      });
+
+      expect(sampled.eligibleCount).toBe(0);
+      expect(sampled.selected).toEqual([]);
+    });
+  });
+
   it("reconciles existing promotion markers instead of appending duplicates", async () => {
     await withTempWorkspace(async (workspaceDir) => {
       await writeDailyMemoryNote(workspaceDir, "2026-04-01", [

@@ -185,6 +185,7 @@ type ActiveRecallPluginConfig = {
     minScore?: number;
     maxAgeDays?: number;
     includePromoted?: boolean;
+    includeStructural?: boolean;
     recencyHalfLifeDays?: number;
   };
   qmd?: {
@@ -237,6 +238,7 @@ type ResolvedActiveRecallPluginConfig = {
     minScore: number;
     maxAgeDays: number;
     includePromoted: boolean;
+    includeStructural: boolean;
     recencyHalfLifeDays: number;
   };
   qmd: {
@@ -555,6 +557,7 @@ function normalizeAssociativeRecallConfig(
       3650,
     ),
     includePromoted: raw?.includePromoted === true,
+    includeStructural: raw?.includeStructural !== false,
     recencyHalfLifeDays: clampInt(
       parseOptionalPositiveInt(
         raw?.recencyHalfLifeDays,
@@ -2200,7 +2203,9 @@ function formatAssociativeRecallLines(
     ...snippets.flatMap((snippet) => [
       `<memory path="${escapeXml(snippet.path)}" lines="${String(snippet.startLine)}-${String(
         snippet.endLine,
-      )}" score="${snippet.score.toFixed(3)}" signalCount="${String(snippet.signalCount)}">`,
+      )}" score="${snippet.score.toFixed(3)}" signalCount="${String(snippet.signalCount)}"${
+        snippet.source ? ` source="${escapeXml(snippet.source)}"` : ""
+      }${snippet.provenance ? ` provenance="${escapeXml(snippet.provenance)}"` : ""}>`,
       escapeXml(snippet.snippet),
       "</memory>",
     ]),
@@ -2462,6 +2467,8 @@ async function persistAssociativeRecallEvent(params: {
         endLine: candidate.endLine,
         score: candidate.score,
         signalCount: candidate.signalCount,
+        ...(candidate.source ? { source: candidate.source } : {}),
+        ...(candidate.provenance ? { provenance: candidate.provenance } : {}),
       })),
       ...(params.sessionKey ? { sessionKey: params.sessionKey } : {}),
       ...(params.sessionId ? { sessionId: params.sessionId } : {}),
@@ -2521,6 +2528,7 @@ async function maybeResolveAssociativeRecall(params: {
       minScore: associativeConfig.minScore,
       maxAgeDays: associativeConfig.maxAgeDays,
       includePromoted: associativeConfig.includePromoted,
+      includeStructural: associativeConfig.includeStructural,
       recencyHalfLifeDays: associativeConfig.recencyHalfLifeDays,
       maxSnippetChars: associativeConfig.maxSnippetChars,
     });

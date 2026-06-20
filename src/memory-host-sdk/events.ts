@@ -50,6 +50,8 @@ export type MemoryHostAssociativeRecallInjectedEvent = {
     endLine: number;
     score: number;
     signalCount: number;
+    source?: "short-term" | "graph" | "pykeen";
+    provenance?: string;
   }>;
   sessionKey?: string;
   sessionId?: string;
