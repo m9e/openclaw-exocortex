@@ -48,6 +48,7 @@ Looking for chat channel docs (WhatsApp/Telegram/Discord/Slack/Mattermost (plugi
 - [Hugging Face (Inference)](/providers/huggingface)
 - [inferrs (local models)](/providers/inferrs)
 - [Kilocode](/providers/kilocode)
+- [kzproxy (local gateway)](/providers/kzproxy)
 - [LiteLLM (unified gateway)](/providers/litellm)
 - [LM Studio (local models)](/providers/lmstudio)
 - [MiniMax](/providers/minimax)

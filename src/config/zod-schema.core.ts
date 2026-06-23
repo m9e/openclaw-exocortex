@@ -452,6 +452,7 @@ const BUILT_IN_MODEL_PROVIDER_OVERLAY_IDS = new Set([
   "kilocode",
   "kimi",
   "kimi-coding",
+  "kzproxy",
   "litellm",
   "lmstudio",
   "microsoft-foundry",

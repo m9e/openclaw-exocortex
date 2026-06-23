@@ -1,0 +1,51 @@
+{
+  "id": "kzproxy",
+  "activation": {
+    "onStartup": false
+  },
+  "enabledByDefault": true,
+  "providers": ["kzproxy"],
+  "providerRequest": {
+    "providers": {
+      "kzproxy": {
+        "family": "kzproxy",
+        "openAICompletions": {
+          "supportsStreamingUsage": true
+        }
+      }
+    }
+  },
+  "modelPricing": {
+    "providers": {
+      "kzproxy": {
+        "external": false
+      }
+    }
+  },
+  "nonSecretAuthMarkers": ["not-required"],
+  "setup": {
+    "providers": [
+      {
+        "id": "kzproxy",
+        "envVars": ["KZPROXY_API_KEY"]
+      }
+    ]
+  },
+  "providerAuthChoices": [
+    {
+      "provider": "kzproxy",
+      "method": "custom",
+      "choiceId": "kzproxy",
+      "choiceLabel": "kzproxy",
+      "choiceHint": "Local kzproxy OpenAI-compatible gateway",
+      "groupId": "kzproxy",
+      "groupLabel": "kzproxy",
+      "groupHint": "Local model gateway"
+    }
+  ],
+  "configSchema": {
+    "type": "object",
+    "additionalProperties": false,
+    "properties": {}
+  }
+}

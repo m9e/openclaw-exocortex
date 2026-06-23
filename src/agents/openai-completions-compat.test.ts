@@ -48,7 +48,7 @@ describe("resolveOpenAICompletionsCompatDefaults", () => {
     ).toBe(false);
   });
 
-  it.each(["vllm", "sglang", "lmstudio"])(
+  it.each(["kzproxy", "vllm", "sglang", "lmstudio"])(
     "enables streaming usage compat for manifest-declared local provider %s",
     (provider) => {
       // Manifest capability, not provider id alone, enables local streaming usage compat.
@@ -112,6 +112,16 @@ describe("detectOpenAICompletionsCompat", () => {
       provider: "vllm",
       baseUrl: "http://127.0.0.1:8000/v1",
       id: "Qwen/Qwen3-Coder-Next-FP8",
+    });
+
+    expect(detected.defaults.supportsUsageInStreaming).toBe(true);
+  });
+
+  it("enables streaming usage compat for kzproxy on a local OpenAI-compatible endpoint", () => {
+    const detected = detectOpenAICompletionsCompat({
+      provider: "kzproxy",
+      baseUrl: "http://127.0.0.1:4000/v1",
+      id: "small-fast",
     });
 
     expect(detected.defaults.supportsUsageInStreaming).toBe(true);

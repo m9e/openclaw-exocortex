@@ -25,6 +25,7 @@ export {
 export {
   describeCloudflareAiGatewayProviderDiscoveryContract,
   describeGithubCopilotProviderDiscoveryContract,
+  describeKzproxyProviderDiscoveryContract,
   describeMinimaxProviderDiscoveryContract,
   describeModelStudioProviderDiscoveryContract,
   describeSglangProviderDiscoveryContract,

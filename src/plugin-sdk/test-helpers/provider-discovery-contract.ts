@@ -8,6 +8,7 @@ import {
 } from "../testing.js";
 
 const resolveCopilotApiTokenMock = vi.hoisted(() => vi.fn());
+const buildKzproxyProviderMock = vi.hoisted(() => vi.fn());
 const buildVllmProviderMock = vi.hoisted(() => vi.fn());
 const buildSglangProviderMock = vi.hoisted(() => vi.fn());
 const ensureAuthProfileStoreMock = vi.hoisted(() => vi.fn());
@@ -22,6 +23,7 @@ type ProviderHandle = Awaited<ReturnType<typeof registerProviders>>[number];
 type DiscoveryState = {
   runProviderCatalog: typeof runProviderCatalog;
   githubCopilotProvider?: ProviderHandle;
+  kzproxyProvider?: ProviderHandle;
   vllmProvider?: ProviderHandle;
   sglangProvider?: ProviderHandle;
   minimaxProvider?: ProviderHandle;
@@ -32,6 +34,7 @@ type DiscoveryState = {
 
 type BundledProviderUnderTest =
   | "github-copilot"
+  | "kzproxy"
   | "vllm"
   | "sglang"
   | "minimax"
@@ -41,12 +44,14 @@ type BundledProviderUnderTest =
 type DiscoveryContractOptions = {
   providerIds: readonly BundledProviderUnderTest[];
   loadGithubCopilot?: ProviderDiscoveryContractPluginLoader;
+  loadKzproxy?: ProviderDiscoveryContractPluginLoader;
   loadVllm?: ProviderDiscoveryContractPluginLoader;
   loadSglang?: ProviderDiscoveryContractPluginLoader;
   loadMinimax?: ProviderDiscoveryContractPluginLoader;
   loadModelStudio?: ProviderDiscoveryContractPluginLoader;
   loadCloudflareAiGateway?: ProviderDiscoveryContractPluginLoader;
   githubCopilotRegisterRuntimeModuleId?: string;
+  kzproxyApiModuleId?: string;
   vllmApiModuleId?: string;
   sglangApiModuleId?: string;
 };
@@ -187,6 +192,17 @@ function installDiscoveryHooks(state: DiscoveryState, options: DiscoveryContract
         };
       });
     }
+    if (options.kzproxyApiModuleId) {
+      vi.doMock(options.kzproxyApiModuleId, async () => {
+        return {
+          KZPROXY_DEFAULT_API_KEY_ENV_VAR: "KZPROXY_API_KEY",
+          KZPROXY_DEFAULT_BASE_URL: "http://127.0.0.1:4000/v1",
+          KZPROXY_MODEL_PLACEHOLDER: "small-fast",
+          KZPROXY_PROVIDER_LABEL: "kzproxy",
+          buildKzproxyProvider: (...args: unknown[]) => buildKzproxyProviderMock(...args),
+        };
+      });
+    }
     if (options.vllmApiModuleId) {
       vi.doMock(options.vllmApiModuleId, async () => {
         return {
@@ -217,6 +233,11 @@ function installDiscoveryHooks(state: DiscoveryState, options: DiscoveryContract
         await registerProviders(githubCopilotPlugin),
         "github-copilot",
       );
+    }
+
+    if (options.providerIds.includes("kzproxy")) {
+      const { default: kzproxyPlugin } = await options.loadKzproxy!();
+      state.kzproxyProvider = requireProvider(await registerProviders(kzproxyPlugin), "kzproxy");
     }
 
     if (options.providerIds.includes("vllm")) {
@@ -257,6 +278,7 @@ function installDiscoveryHooks(state: DiscoveryState, options: DiscoveryContract
   afterEach(() => {
     vi.restoreAllMocks();
     resolveCopilotApiTokenMock.mockReset();
+    buildKzproxyProviderMock.mockReset();
     buildVllmProviderMock.mockReset();
     buildSglangProviderMock.mockReset();
     ensureAuthProfileStoreMock.mockReset();
@@ -533,6 +555,157 @@ export function describeVllmProviderDiscoveryContract(params: {
         }),
       ).resolves.toBeNull();
       expect(buildVllmProviderMock).not.toHaveBeenCalled();
+    });
+  });
+}
+
+export function describeKzproxyProviderDiscoveryContract(params: {
+  load: ProviderDiscoveryContractPluginLoader;
+  apiModuleId: string;
+}) {
+  const state = {} as DiscoveryState;
+
+  describe("kzproxy provider discovery contract", () => {
+    installDiscoveryHooks(state, {
+      providerIds: ["kzproxy"],
+      loadKzproxy: params.load,
+      kzproxyApiModuleId: params.apiModuleId,
+    });
+
+    it("keeps self-hosted discovery provider-owned", async () => {
+      buildKzproxyProviderMock.mockResolvedValueOnce({
+        baseUrl: "http://127.0.0.1:4000/v1",
+        api: "openai-completions",
+        models: [{ id: "small-fast", name: "small-fast" }],
+      });
+
+      await expect(
+        runCatalog(state, {
+          provider: state.kzproxyProvider!,
+          config: {},
+          env: {
+            KZPROXY_API_KEY: "env-kzproxy-key",
+          } as NodeJS.ProcessEnv,
+          resolveProviderApiKey: () => ({
+            apiKey: "KZPROXY_API_KEY",
+            discoveryApiKey: "env-kzproxy-key",
+          }),
+          resolveProviderAuth: () => ({
+            apiKey: "KZPROXY_API_KEY",
+            discoveryApiKey: "env-kzproxy-key",
+            mode: "api_key",
+            source: "env",
+          }),
+        }),
+      ).resolves.toEqual({
+        provider: {
+          baseUrl: "http://127.0.0.1:4000/v1",
+          api: "openai-completions",
+          apiKey: "KZPROXY_API_KEY",
+          models: [{ id: "small-fast", name: "small-fast" }],
+        },
+      });
+      expect(buildKzproxyProviderMock).toHaveBeenCalledWith({
+        apiKey: "env-kzproxy-key",
+      });
+    });
+
+    it("uses configured transport only for provider wildcard discovery", async () => {
+      buildKzproxyProviderMock.mockResolvedValueOnce({
+        baseUrl: "http://kzproxy-router.example/v1",
+        api: "openai-completions",
+        models: [{ id: "big-smart", name: "big-smart" }],
+      });
+
+      await expect(
+        runCatalog(state, {
+          provider: state.kzproxyProvider!,
+          config: {
+            agents: {
+              defaults: {
+                models: {
+                  "kzproxy/*": {},
+                },
+              },
+            },
+            models: {
+              providers: {
+                kzproxy: {
+                  baseUrl: "http://kzproxy-router.example/v1",
+                  apiKey: "KZPROXY_API_KEY",
+                  api: "openai-completions",
+                  models: [],
+                },
+              },
+            },
+          } as OpenClawConfig,
+          env: {
+            KZPROXY_API_KEY: "env-kzproxy-key",
+          } as NodeJS.ProcessEnv,
+          resolveProviderApiKey: () => ({
+            apiKey: "KZPROXY_API_KEY",
+            discoveryApiKey: "env-kzproxy-key",
+          }),
+          resolveProviderAuth: () => ({
+            apiKey: "KZPROXY_API_KEY",
+            discoveryApiKey: "env-kzproxy-key",
+            mode: "api_key",
+            source: "env",
+          }),
+        }),
+      ).resolves.toEqual({
+        provider: {
+          baseUrl: "http://kzproxy-router.example/v1",
+          api: "openai-completions",
+          apiKey: "KZPROXY_API_KEY",
+          models: [{ id: "big-smart", name: "big-smart" }],
+        },
+      });
+      expect(buildKzproxyProviderMock).toHaveBeenCalledWith({
+        apiKey: "env-kzproxy-key",
+        baseUrl: "http://kzproxy-router.example/v1",
+      });
+    });
+
+    it("keeps explicit self-hosted provider config manual without wildcard visibility", async () => {
+      await expect(
+        runCatalog(state, {
+          provider: state.kzproxyProvider!,
+          config: {
+            agents: {
+              defaults: {
+                models: {
+                  "kzproxy/small-fast": {},
+                },
+              },
+            },
+            models: {
+              providers: {
+                kzproxy: {
+                  baseUrl: "http://kzproxy-router.example/v1",
+                  apiKey: "KZPROXY_API_KEY",
+                  api: "openai-completions",
+                  models: [],
+                },
+              },
+            },
+          } as OpenClawConfig,
+          env: {
+            KZPROXY_API_KEY: "env-kzproxy-key",
+          } as NodeJS.ProcessEnv,
+          resolveProviderApiKey: () => ({
+            apiKey: "KZPROXY_API_KEY",
+            discoveryApiKey: "env-kzproxy-key",
+          }),
+          resolveProviderAuth: () => ({
+            apiKey: "KZPROXY_API_KEY",
+            discoveryApiKey: "env-kzproxy-key",
+            mode: "api_key",
+            source: "env",
+          }),
+        }),
+      ).resolves.toBeNull();
+      expect(buildKzproxyProviderMock).not.toHaveBeenCalled();
     });
   });
 }
