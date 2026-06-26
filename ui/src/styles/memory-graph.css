@@ -1,0 +1,278 @@
+.memory-graph {
+  display: flex;
+  flex-direction: column;
+  gap: 16px;
+  min-height: 0;
+}
+
+.memory-graph-toolbar,
+.memory-graph-toolbar__filters,
+.memory-graph-toolbar__actions,
+.memory-graph-stats,
+.memory-graph-layout,
+.memory-graph-matches,
+.memory-graph-detail__metric {
+  display: flex;
+  gap: 12px;
+}
+
+.memory-graph-toolbar {
+  align-items: flex-end;
+  justify-content: space-between;
+  flex-wrap: wrap;
+}
+
+.memory-graph-toolbar__filters {
+  align-items: flex-end;
+  flex: 1 1 520px;
+  flex-wrap: wrap;
+}
+
+.memory-graph-toolbar__actions {
+  align-items: center;
+}
+
+.memory-graph-field {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  min-width: 180px;
+}
+
+.memory-graph-field--search {
+  flex: 1 1 260px;
+}
+
+.memory-graph-field span,
+.memory-graph-detail__eyebrow,
+.memory-graph-stat span,
+.memory-graph-match small {
+  color: var(--muted);
+  font-size: 0.78rem;
+  font-weight: 700;
+  text-transform: uppercase;
+}
+
+.memory-graph-stats {
+  flex-wrap: wrap;
+}
+
+.memory-graph-stat {
+  min-width: 132px;
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  background: color-mix(in srgb, var(--bg-elevated) 78%, var(--bg) 22%);
+  padding: 12px 14px;
+}
+
+.memory-graph-stat strong {
+  display: block;
+  color: var(--text);
+  font-size: 1.35rem;
+  line-height: 1.1;
+}
+
+.memory-graph-layout {
+  align-items: stretch;
+  min-height: 0;
+}
+
+.memory-graph-main {
+  flex: 1 1 auto;
+  min-width: 0;
+}
+
+.memory-graph-canvas {
+  min-height: 520px;
+  overflow: hidden;
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  background: linear-gradient(
+    135deg,
+    color-mix(in srgb, var(--bg-elevated) 86%, var(--accent) 14%),
+    color-mix(in srgb, var(--bg) 90%, var(--border) 10%)
+  );
+}
+
+.memory-graph-canvas svg {
+  display: block;
+  width: 100%;
+  height: min(62vh, 620px);
+  min-height: 520px;
+}
+
+.memory-graph-edge {
+  stroke: color-mix(in srgb, var(--border-strong) 70%, transparent);
+  stroke-linecap: round;
+  stroke-width: 1.4;
+}
+
+.memory-graph-node {
+  cursor: pointer;
+  outline: none;
+}
+
+.memory-graph-node circle {
+  fill: var(--accent);
+  stroke: color-mix(in srgb, var(--accent) 45%, var(--bg-elevated));
+  stroke-width: 3;
+  transition:
+    fill 140ms ease,
+    stroke 140ms ease,
+    transform 140ms ease;
+}
+
+.memory-graph-node text {
+  fill: var(--text);
+  font-size: 12px;
+  font-weight: 650;
+  paint-order: stroke;
+  pointer-events: none;
+  stroke: color-mix(in srgb, var(--bg) 78%, transparent);
+  stroke-width: 4;
+  text-anchor: middle;
+}
+
+.memory-graph-node--root circle {
+  fill: color-mix(in srgb, var(--ok) 78%, var(--accent) 22%);
+}
+
+.memory-graph-node--cluster circle {
+  fill: color-mix(in srgb, var(--info) 84%, var(--accent) 16%);
+}
+
+.memory-graph-node--promoted circle {
+  fill: color-mix(in srgb, var(--ok) 72%, var(--accent) 28%);
+}
+
+.memory-graph-node--short-term circle {
+  fill: color-mix(in srgb, var(--warn) 68%, var(--accent) 32%);
+}
+
+.memory-graph-node--wiki circle {
+  fill: color-mix(in srgb, var(--accent) 70%, var(--info) 30%);
+}
+
+.memory-graph-node--claim circle {
+  fill: color-mix(in srgb, var(--text) 58%, var(--accent) 42%);
+}
+
+.memory-graph-node--question circle {
+  fill: color-mix(in srgb, var(--danger) 60%, var(--accent) 40%);
+}
+
+.memory-graph-node--selected circle,
+.memory-graph-node:focus-visible circle {
+  stroke: var(--text);
+  stroke-width: 4;
+}
+
+.memory-graph-node--match circle {
+  fill: var(--danger);
+}
+
+.memory-graph-detail {
+  flex: 0 0 300px;
+  min-width: 260px;
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  background: color-mix(in srgb, var(--bg-elevated) 82%, var(--bg) 18%);
+  padding: 16px;
+}
+
+.memory-graph-detail h2 {
+  margin: 8px 0 10px;
+  color: var(--text);
+  font-size: 1.08rem;
+  letter-spacing: 0;
+}
+
+.memory-graph-detail p {
+  margin: 0;
+  color: var(--muted);
+  line-height: 1.45;
+  white-space: pre-wrap;
+}
+
+.memory-graph-detail__metric {
+  align-items: baseline;
+  margin-top: 16px;
+  border-top: 1px solid var(--border);
+  padding-top: 12px;
+}
+
+.memory-graph-detail__metric strong {
+  color: var(--text);
+  font-size: 1.4rem;
+}
+
+.memory-graph-matches {
+  flex-wrap: wrap;
+  margin-top: 12px;
+}
+
+.memory-graph-match {
+  display: inline-flex;
+  align-items: baseline;
+  gap: 8px;
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  background: var(--bg-elevated);
+  color: var(--text);
+  cursor: pointer;
+  padding: 7px 10px;
+}
+
+.memory-graph-match:hover,
+.memory-graph-match:focus-visible {
+  border-color: color-mix(in srgb, var(--accent) 45%, var(--border));
+}
+
+.memory-graph-empty {
+  border: 1px dashed var(--border-strong);
+  border-radius: 8px;
+  background: var(--bg-elevated);
+  padding: 28px;
+}
+
+.memory-graph-empty h2 {
+  margin: 0 0 8px;
+  font-size: 1.1rem;
+}
+
+.memory-graph-empty p {
+  margin: 0;
+  color: var(--muted);
+}
+
+@media (max-width: 920px) {
+  .memory-graph-layout {
+    flex-direction: column;
+  }
+
+  .memory-graph-detail {
+    flex-basis: auto;
+  }
+}
+
+@media (max-width: 640px) {
+  .memory-graph-toolbar,
+  .memory-graph-toolbar__filters,
+  .memory-graph-toolbar__actions {
+    align-items: stretch;
+    flex-direction: column;
+  }
+
+  .memory-graph-field {
+    min-width: 0;
+  }
+
+  .memory-graph-toolbar__actions .btn {
+    width: 100%;
+  }
+
+  .memory-graph-canvas,
+  .memory-graph-canvas svg {
+    min-height: 420px;
+  }
+}

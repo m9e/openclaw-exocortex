@@ -491,6 +491,11 @@ export async function refreshActiveTab(host: SettingsHost, opts?: { chatStartup?
           loadWikiMemoryPalace(app),
         ]);
         break;
+      case "memoryGraph":
+        host.selectedAgentId = resolveDreamingAgentIdForSession(host);
+        await loadConfig(app);
+        await Promise.all([loadDreamingStatus(app), loadWikiMemoryPalace(app)]);
+        break;
       case "chat": {
         try {
           await refreshChat(host as unknown as Parameters<typeof refreshChat>[0], {

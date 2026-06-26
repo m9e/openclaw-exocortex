@@ -73,6 +73,15 @@ describe("control UI routing", () => {
     expect(window.matchMedia("(max-width: 768px)").matches).toBe(true);
 
     expectElement(app, 'a.nav-item[href="/dreaming"]', HTMLAnchorElement);
+    expectElement(app, 'a.nav-item[href="/memory-graph"]', HTMLAnchorElement);
+  });
+
+  it("renders the memory graph route", async () => {
+    const app = mountApp("/memory-graph");
+    await app.updateComplete;
+
+    expect(app.tab).toBe("memoryGraph");
+    expectElement(app, ".memory-graph", HTMLElement);
   });
 
   it("renders the dashboard breadcrumb as an overview link", async () => {

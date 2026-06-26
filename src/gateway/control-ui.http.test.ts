@@ -58,6 +58,10 @@ describe("handleControlUiHttpRequest", () => {
     return JSON.parse(responseBody(end)) as unknown;
   }
 
+  function basicAuth(value: string, username = "openclaw") {
+    return `Basic ${Buffer.from(`${username}:${value}`, "utf8").toString("base64")}`;
+  }
+
   function firstEndCallLength(end: ReturnType<typeof makeMockHttpResponse>["end"]) {
     return end.mock.calls[0]?.length ?? -1;
   }
@@ -78,13 +82,21 @@ describe("handleControlUiHttpRequest", () => {
     rootPath: string;
     basePath?: string;
     rootKind?: "resolved" | "bundled";
+    auth?: ResolvedGatewayAuth;
+    headers?: IncomingMessage["headers"];
   }) {
     const { res, end } = makeMockHttpResponse();
     const handled = await handleControlUiHttpRequest(
-      { url: params.url, method: params.method } as IncomingMessage,
+      {
+        url: params.url,
+        method: params.method,
+        headers: params.headers ?? {},
+        socket: { remoteAddress: "127.0.0.1" },
+      } as IncomingMessage,
       res,
       {
         ...(params.basePath ? { basePath: params.basePath } : {}),
+        ...(params.auth ? { auth: params.auth } : {}),
         root: { kind: params.rootKind ?? "resolved", path: params.rootPath },
       },
     );
@@ -828,6 +840,24 @@ describe("handleControlUiHttpRequest", () => {
     });
   });
 
+  it("serves bootstrap config JSON with HTTP Basic credentials when auth is enabled", async () => {
+    await withControlUiRoot({
+      fn: async (tmp) => {
+        const { res, handled, end } = await runBootstrapConfigRequest({
+          rootPath: tmp,
+          auth: { mode: "password", password: "test-password", allowTailscale: false },
+          headers: {
+            authorization: basicAuth("test-password"),
+          },
+        });
+        expect(handled).toBe(true);
+        expect(res.statusCode).toBe(200);
+        const parsed = parseBootstrapPayload(end);
+        expect(parsed.assistantAgentId).toBe("main");
+      },
+    });
+  });
+
   it("serves bootstrap config JSON when auth is enabled and the token is valid", async () => {
     await withControlUiRoot({
       fn: async (tmp) => {
@@ -1100,6 +1130,67 @@ describe("handleControlUiHttpRequest", () => {
         expect(handled).toBe(true);
         expect(res.statusCode).toBe(200);
         expect(responseBody(end)).toBe("inside-ok\n");
+      },
+    });
+  });
+
+  it("requires auth for Control UI static shell when gateway auth is enabled", async () => {
+    await withControlUiRoot({
+      indexHtml: "<html>protected</html>\n",
+      fn: async (tmp) => {
+        const { res, end, handled } = await runControlUiRequest({
+          url: "/memory-graph",
+          method: "GET",
+          rootPath: tmp,
+          auth: { mode: "password", password: "test-password", allowTailscale: false },
+        });
+
+        expect(handled).toBe(true);
+        expect(res.statusCode).toBe(401);
+        expect(res.setHeader).toHaveBeenCalledWith(
+          "WWW-Authenticate",
+          'Basic realm="OpenClaw Control UI", charset="UTF-8"',
+        );
+        expect(responseBody(end)).toContain("Unauthorized");
+      },
+    });
+  });
+
+  it("serves Control UI static shell with remembered HTTP Basic credentials", async () => {
+    await withControlUiRoot({
+      indexHtml: "<html>protected</html>\n",
+      fn: async (tmp) => {
+        const { res, end, handled } = await runControlUiRequest({
+          url: "/memory-graph",
+          method: "GET",
+          rootPath: tmp,
+          auth: { mode: "password", password: "test-password", allowTailscale: false },
+          headers: { authorization: basicAuth("test-password") },
+        });
+
+        expect(handled).toBe(true);
+        expect(res.statusCode).toBe(200);
+        expect(responseBody(end)).toBe("<html>protected</html>\n");
+      },
+    });
+  });
+
+  it("serves Control UI static assets with HTTP Basic token credentials", async () => {
+    await withControlUiRoot({
+      fn: async (tmp) => {
+        await writeAssetFile(tmp, "protected.txt", "asset-ok\n");
+
+        const { res, end, handled } = await runControlUiRequest({
+          url: "/assets/protected.txt",
+          method: "GET",
+          rootPath: tmp,
+          auth: { mode: "token", token: "test-token", allowTailscale: false },
+          headers: { authorization: basicAuth("test-token") },
+        });
+
+        expect(handled).toBe(true);
+        expect(res.statusCode).toBe(200);
+        expect(responseBody(end)).toBe("asset-ok\n");
       },
     });
   });

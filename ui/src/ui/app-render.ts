@@ -206,6 +206,7 @@ import { renderExecApprovalPrompt } from "./views/exec-approval.ts";
 import { renderGatewayUrlConfirmation } from "./views/gateway-url-confirmation.ts";
 import { renderLoginGate } from "./views/login-gate.ts";
 import { renderMcp } from "./views/mcp.ts";
+import { renderMemoryGraph } from "./views/memory-graph.ts";
 import { renderOverview } from "./views/overview.ts";
 
 let pendingUpdate: (() => void) | undefined;
@@ -1371,6 +1372,13 @@ export function renderApp(state: AppViewState) {
         loadWikiImportInsights(state),
         loadWikiMemoryPalace(state),
       ]);
+    })();
+  };
+  const refreshMemoryGraph = () => {
+    void (async () => {
+      syncDreamingSelectedAgent();
+      await loadConfig(state);
+      await Promise.all([loadDreamingStatus(state), loadWikiMemoryPalace(state)]);
     })();
   };
   const openWikiPage = async (lookup: string) => {
@@ -3776,6 +3784,33 @@ export function renderApp(state: AppViewState) {
               onRepairDreamingArtifacts: () => {
                 syncDreamingSelectedAgent();
                 void repairDreamingArtifacts(state);
+              },
+              onRequestUpdate: requestHostUpdate,
+            })
+          : nothing}
+        ${state.tab === "memoryGraph"
+          ? renderMemoryGraph({
+              selectedAgentId: dreamingSelectedAgentId,
+              agentOptions: dreamingAgentOptions,
+              loading: state.dreamingStatusLoading,
+              statusError: state.dreamingStatusError,
+              wikiLoading: state.wikiMemoryPalaceLoading,
+              wikiError: state.wikiMemoryPalaceError,
+              shortTermEntries: state.dreamingStatus?.shortTermEntries ?? [],
+              promotedEntries: state.dreamingStatus?.promotedEntries ?? [],
+              shortTermCount: state.dreamingStatus?.shortTermCount ?? 0,
+              promotedTotal: state.dreamingStatus?.promotedTotal ?? 0,
+              totalSignalCount: state.dreamingStatus?.totalSignalCount ?? 0,
+              wikiMemoryPalace: state.wikiMemoryPalace,
+              onRefresh: refreshMemoryGraph,
+              onSelectAgent: (agentId: string) => {
+                state.selectedAgentId = agentId;
+                switchChatSession(state, resolvePreferredSessionForAgent(state, agentId));
+                void loadDreamingStatus(state);
+                void loadWikiMemoryPalace(state);
+              },
+              onOpenDreaming: () => {
+                state.setTab("dreams" as import("./navigation.ts").Tab);
               },
               onRequestUpdate: requestHostUpdate,
             })

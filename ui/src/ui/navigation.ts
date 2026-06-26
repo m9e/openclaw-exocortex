@@ -9,7 +9,7 @@ export const TAB_GROUPS = [
     label: "control",
     tabs: ["overview", "activity", "workboard", "instances", "sessions", "usage", "cron"],
   },
-  { label: "agent", tabs: ["agents", "skills", "skillWorkshop", "nodes", "dreams"] },
+  { label: "agent", tabs: ["agents", "skills", "skillWorkshop", "nodes", "dreams", "memoryGraph"] },
   {
     label: "settings",
     tabs: ["config"],
@@ -29,6 +29,7 @@ export type Tab =
   | "skills"
   | "skillWorkshop"
   | "nodes"
+  | "memoryGraph"
   | "chat"
   | "config"
   | "communications"
@@ -67,6 +68,7 @@ const TAB_PATHS: Record<Tab, string> = {
   skills: "/skills",
   skillWorkshop: "/skills/workshop",
   nodes: "/nodes",
+  memoryGraph: "/memory-graph",
   chat: "/chat",
   config: "/config",
   communications: "/communications",
@@ -225,6 +227,8 @@ export function iconForTab(tab: Tab): IconName {
       return "wrench";
     case "nodes":
       return "monitor";
+    case "memoryGraph":
+      return "brain";
     case "config":
       return "settings";
     case "communications":

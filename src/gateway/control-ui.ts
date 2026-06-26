@@ -167,6 +167,12 @@ type ControlUiAvatarMeta = {
   avatarReason: string | null;
 };
 
+type ControlUiBasicCredentials = {
+  username: string;
+  password: string;
+  credential: string;
+};
+
 function controlUiAvatarResolutionMeta(resolved: ControlUiAvatarResolution | null): {
   avatarSource: string | null;
   avatarStatus: ControlUiAvatarResolution["kind"] | null;
@@ -281,6 +287,39 @@ function resolveControlUiReadAuthToken(
   return resolveAssistantMediaAuthToken(req);
 }
 
+function resolveControlUiBasicCredentials(req: IncomingMessage): ControlUiBasicCredentials | null {
+  const raw = req.headers.authorization;
+  const header = Array.isArray(raw) ? raw[0] : raw;
+  if (!header?.startsWith("Basic ")) {
+    return null;
+  }
+  const encoded = header.slice("Basic ".length).trim();
+  if (!encoded) {
+    return null;
+  }
+  let decoded = "";
+  try {
+    decoded = Buffer.from(encoded, "base64").toString("utf8");
+  } catch {
+    return null;
+  }
+  const separator = decoded.indexOf(":");
+  if (separator < 0) {
+    return null;
+  }
+  const username = decoded.slice(0, separator);
+  const password = decoded.slice(separator + 1);
+  const credential = password || username;
+  if (!credential) {
+    return null;
+  }
+  return { username, password, credential };
+}
+
+function setControlUiBasicAuthChallenge(res: ServerResponse) {
+  res.setHeader("WWW-Authenticate", 'Basic realm="OpenClaw Control UI", charset="UTF-8"');
+}
+
 async function authorizeControlUiReadRequest(
   req: IncomingMessage,
   res: ServerResponse,
@@ -300,24 +339,26 @@ async function authorizeControlUiReadRequest(
   const token = resolveControlUiReadAuthToken(req, {
     allowQueryToken: opts.allowQueryToken,
   });
+  const basicCredentials = token ? null : resolveControlUiBasicCredentials(req);
+  const credential = token ?? basicCredentials?.credential;
   const clientIp =
     resolveRequestClientIp(req, opts.trustedProxies, opts.allowRealIpFallback === true) ??
     req.socket?.remoteAddress;
   const authResult = await authorizeHttpGatewayConnect({
     auth: opts.auth,
-    connectAuth: token ? { token, password: token } : null,
+    connectAuth: credential ? { token: credential, password: credential } : null,
     req,
     browserOriginPolicy: resolveHttpBrowserOriginPolicy(req),
     trustedProxies: opts.trustedProxies,
     allowRealIpFallback: opts.allowRealIpFallback,
-    rateLimiter: token ? opts.rateLimiter : undefined,
+    rateLimiter: credential ? opts.rateLimiter : undefined,
     clientIp,
     rateLimitScope: AUTH_RATE_LIMIT_SCOPE_SHARED_SECRET,
   });
   let resolvedAuthResult = authResult;
   if (
     !resolvedAuthResult.ok &&
-    token &&
+    credential &&
     opts.auth.mode !== "trusted-proxy" &&
     opts.auth.mode !== "none"
   ) {
@@ -330,7 +371,7 @@ async function authorizeControlUiReadRequest(
         retryAfterMs: deviceRateCheck.retryAfterMs,
       };
     } else {
-      const deviceTokenOk = await authorizeControlUiDeviceReadToken(token, {
+      const deviceTokenOk = await authorizeControlUiDeviceReadToken(credential, {
         requiredSharedGatewaySessionGeneration: resolveSharedGatewaySessionGeneration(
           opts.auth,
           opts.trustedProxies,
@@ -346,6 +387,7 @@ async function authorizeControlUiReadRequest(
     }
   }
   if (!resolvedAuthResult.ok) {
+    setControlUiBasicAuthChallenge(res);
     sendGatewayAuthFailure(res, resolvedAuthResult);
     return false;
   }
@@ -925,6 +967,17 @@ export async function handleControlUiHttpRequest(
       allowExternalEmbedUrls: config?.gateway?.controlUi?.allowExternalEmbedUrls === true,
       chatMessageMaxWidth: config?.gateway?.controlUi?.chatMessageMaxWidth,
     } satisfies ControlUiBootstrapConfig);
+    return true;
+  }
+
+  if (
+    !(await authorizeControlUiReadRequest(req, res, {
+      auth: opts?.auth,
+      trustedProxies: opts?.trustedProxies,
+      allowRealIpFallback: opts?.allowRealIpFallback,
+      rateLimiter: opts?.rateLimiter,
+    }))
+  ) {
     return true;
   }
 
