@@ -133,6 +133,16 @@
   text-anchor: middle;
 }
 
+.memory-graph-node:not(.memory-graph-node--root):not(.memory-graph-node--cluster) text {
+  display: none;
+}
+
+.memory-graph-node--selected text,
+.memory-graph-node--match text,
+.memory-graph-node:focus-visible text {
+  display: block;
+}
+
 .memory-graph-node--root circle {
   fill: color-mix(in srgb, var(--ok) 78%, var(--accent) 22%);
 }

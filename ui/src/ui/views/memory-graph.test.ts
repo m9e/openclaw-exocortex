@@ -95,6 +95,12 @@ describe("memory graph view", () => {
     await Promise.resolve();
 
     expect(container.querySelector(".memory-graph-canvas")).toBeInstanceOf(HTMLElement);
+    expect(container.querySelector(".memory-graph-node")?.namespaceURI).toBe(
+      "http://www.w3.org/2000/svg",
+    );
+    expect(container.querySelector(".memory-graph-edge")?.namespaceURI).toBe(
+      "http://www.w3.org/2000/svg",
+    );
     expect(container.textContent).toContain("Nodes");
     expect(container.textContent).toContain("Edges");
     expect(container.textContent).toContain("Short Term");

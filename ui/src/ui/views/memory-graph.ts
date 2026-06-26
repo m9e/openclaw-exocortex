@@ -1,5 +1,5 @@
 // Control UI view renders the memory graph dashboard.
-import { html, nothing, type TemplateResult } from "lit";
+import { html, nothing, svg, type TemplateResult } from "lit";
 import type { DreamingEntry, WikiMemoryPalace } from "../controllers/dreaming.ts";
 
 type MemoryGraphAgentOption = {
@@ -353,7 +353,7 @@ function renderGraph(layout: GraphLayout, props: MemoryGraphProps): TemplateResu
   const nodesById = new Map(layout.nodes.map((node) => [node.id, node]));
   return html`
     <div class="memory-graph-canvas" role="img" aria-label="Interactive memory graph">
-      <svg viewBox=${`0 0 ${GRAPH_WIDTH} ${GRAPH_HEIGHT}`} preserveAspectRatio="xMidYMid meet">
+      ${svg`<svg viewBox=${`0 0 ${GRAPH_WIDTH} ${GRAPH_HEIGHT}`} preserveAspectRatio="xMidYMid meet">
         <g class="memory-graph-edges">
           ${layout.edges.map((edge) => {
             const from = nodesById.get(edge.from);
@@ -361,7 +361,7 @@ function renderGraph(layout: GraphLayout, props: MemoryGraphProps): TemplateResu
             if (!from || !to) {
               return nothing;
             }
-            return html`
+            return svg`
               <line
                 class="memory-graph-edge"
                 x1=${from.x}
@@ -374,7 +374,7 @@ function renderGraph(layout: GraphLayout, props: MemoryGraphProps): TemplateResu
         </g>
         <g class="memory-graph-nodes">
           ${layout.nodes.map(
-            (node) => html`
+            (node) => svg`
               <g
                 class=${nodeClass(node, selectedMemoryGraphNodeId, memoryGraphSearch)}
                 tabindex="0"
@@ -400,7 +400,7 @@ function renderGraph(layout: GraphLayout, props: MemoryGraphProps): TemplateResu
             `,
           )}
         </g>
-      </svg>
+      </svg>`}
     </div>
   `;
 }
