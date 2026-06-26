@@ -37,9 +37,16 @@ import {
   runBeforeToolCallHook,
   type DeferredPluginToolApproval,
 } from "../agent-tools.before-tool-call.js";
+import { resolveEffectiveToolPolicy } from "../agent-tools.policy.js";
 import { stableStringify } from "../stable-stringify.js";
 import { resolveToolLoopDetectionConfig } from "../tool-loop-detection-config.js";
-import { normalizeToolName } from "../tool-policy.js";
+import { isToolAllowedByPolicies } from "../tool-policy-match.js";
+import {
+  mergeAlsoAllowPolicy,
+  normalizeToolName,
+  resolveToolProfilePolicy,
+  type ToolPolicyLike,
+} from "../tool-policy.js";
 import { callGatewayTool } from "../tools/gateway.js";
 import { runAgentHarnessAfterToolCallHook } from "./hook-helpers.js";
 import { runAgentHarnessBeforeAgentFinalizeHook } from "./lifecycle-hook-helpers.js";
@@ -568,14 +575,56 @@ function nativePreToolUseMayRunLoopDetection(registration: NativeHookRelayRegist
   return loopDetection?.enabled !== false;
 }
 
+function hasPolicyEntries(policy: ToolPolicyLike | undefined): boolean {
+  return Boolean(policy?.allow?.length || policy?.deny?.length);
+}
+
+function resolveNativeHookRelayToolPolicies(
+  registration: NativeHookRelayRegistration,
+): Array<ToolPolicyLike | undefined> {
+  const effectivePolicy = resolveEffectiveToolPolicy({
+    config: registration.config,
+    agentId: registration.agentId,
+    sessionKey: registration.sessionKey,
+  });
+  const profilePolicy = mergeAlsoAllowPolicy(
+    resolveToolProfilePolicy(effectivePolicy.profile),
+    effectivePolicy.profileAlsoAllow,
+  );
+  const providerProfilePolicy = mergeAlsoAllowPolicy(
+    resolveToolProfilePolicy(effectivePolicy.providerProfile),
+    effectivePolicy.providerProfileAlsoAllow,
+  );
+  return [
+    profilePolicy,
+    providerProfilePolicy,
+    effectivePolicy.globalPolicy,
+    effectivePolicy.globalProviderPolicy,
+    effectivePolicy.agentPolicy,
+    effectivePolicy.agentProviderPolicy,
+  ];
+}
+
+function nativePreToolUseMayRunToolPolicy(registration: NativeHookRelayRegistration): boolean {
+  if (!registration.config) {
+    return false;
+  }
+  return resolveNativeHookRelayToolPolicies(registration).some(hasPolicyEntries);
+}
+
 function nativeHookRelayEventHasLocalWork(
   registration: NativeHookRelayRegistration,
   event: NativeHookRelayEvent,
 ): boolean {
   if (event === "pre_tool_use") {
     // Avoid spawning a native hook relay for every Codex tool call when there
-    // is no before_tool_call hook, trusted-tool policy, or loop detector work.
-    return hasBeforeToolCallPolicy() || nativePreToolUseMayRunLoopDetection(registration);
+    // is no before_tool_call hook, trusted-tool policy, configured tool
+    // allow/deny policy, or loop detector work.
+    return (
+      hasBeforeToolCallPolicy() ||
+      nativePreToolUseMayRunToolPolicy(registration) ||
+      nativePreToolUseMayRunLoopDetection(registration)
+    );
   }
   if (event === "post_tool_use") {
     return hasGlobalHooks("after_tool_call");
@@ -1290,6 +1339,10 @@ function isRetryableNativeHookRelayBridgeLookupError(params: {
 }
 
 function nativeHookRelayBridgeDir(): string {
+  const configuredDir = process.env.OPENCLAW_NATIVE_HOOK_RELAY_BRIDGE_DIR;
+  if (configuredDir) {
+    return path.resolve(configuredDir);
+  }
   const uid = typeof process.getuid === "function" ? process.getuid() : "nouid";
   return path.join(tmpdir(), `openclaw-native-hook-relays-${uid}`);
 }
@@ -1363,6 +1416,11 @@ async function runNativeHookRelayPreToolUse(params: {
 }): Promise<NativeHookRelayProcessResponse> {
   const toolName = normalizeNativeHookToolName(params.invocation.toolName);
   const toolInput = params.adapter.readToolInput(params.invocation.rawPayload);
+  if (!isToolAllowedByPolicies(toolName, resolveNativeHookRelayToolPolicies(params.registration))) {
+    return params.adapter.renderPreToolUseBlockResponse(
+      `OpenClaw tool policy blocked native Codex tool "${toolName}".`,
+    );
+  }
   const originalToolInputFingerprint = stableStringify(toolInput);
   const approvalMode = readNativeHookRelayApprovalMode(params.invocation.rawPayload);
   const outcome = await runBeforeToolCallHook({
@@ -1953,7 +2011,11 @@ function readNativeHookRelayApprovalMode(rawPayload: JsonValue): "report" | unde
 
 function normalizeNativeHookToolName(toolName: string | undefined): string {
   const normalized = normalizeToolName(toolName ?? "tool");
-  return NATIVE_HOOK_TOOL_NAME_ALIASES[normalized] ?? normalized;
+  const aliased = NATIVE_HOOK_TOOL_NAME_ALIASES[normalized] ?? normalized;
+  if (aliased.startsWith("openclaw") && aliased.length > "openclaw".length) {
+    return normalizeToolName(aliased.slice("openclaw".length).replace(/^[^a-z0-9]+/, ""));
+  }
+  return aliased;
 }
 
 async function requestNativeHookRelayPermissionApproval(

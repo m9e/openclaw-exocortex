@@ -5,7 +5,7 @@ import fs from "node:fs/promises";
 import { createServer, request as httpRequest } from "node:http";
 import { tmpdir } from "node:os";
 import path from "node:path";
-import { afterEach, describe, expect, it, vi } from "vitest";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { updateSessionStore, type SessionEntry } from "../../config/sessions.js";
 import {
   initializeGlobalHookRunner,
@@ -25,12 +25,33 @@ import {
   resolveNativeHookRelayDeferredToolApproval,
 } from "./native-hook-relay.js";
 
-afterEach(() => {
+let originalNativeHookRelayBridgeDir: string | undefined;
+let nativeHookRelayBridgeDirForTest: string | undefined;
+
+beforeEach(async () => {
+  originalNativeHookRelayBridgeDir = process.env.OPENCLAW_NATIVE_HOOK_RELAY_BRIDGE_DIR;
+  nativeHookRelayBridgeDirForTest = await fs.mkdtemp(
+    path.join(tmpdir(), "openclaw-native-hook-relays-test-"),
+  );
+  process.env.OPENCLAW_NATIVE_HOOK_RELAY_BRIDGE_DIR = nativeHookRelayBridgeDirForTest;
+});
+
+afterEach(async () => {
   vi.useRealTimers();
   vi.restoreAllMocks();
   resetGlobalHookRunner();
   setActivePluginRegistry(createEmptyPluginRegistry());
   testing.clearNativeHookRelaysForTests();
+  if (originalNativeHookRelayBridgeDir === undefined) {
+    delete process.env.OPENCLAW_NATIVE_HOOK_RELAY_BRIDGE_DIR;
+  } else {
+    process.env.OPENCLAW_NATIVE_HOOK_RELAY_BRIDGE_DIR = originalNativeHookRelayBridgeDir;
+  }
+  if (nativeHookRelayBridgeDirForTest) {
+    await fs.rm(nativeHookRelayBridgeDirForTest, { force: true, recursive: true });
+  }
+  nativeHookRelayBridgeDirForTest = undefined;
+  originalNativeHookRelayBridgeDir = undefined;
 });
 
 function isRecord(value: unknown): value is Record<string, unknown> {
@@ -2221,6 +2242,88 @@ describe("native hook relay registry", () => {
     expect(response.stderr).toBe("");
     expect(response.exitCode).toBe(0);
     expect(beforeToolCall).toHaveBeenCalledTimes(1);
+  });
+
+  it("blocks Codex native tools excluded by the configured agent tool allowlist", async () => {
+    const beforeToolCall = vi.fn();
+    const relay = registerNativeHookRelay({
+      provider: "codex",
+      agentId: "lowpriv",
+      sessionId: "session-1",
+      sessionKey: "agent:lowpriv:session-1",
+      runId: "run-1",
+      config: {
+        agents: {
+          list: [
+            {
+              id: "lowpriv",
+              tools: { allow: ["session_status"], deny: ["bash", "exec"] },
+            },
+          ],
+        },
+      },
+    });
+
+    const response = await invokeNativeHookRelay({
+      provider: "codex",
+      relayId: relay.relayId,
+      event: "pre_tool_use",
+      rawPayload: {
+        hook_event_name: "PreToolUse",
+        tool_name: "Bash",
+        tool_use_id: "native-call-1",
+        tool_input: { command: "pwd" },
+      },
+    });
+
+    expect(JSON.parse(response.stdout)).toEqual({
+      hookSpecificOutput: {
+        hookEventName: "PreToolUse",
+        permissionDecision: "deny",
+        permissionDecisionReason: 'OpenClaw tool policy blocked native Codex tool "exec".',
+      },
+    });
+    expect(response.stderr).toBe("");
+    expect(response.exitCode).toBe(0);
+    expect(beforeToolCall).not.toHaveBeenCalled();
+  });
+
+  it("allows Codex native OpenClaw tool wrappers included by the configured agent allowlist", async () => {
+    const relay = registerNativeHookRelay({
+      provider: "codex",
+      agentId: "lowpriv",
+      sessionId: "session-1",
+      sessionKey: "agent:lowpriv:session-1",
+      runId: "run-1",
+      config: {
+        agents: {
+          list: [
+            {
+              id: "lowpriv",
+              tools: { allow: ["session_status", "locksmith_kzproxy"], deny: ["bash", "exec"] },
+            },
+          ],
+        },
+      },
+    });
+
+    for (const toolName of ["openclaw.session_status", "openclawlocksmith_kzproxy"]) {
+      const response = await invokeNativeHookRelay({
+        provider: "codex",
+        relayId: relay.relayId,
+        event: "pre_tool_use",
+        rawPayload: {
+          hook_event_name: "PreToolUse",
+          tool_name: toolName,
+          tool_use_id: `native-call-${toolName}`,
+          tool_input: {},
+        },
+      });
+
+      expect(response.stdout).toBe("");
+      expect(response.stderr).toBe("");
+      expect(response.exitCode).toBe(0);
+    }
   });
 
   it("maps Codex PostToolUse to OpenClaw after_tool_call observation", async () => {
