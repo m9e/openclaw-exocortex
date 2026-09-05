@@ -12,7 +12,7 @@
  * Active-block is checked first so a re-call on an already-blocked session just
  * blocks instead of recording a second honeypot incident.
  */
-import type { OpenClawConfig } from "openclaw/plugin-sdk/config-runtime";
+import type { OpenClawConfig } from "openclaw/plugin-sdk/config-contracts";
 import type { OpenClawPluginApi } from "openclaw/plugin-sdk/plugin-entry";
 import { notifyBreaker } from "./breaker-notify.js";
 import { triggerHoneypot } from "./client.js";

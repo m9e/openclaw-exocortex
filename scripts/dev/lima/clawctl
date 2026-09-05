@@ -17,7 +17,8 @@ while [ -L "$_clawctl_source" ]; do
   [[ "$_clawctl_source" != /* ]] && _clawctl_source="$_clawctl_dir/$_clawctl_source"
 done
 SCRIPT_DIR="$(cd -P "$(dirname "$_clawctl_source")" >/dev/null 2>&1 && pwd)"
-WORKSPACE_ROOT="$(cd "$SCRIPT_DIR/../../../.." && pwd)"
+REPO_ROOT="$(cd "$SCRIPT_DIR/../../.." && pwd)"
+WORKSPACE_ROOT="$(cd "$REPO_ROOT/.." && pwd)"
 RUNTIME_ROOT="${CLAWCTL_RUNTIME_ROOT:-$WORKSPACE_ROOT/claw-runtime}"
 
 log() {
@@ -684,7 +685,7 @@ path.write_text(json.dumps(cfg, indent=2) + "\n")
 print(f"projected locksmith_{name} in openclaw config")
 PY
 
-  if (cd "$WORKSPACE_ROOT/openclaw-exocortex" && corepack pnpm openclaw gateway restart) >/dev/null 2>&1; then
+  if (cd "$REPO_ROOT" && corepack pnpm openclaw gateway restart) >/dev/null 2>&1; then
     log "gateway restarted to register the projected tool"
   else
     log "could not restart the gateway; run 'corepack pnpm openclaw gateway restart' to register locksmith_$tool_name"

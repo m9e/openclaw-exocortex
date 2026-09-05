@@ -255,7 +255,7 @@
   color: var(--muted);
 }
 
-@media (max-width: 920px) {
+@media (max-width: 900px) {
   .memory-graph-layout {
     flex-direction: column;
   }

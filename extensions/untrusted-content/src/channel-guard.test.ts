@@ -1,4 +1,5 @@
-import type { OpenClawConfig } from "openclaw/plugin-sdk/config-runtime";
+import assert from "node:assert/strict";
+import type { OpenClawConfig } from "openclaw/plugin-sdk/config-contracts";
 import type { OpenClawPluginApi } from "openclaw/plugin-sdk/plugin-entry";
 import type { PluginStateEntry } from "openclaw/plugin-sdk/plugin-state-runtime";
 import { beforeEach, describe, expect, it, vi } from "vitest";
@@ -171,8 +172,10 @@ describe("evaluateChannelDispatch", () => {
     expect((result as { text?: string }).text).toBeUndefined();
     const incidents = [...store.map.values()];
     expect(incidents).toHaveLength(1);
-    expect(incidents[0].tool).toBe("channel:telegram");
-    expect(incidents[0].sessionKey).toBe("sess-c");
+    const incident = incidents[0];
+    assert(incident);
+    expect(incident.tool).toBe("channel:telegram");
+    expect(incident.sessionKey).toBe("sess-c");
   });
 
   it("lets a low-risk untrusted message through (pass tier)", async () => {

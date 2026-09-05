@@ -1,48 +1,14 @@
 // Npm Verify Exec tests cover npm verify exec script behavior.
-import { mkdtempSync, rmSync } from "node:fs";
-import { tmpdir } from "node:os";
-import path from "node:path";
 import { afterEach, describe, expect, it } from "vitest";
 import { runNpmVerifyCommand } from "../../scripts/lib/npm-verify-exec.ts";
+import { withEnv } from "../../src/test-utils/env.js";
+import { useAutoCleanupTempDirTracker } from "../helpers/temp-dir.js";
 
-const tempDirs: string[] = [];
-
-function makeTempRoot(): string {
-  const root = mkdtempSync(path.join(tmpdir(), "openclaw-npm-verify-exec-"));
-  tempDirs.push(root);
-  return root;
-}
-
-function withProcessEnv<T>(env: Record<string, string>, callback: () => T): T {
-  const previous = new Map<string, string | undefined>();
-  for (const key of Object.keys(env)) {
-    previous.set(key, process.env[key]);
-  }
-  for (const [key, value] of Object.entries(env)) {
-    process.env[key] = value;
-  }
-  try {
-    return callback();
-  } finally {
-    for (const [key, value] of previous) {
-      if (value === undefined) {
-        delete process.env[key];
-      } else {
-        process.env[key] = value;
-      }
-    }
-  }
-}
-
-afterEach(() => {
-  for (const dir of tempDirs.splice(0)) {
-    rmSync(dir, { force: true, recursive: true });
-  }
-});
+const tempDirs = useAutoCleanupTempDirTracker(afterEach);
 
 describe("npm verifier command execution", () => {
   it("trims successful command output", () => {
-    const root = makeTempRoot();
+    const root = tempDirs.make("openclaw-npm-verify-exec-");
 
     expect(
       runNpmVerifyCommand(
@@ -57,7 +23,7 @@ describe("npm verifier command execution", () => {
   });
 
   it("bounds hung commands even when they ignore SIGTERM", () => {
-    const root = makeTempRoot();
+    const root = tempDirs.make("openclaw-npm-verify-exec-");
     const startedAt = Date.now();
 
     expect(() =>
@@ -74,7 +40,7 @@ describe("npm verifier command execution", () => {
   });
 
   it("bounds buffered command output", () => {
-    const root = makeTempRoot();
+    const root = tempDirs.make("openclaw-npm-verify-exec-");
 
     expect(() =>
       runNpmVerifyCommand(
@@ -89,9 +55,9 @@ describe("npm verifier command execution", () => {
   });
 
   it("rejects malformed command limit environment values", () => {
-    const root = makeTempRoot();
+    const root = tempDirs.make("openclaw-npm-verify-exec-");
 
-    withProcessEnv({ OPENCLAW_NPM_VERIFY_COMMAND_TIMEOUT_MS: "5m" }, () => {
+    withEnv({ OPENCLAW_NPM_VERIFY_COMMAND_TIMEOUT_MS: "5m" }, () => {
       expect(() =>
         runNpmVerifyCommand(
           { command: process.execPath, args: ["-e", "process.stdout.write('ok')"] },
@@ -100,7 +66,7 @@ describe("npm verifier command execution", () => {
       ).toThrow("invalid OPENCLAW_NPM_VERIFY_COMMAND_TIMEOUT_MS: 5m");
     });
 
-    withProcessEnv({ OPENCLAW_NPM_VERIFY_COMMAND_MAX_BUFFER_BYTES: "16mb" }, () => {
+    withEnv({ OPENCLAW_NPM_VERIFY_COMMAND_MAX_BUFFER_BYTES: "16mb" }, () => {
       expect(() =>
         runNpmVerifyCommand(
           { command: process.execPath, args: ["-e", "process.stdout.write('ok')"] },

@@ -4,7 +4,6 @@
  * requirements, and formats node invoke results for the exec tool.
  */
 import crypto from "node:crypto";
-import { normalizeNullableString } from "@openclaw/normalization-core/string-coerce";
 import {
   describeInterpreterInlineEval,
   type InterpreterInlineEvalHit,
@@ -14,17 +13,21 @@ import {
   type ExecApprovalsFile,
   type ExecAllowlistEntry,
   type ExecAsk,
+  type AllowAlwaysPersistenceDecision,
   type ExecCommandSegment,
   type ExecSecurity,
   type SystemRunApprovalPlan,
   commandRequiresSecurityAuditSuppressionApproval,
-  evaluateShellAllowlist,
+  countObsoleteGeneratedExecApprovals,
+  evaluateShellAllowlistWithAuthorization,
   hasDurableExecApproval,
   hasNodeCommandAllowAlwaysMarker,
   resolveExecApprovalsFromFile,
+  resolveAllowAlwaysPersistenceDecision,
   resolveAllowAlwaysPatternCoverage,
   type AllowAlwaysPattern,
 } from "../infra/exec-approvals.js";
+import { isBlockedShellWrapperCommand } from "../infra/exec-wrapper-resolution.js";
 import { buildNodeShellCommand } from "../infra/node-shell.js";
 import {
   parsePreparedSystemRunPayload,
@@ -32,12 +35,16 @@ import {
 } from "../infra/system-run-approval-context.js";
 import {
   extractShellCommandFromArgv,
-  formatExecCommand,
   resolveSystemRunCommandRequest,
 } from "../infra/system-run-command.js";
+import { resolveEligibleNodeFromList } from "../shared/node-resolve.js";
 import { addSafeTimeoutDelayGraceMs } from "../utils/timer-delay.js";
+import {
+  formatNodeInvokeFailureToolResult,
+  invokeNodeSystemRun,
+} from "./bash-tools.exec-host-node-failure.js";
 import type { ExecuteNodeHostCommandParams } from "./bash-tools.exec-host-node.types.js";
-import { renderExecOutputText } from "./bash-tools.exec-output.js";
+import { appendExecTimeoutRetryGuidance, renderExecUpdateText } from "./bash-tools.exec-output.js";
 import type { ExecToolDetails } from "./bash-tools.exec-types.js";
 import type { AgentToolResult } from "./runtime/index.js";
 import { callGatewayTool } from "./tools/gateway.js";
@@ -48,7 +55,8 @@ type NodeExecutionTarget = {
   platform?: string | null;
   argv: string[];
   env: Record<string, string> | undefined;
-  invokeTimeoutMs: number;
+  invokeDeadlineMs: number;
+  invokeWaitMs: number;
   runTimeoutSec: number;
   supportsSystemRunPrepare: boolean;
 };
@@ -57,6 +65,7 @@ type PreparedNodeRun = {
   plan: SystemRunApprovalPlan;
   argv: string[];
   rawCommand: string;
+  transportRawCommand: string;
   cwd: string | undefined;
   agentId: string | undefined;
   sessionKey: string | undefined;
@@ -74,6 +83,7 @@ type NodeApprovalAnalysis = {
   inlineEvalHit: InterpreterInlineEvalHit | null;
   requiresSecurityAuditSuppressionApproval: boolean;
   autoReviewArgv?: string[];
+  allowAlwaysPersistence: AllowAlwaysPersistenceDecision;
 };
 
 function resolveNodeRunTimeoutSec(
@@ -85,13 +95,23 @@ function resolveNodeRunTimeoutSec(
     : defaultTimeoutSec;
 }
 
-function resolveNodeInvokeTimeoutMs(runTimeoutSec: number, defaultTimeoutSec: number): number {
+// Gateway invocation deadline: the node program budget plus transport grace. A
+// `timeout: 0` run keeps no program timer, so the deadline falls back to the
+// default budget instead of becoming unbounded.
+function resolveNodeInvokeDeadlineMs(runTimeoutSec: number, defaultTimeoutSec: number): number {
   const baseTimeoutSec =
     Number.isFinite(runTimeoutSec) && runTimeoutSec > 0 ? runTimeoutSec : defaultTimeoutSec;
   if (!Number.isFinite(baseTimeoutSec) || baseTimeoutSec <= 0) {
     return 10_000;
   }
   return Math.max(10_000, addSafeTimeoutDelayGraceMs(baseTimeoutSec * 1000, 5_000));
+}
+
+// Caller wait must outlast the Gateway deadline so the deadline expiry answer
+// wins the race instead of the caller giving up first. Both saturate together at
+// MAX_SAFE_TIMEOUT_DELAY_MS, where the ordering degenerates by design.
+function resolveNodeInvokeWaitMs(invokeDeadlineMs: number): number {
+  return addSafeTimeoutDelayGraceMs(invokeDeadlineMs, 5_000);
 }
 
 function resolveNodeRunTimeoutMs(runTimeoutSec: number): number {
@@ -103,7 +123,7 @@ function resolveNodeRunTimeoutMs(runTimeoutSec: number): number {
 type NodePolicyCommandEval = {
   command: string;
   cwd: string | undefined;
-  allowlistEval: ReturnType<typeof evaluateShellAllowlist>;
+  allowlistEval: Awaited<ReturnType<typeof evaluateShellAllowlistWithAuthorization>>;
 };
 
 type NodeAllowAlwaysCoverage = {
@@ -206,22 +226,13 @@ function hasNodeAllowAlwaysCommandApproval(params: {
   return expectedPatterns.every((pattern) => matchingEntries.has(pattern));
 }
 
-/** Returns true when local policy allows direct node invoke without prepare/approval. */
-export function shouldSkipNodeApprovalPrepare(params: {
-  hostSecurity: ExecSecurity;
-  hostAsk: ExecAsk;
-  strictInlineEval?: boolean;
-}): boolean {
-  return (
-    params.hostSecurity === "full" && params.hostAsk === "off" && params.strictInlineEval !== true
-  );
-}
-
 /** Formats a raw `node.invoke system.run` response as an exec tool result. */
-export function formatNodeRunToolResult(params: {
+function formatNodeRunToolResult(params: {
   raw: unknown;
   startedAt: number;
   cwd: string | undefined;
+  nodeId: string;
+  warnings?: string[];
 }): AgentToolResult<ExecToolDetails> {
   const payload =
     params.raw && typeof params.raw === "object"
@@ -234,18 +245,33 @@ export function formatNodeRunToolResult(params: {
   const errorText = typeof payloadObj.error === "string" ? payloadObj.error : "";
   const success = typeof payloadObj.success === "boolean" ? payloadObj.success : false;
   const exitCode = typeof payloadObj.exitCode === "number" ? payloadObj.exitCode : null;
+  const timedOut = payloadObj.timedOut === true;
+  // Failure must be visible in the text the model reads, matching the
+  // local/gateway host rendering — output alone reads as success.
+  const outcomeNote = timedOut
+    ? appendExecTimeoutRetryGuidance("Command timed out.", "overall-timeout")
+    : !success && exitCode !== null && exitCode !== 0
+      ? `(Command exited with code ${exitCode})`
+      : "";
+  const output = [stdout, stderr, errorText, outcomeNote].filter(Boolean).join("\n");
   return {
+    // Tool details are UI metadata; the model needs the execution target in content.
     content: [
       {
         type: "text",
-        text: renderExecOutputText(stdout || stderr || errorText),
+        text: `Node: ${params.nodeId}\n${renderExecUpdateText({
+          tailText: output,
+          warnings: params.warnings ?? [],
+        })}`,
       },
     ],
     details: {
       status: success ? "completed" : "failed",
       exitCode,
       durationMs: Date.now() - params.startedAt,
-      aggregated: [stdout, stderr, errorText].filter(Boolean).join("\n"),
+      aggregated: output,
+      nodeId: params.nodeId,
+      ...(timedOut ? { timedOut: true } : {}),
       cwd: params.cwd,
     } satisfies ExecToolDetails,
   };
@@ -255,51 +281,67 @@ export function formatNodeRunToolResult(params: {
 export async function resolveNodeExecutionTarget(
   params: ExecuteNodeHostCommandParams,
 ): Promise<NodeExecutionTarget> {
-  if (params.boundNode && params.requestedNode && params.boundNode !== params.requestedNode) {
-    throw new Error(`exec node not allowed (bound to ${params.boundNode})`);
-  }
-  const nodeQuery = params.boundNode || params.requestedNode;
   const nodes = await listNodes({});
   if (nodes.length === 0) {
     throw new Error(
       "exec host=node requires a paired node (none available). This requires a companion app or node host.",
     );
   }
-  let nodeId: string;
-  try {
-    nodeId = resolveNodeIdFromList(nodes, nodeQuery, !nodeQuery);
-  } catch (err) {
-    if (!nodeQuery && String(err).includes("node required")) {
+  // Canonicalize boundNode and requestedNode (which may be display names, IPs,
+  // or partial ID prefixes) to full device IDs before comparing.
+  const resolvedBoundNodeId = params.boundNode
+    ? resolveNodeIdFromList(nodes, params.boundNode)
+    : undefined;
+  let resolvedRequestedNodeId: string | undefined;
+  if (params.requestedNode) {
+    try {
+      resolvedRequestedNodeId = resolveNodeIdFromList(nodes, params.requestedNode);
+    } catch (err) {
       throw new Error(
-        "exec host=node requires a node id when multiple nodes are available (set tools.exec.node or exec.node).",
+        `requested node not found: ${params.requestedNode} (${err instanceof Error ? err.message : String(err)})`,
         { cause: err },
       );
     }
-    throw err;
   }
-  const nodeInfo = nodes.find((entry) => entry.nodeId === nodeId);
-  if (nodeInfo?.connected === false) {
+  if (
+    resolvedBoundNodeId &&
+    resolvedRequestedNodeId &&
+    resolvedBoundNodeId !== resolvedRequestedNodeId
+  ) {
     throw new Error(
-      `exec host=node requires a connected node (${nodeId} is currently disconnected). Start or reconnect the companion app or node host, or select a connected node.`,
+      `exec node not allowed (bound to ${resolvedBoundNodeId}, requested resolved to ${resolvedRequestedNodeId})`,
     );
   }
-  const declaredCommands = Array.isArray(nodeInfo?.commands) ? nodeInfo.commands : [];
-  const supportsSystemRun = declaredCommands.includes("system.run");
-  if (!supportsSystemRun) {
-    throw new Error(
-      "exec host=node requires a node that supports system.run (companion app or node host).",
-    );
-  }
+  const nodeInfo = resolveEligibleNodeFromList(
+    nodes,
+    resolvedBoundNodeId ?? resolvedRequestedNodeId,
+    (node) => node.connected === true && node.commands?.includes("system.run") === true,
+    {
+      ineligibleExact: (query, eligibleIds) =>
+        `exec host=node requires a connected node that supports system.run (${query} is not eligible; eligible node ids: ${eligibleIds}).`,
+      nameResolveFailed: (reason, eligibleIds) =>
+        `${reason} (eligible connected system.run node ids: ${eligibleIds})`,
+      noneEligible: () =>
+        "exec host=node requires a connected node that supports system.run (none available). Start or reconnect the companion app or node host.",
+      multipleEligible: (eligible) =>
+        `exec host=node requires a node when multiple executable nodes are connected: ${eligible
+          .map((node) => (node.displayName ? `${node.nodeId} (${node.displayName})` : node.nodeId))
+          .join(", ")}. Set exec.node, tools.exec.node, or /exec node=...`,
+    },
+  );
+  const nodeId = nodeInfo.nodeId;
 
   const runTimeoutSec = resolveNodeRunTimeoutSec(params.timeoutSec, params.defaultTimeoutSec);
+  const invokeDeadlineMs = resolveNodeInvokeDeadlineMs(runTimeoutSec, params.defaultTimeoutSec);
   return {
     nodeId,
-    platform: nodeInfo?.platform,
-    argv: buildNodeShellCommand(params.command, nodeInfo?.platform),
+    platform: nodeInfo.platform,
+    argv: buildNodeShellCommand(params.command, nodeInfo.platform),
     env: params.requestedEnv ? { ...params.requestedEnv } : undefined,
-    invokeTimeoutMs: resolveNodeInvokeTimeoutMs(runTimeoutSec, params.defaultTimeoutSec),
+    invokeDeadlineMs,
+    invokeWaitMs: resolveNodeInvokeWaitMs(invokeDeadlineMs),
     runTimeoutSec,
-    supportsSystemRunPrepare: declaredCommands.includes("system.run.prepare"),
+    supportsSystemRunPrepare: nodeInfo.commands?.includes("system.run.prepare") === true,
   };
 }
 
@@ -317,6 +359,7 @@ export function buildNodeSystemRunInvoke(params: {
   turnSourceThreadId?: string | number;
   approved?: boolean;
   approvalDecision?: "allow-once" | "allow-always" | null;
+  approvalSource?: "ask-fallback";
   runId?: string;
   suppressNotifyOnExit?: boolean;
   notifyOnExit?: boolean;
@@ -327,6 +370,10 @@ export function buildNodeSystemRunInvoke(params: {
   return {
     nodeId: params.target.nodeId,
     command: "system.run",
+    // Top-level timeout arms the Gateway invocation deadline; the nested value is
+    // the node program timer. Without this the Gateway falls back to a fixed 30s
+    // pending-invoke timer and discards a later node result as `ignored`.
+    timeoutMs: params.target.invokeDeadlineMs,
     params: {
       command: params.command,
       rawCommand: params.rawCommand,
@@ -346,6 +393,7 @@ export function buildNodeSystemRunInvoke(params: {
         : {}),
       approved: params.approved,
       approvalDecision: params.approvalDecision ?? undefined,
+      approvalSource: params.approvalSource,
       runId,
       suppressNotifyOnExit:
         params.suppressNotifyOnExit === true || params.notifyOnExit === false ? true : undefined,
@@ -354,26 +402,38 @@ export function buildNodeSystemRunInvoke(params: {
   };
 }
 
-/** Invokes `system.run` directly when approval policy is fully bypassed. */
-export async function invokeNodeSystemRunDirect(params: {
+/** Dispatches an authorized run and renders its transport or execution outcome. */
+export async function dispatchNodeSystemRun(params: {
   request: ExecuteNodeHostCommandParams;
   target: NodeExecutionTarget;
+  invoke: Record<string, unknown>;
+  scopes?: Parameters<typeof invokeNodeSystemRun>[0]["scopes"];
 }): Promise<AgentToolResult<ExecToolDetails>> {
   const startedAt = Date.now();
-  const raw = await callGatewayTool(
-    "node.invoke",
-    { timeoutMs: params.target.invokeTimeoutMs },
-    buildNodeSystemRunInvoke({
-      target: params.target,
-      command: params.target.argv,
-      rawCommand: params.request.command,
+  params.request.signal?.throwIfAborted();
+  const result = await invokeNodeSystemRun({
+    invokeWaitMs: params.target.invokeWaitMs,
+    invoke: params.invoke,
+    scopes: params.scopes,
+    signal: params.request.signal,
+  });
+  if (!result.ok) {
+    return formatNodeInvokeFailureToolResult({
+      failure: result.failure,
+      nodeId: params.target.nodeId,
+      command: params.request.command,
+      startedAt,
       cwd: params.request.workdir,
-      agentId: params.request.agentId,
-      sessionKey: params.request.sessionKey,
-      notifyOnExit: params.request.notifyOnExit,
-    }),
-  );
-  return formatNodeRunToolResult({ raw, startedAt, cwd: params.request.workdir });
+      warnings: [...params.request.warnings, ...(params.request.foregroundWarnings ?? [])],
+    });
+  }
+  return formatNodeRunToolResult({
+    raw: result.raw,
+    startedAt,
+    cwd: params.request.workdir,
+    nodeId: params.target.nodeId,
+    warnings: [...params.request.warnings, ...(params.request.foregroundWarnings ?? [])],
+  });
 }
 
 /** Prepares a node-host system run using remote prepare support or local fallback. */
@@ -382,7 +442,7 @@ export async function prepareNodeSystemRun(params: {
   target: NodeExecutionTarget;
 }): Promise<PreparedNodeRun> {
   if (!params.target.supportsSystemRunPrepare) {
-    return buildLocalPreparedNodeRun(params);
+    throw new Error("exec denied: node approval requires system.run.prepare support");
   }
 
   const prepareRaw = await callGatewayTool(
@@ -393,6 +453,8 @@ export async function prepareNodeSystemRun(params: {
       command: "system.run.prepare",
       params: {
         command: params.target.argv,
+        security: params.request.security,
+        ask: params.request.ask,
         rawCommand: params.request.command,
         ...(params.request.workdir != null ? { cwd: params.request.workdir } : {}),
         ...(params.target.env !== undefined ? { env: params.target.env } : {}),
@@ -411,47 +473,12 @@ export async function prepareNodeSystemRun(params: {
     plan: prepared.plan,
     argv: prepared.plan.argv,
     rawCommand: prepared.plan.commandText,
+    transportRawCommand: prepared.plan.commandText,
     cwd: prepared.plan.cwd ?? params.request.workdir,
     agentId: prepared.plan.agentId ?? params.request.agentId,
     sessionKey: prepared.plan.sessionKey ?? params.request.sessionKey,
     ...(prepared.execPolicy ? { execPolicy: prepared.execPolicy } : {}),
     allowAlwaysCoverage: prepared.allowAlwaysCoverage,
-  };
-}
-
-function buildLocalPreparedNodeRun(params: {
-  request: ExecuteNodeHostCommandParams;
-  target: NodeExecutionTarget;
-}): PreparedNodeRun {
-  const rawCommand = formatExecCommand(params.target.argv);
-  const command = resolveSystemRunCommandRequest({
-    command: params.target.argv,
-    rawCommand,
-  });
-  if (!command.ok) {
-    throw new Error(command.message);
-  }
-  if (command.argv.length === 0) {
-    throw new Error("command required");
-  }
-  const commandText = formatExecCommand(command.argv);
-  const previewText = params.request.command.trim() || command.previewText?.trim();
-  const commandPreview = previewText && previewText !== commandText ? previewText : null;
-  const plan = {
-    argv: [...command.argv],
-    cwd: normalizeNullableString(params.request.workdir),
-    commandText,
-    commandPreview,
-    agentId: normalizeNullableString(params.request.agentId),
-    sessionKey: normalizeNullableString(params.request.sessionKey),
-  } satisfies SystemRunApprovalPlan;
-  return {
-    plan,
-    argv: plan.argv,
-    rawCommand: plan.commandText,
-    cwd: plan.cwd ?? params.request.workdir,
-    agentId: plan.agentId ?? params.request.agentId,
-    sessionKey: plan.sessionKey ?? params.request.sessionKey,
   };
 }
 
@@ -466,7 +493,7 @@ export async function analyzeNodeApprovalRequirement(params: {
   const approvalCommand = params.prepared.rawCommand;
   const approvalCwd = params.prepared.cwd ?? params.request.workdir;
   const analysisEnv = buildNodeApprovalAnalysisEnv(params.target.env);
-  const baseAllowlistEval = evaluateShellAllowlist({
+  const baseAllowlistEval = await evaluateShellAllowlistWithAuthorization({
     command: approvalCommand,
     allowlist: [],
     safeBins: new Set(),
@@ -482,7 +509,7 @@ export async function analyzeNodeApprovalRequirement(params: {
       allowlistEval: baseAllowlistEval,
     },
   ];
-  const addCommandEval = (
+  const addCommandEval = async (
     entries: NodePolicyCommandEval[],
     command: string | null | undefined,
     cwd: string | undefined,
@@ -497,7 +524,7 @@ export async function analyzeNodeApprovalRequirement(params: {
     entries.push({
       command: normalizedCommand,
       cwd,
-      allowlistEval: evaluateShellAllowlist({
+      allowlistEval: await evaluateShellAllowlistWithAuthorization({
         command: normalizedCommand,
         allowlist: [],
         safeBins: new Set(),
@@ -515,7 +542,7 @@ export async function analyzeNodeApprovalRequirement(params: {
   const preparedShellPayload =
     extractPreparedNodeShellPayload(params.prepared.argv) ??
     (preparedCommand.ok ? preparedCommand.shellPayload : null);
-  addCommandEval(bindingCommandEvals, preparedShellPayload, approvalCwd);
+  await addCommandEval(bindingCommandEvals, preparedShellPayload, approvalCwd);
   const autoReviewBindingCommand = preparedShellPayload?.trim() || approvalCommand;
   const autoReviewBindingEval =
     bindingCommandEvals.find(
@@ -523,12 +550,13 @@ export async function analyzeNodeApprovalRequirement(params: {
         entry.command.trim() === autoReviewBindingCommand.trim() && entry.cwd === approvalCwd,
     )?.allowlistEval ?? baseAllowlistEval;
   const policyCommandEvals = [...bindingCommandEvals];
-  addCommandEval(policyCommandEvals, params.prepared.plan.commandPreview, approvalCwd);
-  addCommandEval(policyCommandEvals, params.request.command, params.request.workdir);
+  await addCommandEval(policyCommandEvals, params.prepared.plan.commandPreview, approvalCwd);
+  await addCommandEval(policyCommandEvals, params.request.command, params.request.workdir);
   let analysisOk = baseAllowlistEval.analysisOk;
   let allowlistSatisfied = false;
   let durableApprovalSatisfied = false;
   let nodeApprovalsFileKnown = false;
+  let obsoleteGeneratedApprovalCount = 0;
   const inlineEvalHit =
     params.request.strictInlineEval === true
       ? (policyCommandEvals
@@ -560,6 +588,8 @@ export async function analyzeNodeApprovalRequirement(params: {
   if (
     (params.hostAsk === "always" ||
       params.hostSecurity === "allowlist" ||
+      params.prepared.execPolicy?.security === "allowlist" ||
+      params.prepared.execPolicy?.ask === "always" ||
       params.request.autoReview === true) &&
     analysisOk
   ) {
@@ -580,46 +610,49 @@ export async function analyzeNodeApprovalRequirement(params: {
           agentId: params.prepared.agentId,
           overrides: { security: "full" },
         });
+        obsoleteGeneratedApprovalCount = countObsoleteGeneratedExecApprovals(resolved.file);
         // Allowlist-only precheck; safe bins are node-local and may diverge.
         // POSIX node transport wraps commands, so mirror node policy by
         // accepting either the prepared wrapper or its semantic inner command.
-        const allowlistEvals = bindingCommandEvals.map((entry) => {
-          const allowlistEval = evaluateShellAllowlist({
-            command: entry.command,
-            allowlist: resolved.allowlist,
-            safeBins: new Set(),
-            cwd: entry.cwd,
-            env: analysisEnv,
-            platform: params.target.platform,
-            trustedSafeBinDirs: params.request.trustedSafeBinDirs,
-          });
-          return {
-            command: entry.command,
-            allowlistEligible:
-              !preparedShellPayload || entry.command.trim() === preparedShellPayload.trim(),
-            exactDurableApprovalSatisfied: hasExactCommandDurableApproval({
+        const allowlistEvals = await Promise.all(
+          bindingCommandEvals.map(async (entry) => {
+            const allowlistEval = await evaluateShellAllowlistWithAuthorization({
+              command: entry.command,
               allowlist: resolved.allowlist,
-              commandText: entry.command,
-            }),
-            nodeCommandDurableApprovalSatisfied: hasNodeAllowAlwaysCommandApproval({
-              allowlist: resolved.allowlist,
-              commandText: params.prepared.rawCommand,
-              segments: entry.allowlistEval.segments,
+              safeBins: new Set(),
               cwd: entry.cwd,
               env: analysisEnv,
               platform: params.target.platform,
-              strictInlineEval: params.request.strictInlineEval,
-              nodeCoverage: params.prepared.allowAlwaysCoverage,
-            }),
-            allowlistEval,
-            durableApprovalSatisfied: hasDurableExecApproval({
-              analysisOk: allowlistEval.analysisOk,
-              segmentAllowlistEntries: allowlistEval.segmentAllowlistEntries,
-              allowlist: resolved.allowlist,
-              commandText: entry.command,
-            }),
-          };
-        });
+              trustedSafeBinDirs: params.request.trustedSafeBinDirs,
+            });
+            return {
+              command: entry.command,
+              allowlistEligible:
+                !preparedShellPayload || entry.command.trim() === preparedShellPayload.trim(),
+              exactDurableApprovalSatisfied: hasExactCommandDurableApproval({
+                allowlist: resolved.allowlist,
+                commandText: entry.command,
+              }),
+              nodeCommandDurableApprovalSatisfied: hasNodeAllowAlwaysCommandApproval({
+                allowlist: resolved.allowlist,
+                commandText: params.prepared.rawCommand,
+                segments: entry.allowlistEval.segments,
+                cwd: entry.cwd,
+                env: analysisEnv,
+                platform: params.target.platform,
+                strictInlineEval: params.request.strictInlineEval,
+                nodeCoverage: params.prepared.allowAlwaysCoverage,
+              }),
+              allowlistEval,
+              durableApprovalSatisfied: hasDurableExecApproval({
+                analysisOk: allowlistEval.analysisOk,
+                segmentAllowlistEntries: allowlistEval.segmentAllowlistEntries,
+                allowlist: resolved.allowlist,
+                commandText: entry.command,
+              }),
+            };
+          }),
+        );
         durableApprovalSatisfied = allowlistEvals.some(
           (entry) =>
             (entry.durableApprovalSatisfied &&
@@ -635,6 +668,26 @@ export async function analyzeNodeApprovalRequirement(params: {
       // Fall back to requiring approval if node approvals cannot be fetched.
     }
   }
+  const [autoReviewSegment] = autoReviewBindingEval.segments;
+  // Review the semantic node payload, not the ordinary outer transport shell.
+  const autoReviewArgv =
+    autoReviewBindingEval.segments.length === 1 &&
+    autoReviewSegment !== undefined &&
+    autoReviewSegment.resolution?.policyBlocked !== true &&
+    !isBlockedShellWrapperCommand(autoReviewSegment.argv) &&
+    (autoReviewSegment.raw === undefined ||
+      autoReviewSegment.raw.trim() === autoReviewBindingCommand.trim())
+      ? autoReviewSegment.argv
+      : undefined;
+  if (
+    (params.hostSecurity === "allowlist" || params.prepared.execPolicy?.security === "allowlist") &&
+    !allowlistSatisfied &&
+    obsoleteGeneratedApprovalCount > 0
+  ) {
+    params.request.warnings.push(
+      `${obsoleteGeneratedApprovalCount} older generated exec ${obsoleteGeneratedApprovalCount === 1 ? "approval is" : "approvals are"} inactive on this node because they are not tied to a working directory. Run "openclaw doctor --fix" on the node, then rerun the workflow and choose "Always allow here".`,
+    );
+  }
   return {
     analysisOk,
     allowlistSatisfied,
@@ -644,11 +697,17 @@ export async function analyzeNodeApprovalRequirement(params: {
     nodeAsk: params.prepared.execPolicy?.ask,
     inlineEvalHit,
     requiresSecurityAuditSuppressionApproval,
-    autoReviewArgv:
-      autoReviewBindingEval.segments.length === 1 &&
-      (autoReviewBindingEval.segments[0]?.raw === undefined ||
-        autoReviewBindingEval.segments[0].raw.trim() === autoReviewBindingCommand.trim())
-        ? autoReviewBindingEval.segments[0].argv
-        : undefined,
+    allowAlwaysPersistence: resolveAllowAlwaysPersistenceDecision({
+      segments: baseAllowlistEval.segments,
+      commandText: approvalCommand,
+      cwd: approvalCwd,
+      env: analysisEnv,
+      platform: params.target.platform,
+      strictInlineEval: params.request.strictInlineEval,
+      authorizationPlan: baseAllowlistEval.authorizationPlan,
+      runtimePayload: inlineEvalHit !== null,
+      preparedCoverage: params.prepared.allowAlwaysCoverage,
+    }),
+    autoReviewArgv,
   };
 }

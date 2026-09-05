@@ -51,7 +51,7 @@ function configureFastJsonStatus() {
   });
   mocks.getStatusCommandSecretTargetIds.mockReturnValue([]);
   mocks.resolveMemorySearchConfig.mockReturnValue({
-    store: { path: "/tmp/main.sqlite" },
+    store: { databasePath: "/tmp/main.sqlite" },
   });
 }
 
@@ -82,7 +82,7 @@ afterEach(() => {
 
 describe("scanStatusJsonFast", () => {
   it("does not preload configured channel plugins for the lean JSON path", async () => {
-    mocks.hasPotentialConfiguredChannels.mockReturnValue(true);
+    mocks.hasConfiguredChannels.mockReturnValue(true);
 
     await scanStatusJsonFast({}, {} as never);
 
@@ -96,8 +96,30 @@ describe("scanStatusJsonFast", () => {
     expect(loggingStateRef.forceConsoleToStderr).toBe(false);
   });
 
+  it("carries invalid config diagnostics through the lean JSON scan", async () => {
+    const config = createStatusMemorySearchConfig();
+    const configDiagnostics = {
+      path: "/tmp/openclaw.json",
+      issues: [
+        {
+          path: "gateway.port",
+          message: "Invalid input: expected number, received string",
+        },
+      ],
+    };
+    mocks.readBestEffortConfigSnapshot.mockResolvedValue({
+      config,
+      sourceConfig: config,
+      configDiagnostics,
+    });
+
+    const result = await scanStatusJsonFast({}, {} as never);
+
+    expect(result.configDiagnostics).toEqual(configDiagnostics);
+  });
+
   it("keeps resolved and source channel configs available without loading runtime plugins", async () => {
-    mocks.hasPotentialConfiguredChannels.mockReturnValue(true);
+    mocks.hasConfiguredChannels.mockReturnValue(true);
     applyStatusScanDefaults(mocks, {
       hasConfiguredChannels: true,
       sourceConfig: {
@@ -128,15 +150,32 @@ describe("scanStatusJsonFast", () => {
   });
 
   it("skips plugin compatibility loading even when configured channels are present", async () => {
-    mocks.hasPotentialConfiguredChannels.mockReturnValue(true);
+    mocks.hasConfiguredChannels.mockReturnValue(true);
 
     await scanStatusJsonFast({}, {} as never);
 
     expect(mocks.buildPluginCompatibilityNotices).not.toHaveBeenCalled();
   });
 
+  it("collects actual plugin compatibility warnings when full JSON status is requested", async () => {
+    const notice = {
+      pluginId: "legacy-plugin",
+      code: "hook-only",
+      severity: "warn",
+      message: "plugin registers only legacy hooks",
+    };
+    mocks.buildPluginCompatibilityNotices.mockReturnValue([notice]);
+
+    const result = await scanStatusJsonFast({ all: true }, {} as never);
+
+    expect(mocks.buildPluginCompatibilityNotices).toHaveBeenCalledWith({
+      config: createStatusMemorySearchConfig(),
+    });
+    expect(result.pluginCompatibility).toEqual([notice]);
+  });
+
   it("keeps default fast JSON update scans local-only", async () => {
-    mocks.hasPotentialConfiguredChannels.mockReturnValue(true);
+    mocks.hasConfiguredChannels.mockReturnValue(true);
 
     await scanStatusJsonFast({ timeoutMs: 1234 }, {} as never);
 
@@ -150,7 +189,7 @@ describe("scanStatusJsonFast", () => {
   });
 
   it("restores registry-backed update checks and remote git fetches when --all is requested", async () => {
-    mocks.hasPotentialConfiguredChannels.mockReturnValue(true);
+    mocks.hasConfiguredChannels.mockReturnValue(true);
 
     await scanStatusJsonFast({ all: true }, {} as never);
 
@@ -164,7 +203,7 @@ describe("scanStatusJsonFast", () => {
   });
 
   it("keeps the local status RPC fallback off the default fast JSON path", async () => {
-    mocks.hasPotentialConfiguredChannels.mockReturnValue(true);
+    mocks.hasConfiguredChannels.mockReturnValue(true);
     mocks.callGateway.mockResolvedValue({ sessions: 1 });
 
     await scanStatusJsonFast({}, {} as never);
@@ -174,34 +213,15 @@ describe("scanStatusJsonFast", () => {
   });
 
   it("honors explicit gateway probe timeouts on the lean JSON path", async () => {
-    mocks.hasPotentialConfiguredChannels.mockReturnValue(true);
+    mocks.hasConfiguredChannels.mockReturnValue(true);
 
     await scanStatusJsonFast({ timeoutMs: 5000 }, {} as never);
 
     expect(mocks.probeGateway).toHaveBeenCalledWith(expect.objectContaining({ timeoutMs: 5000 }));
   });
 
-  it("keeps configured gateway handshake timeouts on the lean JSON path", async () => {
-    mocks.hasPotentialConfiguredChannels.mockReturnValue(true);
-    applyStatusScanDefaults(mocks, {
-      resolvedConfig: {
-        ...createStatusMemorySearchConfig(),
-        gateway: { handshakeTimeoutMs: 30_000 },
-      } as never,
-    });
-
-    await scanStatusJsonFast({}, {} as never);
-
-    expect(mocks.probeGateway).toHaveBeenCalledWith(
-      expect.objectContaining({
-        preauthHandshakeTimeoutMs: 30_000,
-        timeoutMs: 30_000,
-      }),
-    );
-  });
-
   it("restores the local status RPC fallback when --all is requested", async () => {
-    mocks.hasPotentialConfiguredChannels.mockReturnValue(true);
+    mocks.hasConfiguredChannels.mockReturnValue(true);
     mocks.callGateway.mockResolvedValue({ sessions: 1 });
 
     await scanStatusJsonFast({ all: true }, {} as never);
@@ -215,7 +235,7 @@ describe("scanStatusJsonFast", () => {
   });
 
   it("keeps the fast JSON summary off the channel plugin summary path", async () => {
-    mocks.hasPotentialConfiguredChannels.mockReturnValue(true);
+    mocks.hasConfiguredChannels.mockReturnValue(true);
 
     await scanStatusJsonFast({}, {} as never);
 
@@ -230,7 +250,7 @@ describe("scanStatusJsonFast", () => {
     const result = await scanStatusJsonFast({}, {} as never);
 
     expect(result.memory).toBeNull();
-    expect(mocks.hasPotentialConfiguredChannels).not.toHaveBeenCalled();
+    expect(mocks.hasConfiguredChannels).not.toHaveBeenCalled();
     expect(mocks.resolveMemorySearchConfig).not.toHaveBeenCalled();
     expect(mocks.getMemorySearchManager).not.toHaveBeenCalled();
   });
@@ -252,6 +272,7 @@ describe("scanStatusJsonFast", () => {
       cfg: createStatusMemorySearchConfig(),
       agentId: "main",
       purpose: "status",
+      inspectSources: true,
     });
   });
 

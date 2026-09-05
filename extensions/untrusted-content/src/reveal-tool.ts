@@ -1,6 +1,7 @@
-import type { OpenClawPluginApi } from "openclaw/plugin-sdk/plugin-runtime";
+import type { AnyAgentTool, OpenClawPluginApi } from "openclaw/plugin-sdk/plugin-entry";
 import { jsonResult, readStringParam } from "openclaw/plugin-sdk/provider-web-search";
 import { wrapExternalContent } from "openclaw/plugin-sdk/security-runtime";
+import { asNonArrayRecord } from "openclaw/plugin-sdk/string-coerce-runtime";
 import { Type } from "typebox";
 import { getIncident } from "./incidents.js";
 
@@ -20,14 +21,15 @@ const UntrustedContentRevealToolSchema = Type.Object(
  * are refused; this tool NEVER reaches raw quarantine content (no
  * fetchQuarantineRaw call), so hostile payloads stay operator-only.
  */
-export function createUntrustedContentRevealTool(api: OpenClawPluginApi) {
+export function createUntrustedContentRevealTool(api: OpenClawPluginApi): AnyAgentTool {
   return {
     name: "untrusted_content_reveal",
     label: "Untrusted Content Reveal",
     description:
       "Reveal the sanitized full text of an elevated-risk (summarize-tier) untrusted-content incident by its code. Quarantine/breaker incidents require operator review and cannot be revealed.",
     parameters: UntrustedContentRevealToolSchema,
-    execute: async (_toolCallId: string, rawParams: Record<string, unknown>) => {
+    execute: async (_toolCallId: string, params: unknown) => {
+      const rawParams = asNonArrayRecord(params);
       const code = readStringParam(rawParams, "code", { required: true });
       const inc = await getIncident(api, code);
       const normalized = code.trim().toUpperCase();

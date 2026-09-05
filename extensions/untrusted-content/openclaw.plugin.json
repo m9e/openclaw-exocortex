@@ -7,6 +7,7 @@
     "onConfigPaths": ["plugins.entries.untrusted-content"]
   },
   "contracts": {
+    "agentToolResultMiddleware": ["openclaw", "codex"],
     "tools": ["untrusted_content_scan", "untrusted_content_reveal"]
   },
   "commandAliases": [{ "name": "untrusted-content" }],
@@ -35,6 +36,11 @@
     "toolNames": {
       "label": "Guarded Tools",
       "help": "Tool names whose results should be guarded, for example web_fetch or browser. A trailing * guards every tool sharing that prefix, for example kamiwaza_*."
+    },
+    "excludedToolNames": {
+      "label": "Guard Bypass Tools",
+      "help": "Explicit tool names whose results bypass this guard after matching Guarded Tools. This does not disable the tools. A trailing * bypasses an entire prefix.",
+      "advanced": true
     },
     "trustLevel": {
       "label": "Trust Level",
@@ -101,6 +107,12 @@
         "type": "boolean"
       },
       "toolNames": {
+        "type": "array",
+        "items": {
+          "type": "string"
+        }
+      },
+      "excludedToolNames": {
         "type": "array",
         "items": {
           "type": "string"

@@ -1,8 +1,18 @@
 /** Tests plugin version drift detection between package, manifest, and install records. */
-import { describe, expect, it } from "vitest";
+import { expectDefined } from "@openclaw/normalization-core";
+import { beforeEach, describe, expect, it, vi } from "vitest";
 import type { OpenClawConfig } from "../config/types.js";
 import type { PluginInstallRecord } from "../config/types.plugins.js";
-import { detectPluginVersionDrift } from "./plugin-version-drift.js";
+import { fetchNpmPackageTargetStatus } from "../infra/update-check-package-target.js";
+import {
+  detectPluginVersionDrift,
+  resolvePluginVersionDriftUpdateCommand,
+  resolvePluginVersionDriftTargets,
+} from "./plugin-version-drift.js";
+
+vi.mock("../infra/update-check-package-target.js", () => ({
+  fetchNpmPackageTargetStatus: vi.fn(),
+}));
 
 function npmRecord(
   version: string,
@@ -28,6 +38,17 @@ function clawhubRecord(
     clawhubPackage: "@openclaw/whatsapp",
     resolvedVersion: version,
     ...overrides,
+  };
+}
+
+function resolvedNpmTarget(packageName: string, target: string, version = target) {
+  return {
+    targetResolution: {
+      status: "resolved" as const,
+      packageName,
+      requestedTarget: target,
+      version,
+    },
   };
 }
 
@@ -316,5 +337,180 @@ describe("detectPluginVersionDrift", () => {
     });
 
     expect(result.drifts.map((d) => d.pluginId)).toEqual(["discord", "matrix", "whatsapp"]);
+  });
+});
+
+describe("resolvePluginVersionDriftTargets", () => {
+  beforeEach(() => vi.mocked(fetchNpmPackageTargetStatus).mockReset());
+
+  function driftReport(
+    gatewayVersion = "2026.7.1-2",
+    spec = "@openclaw/brave-plugin@2026.7.1-beta.2",
+  ) {
+    return detectPluginVersionDrift({
+      gatewayVersion,
+      installRecords: {
+        brave: npmRecord("2026.7.1-beta.2", { resolvedName: "@openclaw/brave-plugin", spec }),
+      },
+    });
+  }
+
+  it("uses the exact published correction-version cohort for a pinned repair", async () => {
+    vi.mocked(fetchNpmPackageTargetStatus).mockResolvedValue({
+      target: "2026.7.1",
+      version: "2026.7.1",
+      nodeEngine: null,
+    });
+    const report = await resolvePluginVersionDriftTargets(driftReport());
+    expect(fetchNpmPackageTargetStatus).toHaveBeenCalledWith({
+      packageName: "@openclaw/brave-plugin",
+      target: "2026.7.1",
+    });
+    expect(
+      resolvePluginVersionDriftUpdateCommand(
+        expectDefined(report.drifts[0], "detected plugin drift"),
+      ),
+    ).toBe("openclaw plugins update @openclaw/brave-plugin@2026.7.1");
+  });
+
+  it.each([
+    { version: null, error: "HTTP 404" },
+    { version: null, error: "TimeoutError: request timed out" },
+    { version: null },
+    { version: "not-a-version" },
+    { version: "2026.7.2" },
+    { version: "2026.7.1-2" },
+  ])(
+    "withholds pinned commands when the requested version is unconfirmed: $version $error",
+    async (result) => {
+      vi.mocked(fetchNpmPackageTargetStatus).mockResolvedValue({
+        target: "2026.7.1",
+        nodeEngine: null,
+        ...result,
+      });
+      const report = await resolvePluginVersionDriftTargets(driftReport());
+      const entry = expectDefined(report.drifts[0], "detected plugin drift");
+      expect(entry.targetResolution).toMatchObject({
+        status: "unresolved",
+        packageName: "@openclaw/brave-plugin",
+        requestedTarget: "2026.7.1",
+        error: expect.stringContaining(result.error ?? JSON.stringify(result.version)),
+      });
+      expect(resolvePluginVersionDriftUpdateCommand(entry)).toBeUndefined();
+    },
+  );
+
+  it("does not query npm for non-release cohorts or floating installs", async () => {
+    const invalid = await resolvePluginVersionDriftTargets(driftReport("unknown"));
+    expect(
+      resolvePluginVersionDriftUpdateCommand(
+        expectDefined(invalid.drifts[0], "invalid-cohort plugin drift"),
+      ),
+    ).toBeUndefined();
+    const floating = await resolvePluginVersionDriftTargets(
+      driftReport("2026.7.1", "@openclaw/brave-plugin@latest"),
+    );
+    expect(
+      resolvePluginVersionDriftUpdateCommand(
+        expectDefined(floating.drifts[0], "floating plugin drift"),
+      ),
+    ).toBe("openclaw plugins update brave");
+    expect(fetchNpmPackageTargetStatus).not.toHaveBeenCalled();
+  });
+});
+
+describe("resolvePluginVersionDriftUpdateCommand", () => {
+  it("normalizes a gateway correction version for exact npm package targets", () => {
+    expect(
+      resolvePluginVersionDriftUpdateCommand({
+        pluginId: "brave",
+        installedVersion: "2026.7.0",
+        gatewayVersion: "2026.7.1-2",
+        source: "npm",
+        packageName: "@openclaw/brave-plugin",
+        spec: "@openclaw/brave-plugin@2026.7.0",
+        ...resolvedNpmTarget("@openclaw/brave-plugin", "2026.7.1"),
+      }),
+    ).toBe("openclaw plugins update @openclaw/brave-plugin@2026.7.1");
+  });
+
+  it("uses an exact npm package target when the drifted install is pinned", () => {
+    expect(
+      resolvePluginVersionDriftUpdateCommand({
+        pluginId: "brave",
+        installedVersion: "2026.6.9",
+        gatewayVersion: "2026.6.10-beta.1",
+        source: "npm",
+        packageName: "@openclaw/brave-plugin",
+        spec: "@openclaw/brave-plugin@2026.6.9",
+        ...resolvedNpmTarget("@openclaw/brave-plugin", "2026.6.10-beta.1"),
+      }),
+    ).toBe("openclaw plugins update @openclaw/brave-plugin@2026.6.10-beta.1");
+  });
+
+  it("parses the package name from exact npm specs when drift metadata is sparse", () => {
+    expect(
+      resolvePluginVersionDriftUpdateCommand({
+        pluginId: "brave",
+        installedVersion: "2026.6.9",
+        gatewayVersion: "2026.6.10-beta.1",
+        source: "npm",
+        spec: "@openclaw/brave-plugin@2026.6.9",
+        ...resolvedNpmTarget("@openclaw/brave-plugin", "2026.6.10-beta.1"),
+      }),
+    ).toBe("openclaw plugins update @openclaw/brave-plugin@2026.6.10-beta.1");
+  });
+
+  it("prefers the parsed exact npm spec package over inconsistent drift metadata", () => {
+    expect(
+      resolvePluginVersionDriftUpdateCommand({
+        pluginId: "brave",
+        installedVersion: "2026.6.9",
+        gatewayVersion: "2026.6.10-beta.1",
+        source: "npm",
+        packageName: "@openclaw/other-plugin",
+        spec: "@openclaw/brave-plugin@2026.6.9",
+        ...resolvedNpmTarget("@openclaw/brave-plugin", "2026.6.10-beta.1"),
+      }),
+    ).toBe("openclaw plugins update @openclaw/brave-plugin@2026.6.10-beta.1");
+  });
+
+  it.each([
+    {
+      pluginId: "codex",
+      source: "npm" as const,
+      packageName: "@openclaw/codex",
+      spec: "@openclaw/codex",
+    },
+    {
+      pluginId: "diagnostics-otel",
+      source: "clawhub" as const,
+      packageName: "@openclaw/diagnostics-otel",
+      spec: "clawhub:@openclaw/diagnostics-otel",
+    },
+  ])("keeps the repairing plugin-id update for a floating $source install", (entry) => {
+    expect(
+      resolvePluginVersionDriftUpdateCommand({
+        pluginId: entry.pluginId,
+        installedVersion: "2026.6.9",
+        gatewayVersion: "2026.6.10-beta.1",
+        source: entry.source,
+        packageName: entry.packageName,
+        spec: entry.spec,
+      }),
+    ).toBe(`openclaw plugins update ${entry.pluginId}`);
+  });
+
+  it("does not fabricate a command when an exact npm target was not resolved", () => {
+    expect(
+      resolvePluginVersionDriftUpdateCommand({
+        pluginId: "brave",
+        installedVersion: "2026.6.9",
+        gatewayVersion: "unknown",
+        source: "npm",
+        packageName: "@openclaw/brave-plugin",
+        spec: "@openclaw/brave-plugin@2026.6.9",
+      }),
+    ).toBeUndefined();
   });
 });

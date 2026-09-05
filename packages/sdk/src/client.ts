@@ -1,14 +1,21 @@
 // OpenClaw SDK module implements client behavior.
 import { randomUUID } from "node:crypto";
+import { asRecord } from "@openclaw/normalization-core/record-coerce";
+import { readNonEmptyStringPreservingWhitespace as readNonEmptyString } from "@openclaw/normalization-core/string-coerce";
 import { EventHub } from "./event-hub.js";
 import { normalizeGatewayEvent } from "./normalize.js";
 import { GatewayClientTransport, isConnectableTransport } from "./transport.js";
 import type {
+  AgentsCreateParams,
+  AgentsDeleteParams,
+  AgentsUpdateParams,
   AgentRunParams,
+  ApprovalDecisionParams,
   ArtifactQuery,
   ArtifactsDownloadResult,
   ArtifactsGetResult,
   ArtifactsListResult,
+  EnvironmentCreateParams,
   EnvironmentSummary,
   EnvironmentsListResult,
   GatewayEvent,
@@ -25,6 +32,7 @@ import type {
   TasksGetResult,
   TasksListParams,
   TasksListResult,
+  ToolsEffectiveParams,
   ToolInvokeParams,
   ToolInvokeResult,
 } from "./types.js";
@@ -70,13 +78,15 @@ function runStatusFromWaitPayload(payload: unknown): RunResult["status"] {
   const statusAlreadyTimeoutAttributed = status === "timeout" || status === "timed_out";
   const hardTimeout =
     !pendingError &&
-    ((record.providerStarted === true && statusAlreadyTimeoutAttributed) ||
+    ((stopReason !== "restart" &&
+      record.providerStarted === true &&
+      statusAlreadyTimeoutAttributed) ||
       timeoutPhase === "preflight" ||
       timeoutPhase === "provider" ||
       timeoutPhase === "post_turn");
   const hasTerminalTimeoutMetadata =
     readOptionalTimestamp(record.endedAt) !== undefined ||
-    (!pendingError && readOptionalString(record.error) !== undefined) ||
+    (!pendingError && readNonEmptyString(record.error) !== undefined) ||
     stopReason.length > 0 ||
     typeof record.livenessState === "string" ||
     record.yielded === true;
@@ -93,6 +103,7 @@ function runStatusFromWaitPayload(payload: unknown): RunResult["status"] {
     stopReason === "canceled" ||
     stopReason === "killed" ||
     stopReason === "auth-revoked" ||
+    stopReason === "restart" ||
     stopReason === "rpc" ||
     stopReason === "user" ||
     (record.aborted === true && stopReason === "stop")
@@ -120,10 +131,6 @@ function runStatusFromWaitPayload(payload: unknown): RunResult["status"] {
     return "accepted";
   }
   return "failed";
-}
-
-function readOptionalString(value: unknown): string | undefined {
-  return typeof value === "string" && value.length > 0 ? value : undefined;
 }
 
 function readOptionalTimestamp(value: unknown): RunTimestamp | undefined {
@@ -213,10 +220,6 @@ type ChatProjection = {
   payload: Record<string, unknown>;
 };
 
-function asRecord(value: unknown): Record<string, unknown> {
-  return typeof value === "object" && value !== null ? (value as Record<string, unknown>) : {};
-}
-
 function hasArtifactQueryScope(params: unknown): params is ArtifactQuery {
   const record = asRecord(params);
   return [record.sessionKey, record.runId, record.taskId].some(
@@ -227,6 +230,18 @@ function hasArtifactQueryScope(params: unknown): params is ArtifactQuery {
 function requireArtifactQueryScope(api: string, params: unknown): ArtifactQuery {
   if (!hasArtifactQueryScope(params)) {
     throw new Error(`${api} requires one of sessionKey, runId, or taskId`);
+  }
+  return params;
+}
+
+function hasToolsEffectiveSessionKey(params: unknown): params is ToolsEffectiveParams {
+  const record = asRecord(params);
+  return typeof record.sessionKey === "string" && record.sessionKey.trim().length > 0;
+}
+
+function requireToolsEffectiveSessionKey(params: unknown): ToolsEffectiveParams {
+  if (!hasToolsEffectiveSessionKey(params)) {
+    throw new Error("oc.tools.effective requires sessionKey");
   }
   return params;
 }
@@ -324,8 +339,10 @@ export class OpenClaw {
   });
   private readonly replayByRunId = new Map<string, OpenClawEvent[]>();
   private connected = false;
+  private closed = false;
   private eventPumpPromise: Promise<void> | null = null;
   private eventPumpReady: Promise<void> | null = null;
+  private closePromise: Promise<void> | null = null;
 
   constructor(options: OpenClawOptions = {}) {
     this.transport =
@@ -348,24 +365,45 @@ export class OpenClaw {
   }
 
   async connect(): Promise<void> {
+    this.assertOpen();
     if (this.connected) {
       await this.startEventPump();
+      this.assertOpen();
       return;
     }
     if (isConnectableTransport(this.transport)) {
       await this.transport.connect();
     }
+    this.assertOpen();
     this.connected = true;
     await this.startEventPump();
+    this.assertOpen();
   }
 
   async close(): Promise<void> {
-    await this.transport.close?.();
-    await this.eventPumpPromise?.catch(() => {});
-    this.normalizedEvents.close();
-    this.eventPumpPromise = null;
-    this.eventPumpReady = null;
-    this.connected = false;
+    if (this.closePromise) {
+      return await this.closePromise;
+    }
+    if (this.closed) {
+      return;
+    }
+    this.closed = true;
+    this.closePromise = (async () => {
+      try {
+        await this.transport.close?.();
+        await this.eventPumpPromise?.catch(() => {});
+      } finally {
+        this.normalizedEvents.close();
+        this.eventPumpPromise = null;
+        this.eventPumpReady = null;
+        this.connected = false;
+      }
+    })();
+    try {
+      await this.closePromise;
+    } finally {
+      this.closePromise = null;
+    }
   }
 
   async request<T = unknown>(
@@ -374,6 +412,7 @@ export class OpenClaw {
     options?: GatewayRequestOptions,
   ): Promise<T> {
     await this.connect();
+    this.assertOpen();
     return await this.transport.request<T>(method, params, options);
   }
 
@@ -389,13 +428,21 @@ export class OpenClaw {
   }
 
   rawEvents(filter?: (event: GatewayEvent) => boolean): AsyncIterable<GatewayEvent> {
+    this.assertOpen();
     return this.transport.events(filter);
+  }
+
+  private assertOpen(): void {
+    if (this.closed) {
+      throw new Error("OpenClaw SDK client is closed");
+    }
   }
 
   private async *iterateEvents(
     filter?: (event: OpenClawEvent) => boolean,
   ): AsyncIterable<OpenClawEvent> {
     await this.connect();
+    this.assertOpen();
     for await (const event of this.normalizedEvents.stream(filter)) {
       yield event;
     }
@@ -406,6 +453,7 @@ export class OpenClaw {
     filter?: (event: OpenClawEvent) => boolean,
   ): AsyncIterable<OpenClawEvent> {
     await this.connect();
+    this.assertOpen();
     const replayEvents = this.replaySnapshot(runId);
     let hasCanonicalAssistantRunEvent = replayEvents.some(isAssistantRunEvent);
     let hasTerminalRunEvent = replayEvents.some(isTerminalRunEvent);
@@ -445,7 +493,6 @@ export class OpenClaw {
     const matches = (event: OpenClawEvent) => event.runId === runId;
     const liveSource = this.normalizedEvents.stream(matches, { replay: true });
     const live = liveSource[Symbol.asyncIterator]();
-    let nextLive = live.next();
     const seen = new Set<string>();
     try {
       for (const event of replayEvents) {
@@ -460,11 +507,10 @@ export class OpenClaw {
         yield runEvent;
       }
       while (true) {
-        const next = await nextLive;
+        const next = await live.next();
         if (next.done) {
           break;
         }
-        nextLive = live.next();
         if (seen.has(next.value.id)) {
           continue;
         }
@@ -496,8 +542,11 @@ export class OpenClaw {
       };
     });
     this.eventPumpPromise = (async () => {
-      const iterator = this.transport.events()[Symbol.asyncIterator]();
+      let iterator: AsyncIterator<GatewayEvent> | undefined;
+      let pumpError: unknown;
+      let hasPumpError = false;
       try {
+        iterator = this.transport.events()[Symbol.asyncIterator]();
         while (true) {
           const next = iterator.next();
           await Promise.resolve();
@@ -510,14 +559,28 @@ export class OpenClaw {
           this.recordReplayEvent(normalized);
           this.normalizedEvents.publish(normalized);
         }
+      } catch (error) {
+        pumpError = error;
+        hasPumpError = true;
       } finally {
         markReady();
-        await iterator.return?.();
-        this.normalizedEvents.close();
+        try {
+          await iterator?.return?.();
+        } catch (error) {
+          if (!hasPumpError) {
+            pumpError = error;
+            hasPumpError = true;
+          }
+        }
       }
-    })().catch(() => {
-      markReady();
+      if (hasPumpError) {
+        this.normalizedEvents.close(pumpError);
+        return;
+      }
       this.normalizedEvents.close();
+    })().catch((error: unknown) => {
+      markReady();
+      this.normalizedEvents.close(error);
     });
     return this.eventPumpReady;
   }
@@ -593,14 +656,14 @@ export class Run {
     );
     const record = asRecord(raw);
     const status = runStatusFromWaitPayload(raw);
-    const error = readOptionalString(record.error)
-      ? { message: readOptionalString(record.error) ?? "run failed" }
+    const error = readNonEmptyString(record.error)
+      ? { message: readNonEmptyString(record.error) ?? "run failed" }
       : undefined;
     return {
       runId: this.id,
       status,
-      sessionKey: readOptionalString(record.sessionKey) ?? this.sessionKey,
-      sessionId: readOptionalString(record.sessionId),
+      sessionKey: readNonEmptyString(record.sessionKey) ?? this.sessionKey,
+      sessionId: readNonEmptyString(record.sessionId),
       startedAt: readOptionalTimestamp(record.startedAt),
       endedAt: readOptionalTimestamp(record.endedAt),
       ...(error ? { error } : {}),
@@ -627,9 +690,16 @@ export class Session {
   async send(input: string | Omit<SessionSendParams, "key">): Promise<Run> {
     const params: SessionSendParams =
       typeof input === "string" ? { key: this.key, message: input } : { ...input, key: this.key };
-    const raw = await this.client.request("sessions.send", params, { expectFinal: true });
+    const timeoutMs = normalizeTimeoutMs(params.timeoutMs);
+    if (timeoutMs !== undefined) {
+      params.timeoutMs = timeoutMs;
+    }
+    const raw = await this.client.request("sessions.send", params, {
+      expectFinal: true,
+      ...(timeoutMs !== undefined ? { timeoutMs: timeoutMs === 0 ? null : timeoutMs } : {}),
+    });
     const record = asRecord(raw);
-    const runId = readOptionalString(record.runId);
+    const runId = readNonEmptyString(record.runId);
     if (!runId) {
       throw new Error("sessions.send did not return a runId");
     }
@@ -648,7 +718,12 @@ export class Session {
   }
 
   async compact(params?: { maxLines?: number }): Promise<unknown> {
-    return await this.client.request("sessions.compact", { key: this.key, ...params });
+    return await this.client.request(
+      "sessions.compact",
+      { key: this.key, ...params },
+      // The server owns the configurable terminal compaction deadline.
+      { timeoutMs: null },
+    );
   }
 }
 
@@ -657,22 +732,22 @@ export class AgentsNamespace {
   constructor(private readonly client: OpenClaw) {}
 
   async list(params?: Record<string, unknown>): Promise<unknown> {
-    return await this.client.request("agents.list", params);
+    return await this.client.request("agents.list", params === undefined ? {} : params);
   }
 
   async get(id: string): Promise<Agent> {
     return new Agent(this.client, id);
   }
 
-  async create(params: Record<string, unknown>): Promise<unknown> {
+  async create(params: AgentsCreateParams): Promise<unknown> {
     return await this.client.request("agents.create", params);
   }
 
-  async update(params: Record<string, unknown>): Promise<unknown> {
+  async update(params: AgentsUpdateParams): Promise<unknown> {
     return await this.client.request("agents.update", params);
   }
 
-  async delete(params: Record<string, unknown>): Promise<unknown> {
+  async delete(params: AgentsDeleteParams): Promise<unknown> {
     return await this.client.request("agents.delete", params);
   }
 }
@@ -682,14 +757,14 @@ export class SessionsNamespace {
   constructor(private readonly client: OpenClaw) {}
 
   async list(params?: Record<string, unknown>): Promise<unknown> {
-    return await this.client.request("sessions.list", params);
+    return await this.client.request("sessions.list", params === undefined ? {} : params);
   }
 
   async create(params: SessionCreateParams = {}): Promise<Session> {
     const raw = await this.client.request("sessions.create", params);
     const record = asRecord(raw);
     const key =
-      readOptionalString(record.key) ?? readOptionalString(record.sessionKey) ?? params.key;
+      readNonEmptyString(record.key) ?? readNonEmptyString(record.sessionKey) ?? params.key;
     if (!key) {
       throw new Error("sessions.create did not return a session key");
     }
@@ -715,16 +790,18 @@ export class RunsNamespace {
   constructor(private readonly client: OpenClaw) {}
 
   async create(params: RunCreateParams): Promise<Run> {
-    const raw = await this.client.request("agent", buildAgentParams(params), {
+    const timeoutMs = normalizeTimeoutMs(params.timeoutMs);
+    const normalizedParams = timeoutMs !== undefined ? { ...params, timeoutMs } : params;
+    const raw = await this.client.request("agent", buildAgentParams(normalizedParams), {
       expectFinal: false,
-      timeoutMs: params.timeoutMs,
+      ...(timeoutMs !== undefined ? { timeoutMs: timeoutMs === 0 ? null : timeoutMs } : {}),
     });
     const record = asRecord(raw);
-    const runId = readOptionalString(record.runId);
+    const runId = readNonEmptyString(record.runId);
     if (!runId) {
       throw new Error("agent did not return a runId");
     }
-    return new Run(this.client, runId, readOptionalString(record.sessionKey) ?? params.sessionKey);
+    return new Run(this.client, runId, readNonEmptyString(record.sessionKey) ?? params.sessionKey);
   }
 
   async get(runId: string): Promise<Run> {
@@ -766,7 +843,7 @@ export class TasksNamespace extends RpcNamespace {
   }
 
   async list(params?: TasksListParams): Promise<TasksListResult> {
-    return await this.call("list", params);
+    return await this.call("list", params === undefined ? {} : params);
   }
 
   async get(taskId: string): Promise<TasksGetResult> {
@@ -788,7 +865,7 @@ export class ModelsNamespace extends RpcNamespace {
   }
 
   async list(params?: unknown): Promise<unknown> {
-    return await this.call("list", params);
+    return await this.call("list", params === undefined ? {} : params);
   }
 
   async status(params?: unknown): Promise<unknown> {
@@ -803,16 +880,17 @@ export class ToolsNamespace extends RpcNamespace {
   }
 
   async list(params?: unknown): Promise<unknown> {
-    return await this.call("catalog", params);
+    return await this.call("catalog", params === undefined ? {} : params);
   }
 
-  async effective(params?: unknown): Promise<unknown> {
-    return await this.call("effective", params);
+  async effective(params: ToolsEffectiveParams): Promise<unknown> {
+    return await this.call("effective", requireToolsEffectiveSessionKey(params));
   }
 
   async invoke(name: string, params?: ToolInvokeParams): Promise<ToolInvokeResult> {
     return await this.call("invoke", {
       name,
+      conversationReadOrigin: "direct-operator",
       ...(params?.args ? { args: params.args } : {}),
       ...(params?.sessionKey ? { sessionKey: params.sessionKey } : {}),
       ...(params?.agentId ? { agentId: params.agentId } : {}),
@@ -852,11 +930,14 @@ export class ApprovalsNamespace {
   constructor(private readonly client: OpenClaw) {}
 
   async list(params?: unknown): Promise<unknown> {
-    return await this.client.request("exec.approval.list", params);
+    return await this.client.request("exec.approval.list", params === undefined ? {} : params);
   }
 
-  async respond(approvalId: string, decision: Record<string, unknown>): Promise<unknown> {
-    return await this.client.request("exec.approval.resolve", { approvalId, ...decision });
+  async respond(approvalId: string, params: ApprovalDecisionParams): Promise<unknown> {
+    return await this.client.request("exec.approval.resolve", {
+      id: approvalId,
+      decision: params.decision,
+    });
   }
 }
 
@@ -867,16 +948,19 @@ export class EnvironmentsNamespace extends RpcNamespace {
   }
 
   async list(params?: unknown): Promise<EnvironmentsListResult> {
-    return await this.call("list", params ?? {});
+    return await this.call("list", params === undefined ? {} : params);
   }
 
-  async create(params?: unknown): Promise<unknown> {
-    void params;
-    return unsupportedGatewayApi("oc.environments.create");
+  async create(params: EnvironmentCreateParams): Promise<EnvironmentSummary> {
+    return await this.call("create", params);
   }
 
   async status(environmentId: string): Promise<EnvironmentSummary> {
     return await this.call("status", { environmentId });
+  }
+
+  async destroy(environmentId: string): Promise<EnvironmentSummary> {
+    return await this.call("destroy", { environmentId });
   }
 
   async delete(environmentId: string): Promise<unknown> {
@@ -884,3 +968,4 @@ export class EnvironmentsNamespace extends RpcNamespace {
     return unsupportedGatewayApi("oc.environments.delete");
   }
 }
+/* oxlint-disable max-lines -- TODO: split this grandfathered oversized file. */

@@ -13,6 +13,7 @@ export default definePluginEntry({
   description: "Direct Kamiwaza MCP tool bridge for local platform deployments.",
   register(api) {
     if (resolveKamiwazaGenericToolEnabled(api.config)) {
+      // SAFETY: The factory supplies the SDK tool name, schema, and JSON-result execute contract.
       api.registerTool((ctx) => createKamiwazaCallTool(api, ctx) as AnyAgentTool, {
         name: "kamiwaza_call",
         optional: true,

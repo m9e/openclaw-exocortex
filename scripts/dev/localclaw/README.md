@@ -62,11 +62,11 @@ broken classifier fails closed instead of passing untrusted bytes through.
   the entire boundary.
 - **Two load-bearing dependencies must stay intact:**
   1. The bundled `untrusted-content` and `locksmith` plugins only register their
-     hooks at gateway startup because their manifests declare
+     enforcement at gateway startup because their manifests declare
      `activation.onConfigPaths`
      (`extensions/untrusted-content/openclaw.plugin.json`,
      `extensions/locksmith/openclaw.plugin.json`). Without that, the
-     `tool_result_transform` hook never registers and guarded tool output
+     content guard middleware never registers and guarded tool output
      silently reaches the agent **unguarded**. If someone forks or strips the
      manifest, the guard goes dark — the fail-closed drill below is the canary
      that catches it.

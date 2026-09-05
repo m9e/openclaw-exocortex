@@ -1,9 +1,10 @@
-import type { OpenClawPluginApi } from "openclaw/plugin-sdk/plugin-runtime";
+import type { AnyAgentTool, OpenClawPluginApi } from "openclaw/plugin-sdk/plugin-entry";
 import {
   jsonResult,
   readNumberParam,
   readStringParam,
 } from "openclaw/plugin-sdk/provider-web-search";
+import { asNonArrayRecord } from "openclaw/plugin-sdk/string-coerce-runtime";
 import { Type } from "typebox";
 import { runUntrustedContentPipeline } from "./client.js";
 import { formatManualScanToolResult } from "./transform.js";
@@ -62,16 +63,18 @@ const UntrustedContentScanToolSchema = Type.Object(
   { additionalProperties: false },
 );
 
-export function createUntrustedContentScanTool(api: OpenClawPluginApi) {
+export function createUntrustedContentScanTool(api: OpenClawPluginApi): AnyAgentTool {
   return {
     name: "untrusted_content_scan",
     label: "Untrusted Content Scan",
     description:
       "Sanitize and scan untrusted text through the local tool-untrusted-content pipeline before using it in agent context.",
     parameters: UntrustedContentScanToolSchema,
-    execute: async (_toolCallId: string, rawParams: Record<string, unknown>) => {
+    execute: async (_toolCallId: string, params: unknown) => {
+      const rawParams = asNonArrayRecord(params);
       const content = readStringParam(rawParams, "content", { required: true });
       const source = readStringParam(rawParams, "source") || "unknown";
+      const trustLevel = readStringParam(rawParams, "trustLevel");
       const response = await runUntrustedContentPipeline({
         cfg: api.config,
         content,
@@ -79,12 +82,9 @@ export function createUntrustedContentScanTool(api: OpenClawPluginApi) {
         url: readStringParam(rawParams, "url") || undefined,
         contentType: readStringParam(rawParams, "contentType") || undefined,
         trustLevel:
-          readStringParam(rawParams, "trustLevel") === "semi-trusted" ||
-          readStringParam(rawParams, "trustLevel") === "trusted"
-            ? (readStringParam(rawParams, "trustLevel") as "semi-trusted" | "trusted")
-            : readStringParam(rawParams, "trustLevel") === "untrusted"
-              ? "untrusted"
-              : undefined,
+          trustLevel === "semi-trusted" || trustLevel === "trusted" || trustLevel === "untrusted"
+            ? trustLevel
+            : undefined,
         sanitize: typeof rawParams.sanitize === "boolean" ? rawParams.sanitize : undefined,
         guardrail: typeof rawParams.guardrail === "boolean" ? rawParams.guardrail : undefined,
         scan: typeof rawParams.scan === "boolean" ? rawParams.scan : undefined,

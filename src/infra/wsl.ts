@@ -11,8 +11,8 @@ export function resetWSLStateForTests(): void {
 }
 
 /** Detects WSL from environment variables without touching the filesystem. */
-export function isWSLEnv(): boolean {
-  if (process.env.WSL_INTEROP || process.env.WSL_DISTRO_NAME || process.env.WSLENV) {
+export function isWSLEnv(env: Record<string, string | undefined> = process.env): boolean {
+  if (env.WSL_INTEROP || env.WSL_DISTRO_NAME || env.WSLENV) {
     return true;
   }
   return false;
@@ -52,25 +52,39 @@ export function isWSL2Sync(): boolean {
 }
 
 /** Asynchronously detects WSL from env vars and `/proc/sys/kernel/osrelease`, with process cache. */
-export async function isWSL(): Promise<boolean> {
-  if (wslCached !== null) {
+export async function isWSL(
+  environment: { env?: NodeJS.ProcessEnv; platform?: NodeJS.Platform } = {},
+): Promise<boolean> {
+  const cacheProcessEnvironment =
+    environment.env === undefined && environment.platform === undefined;
+  if (cacheProcessEnvironment && wslCached !== null) {
     return wslCached;
   }
-  if (process.platform !== "linux") {
-    wslCached = false;
-    return wslCached;
+  if ((environment.platform ?? process.platform) !== "linux") {
+    if (cacheProcessEnvironment) {
+      wslCached = false;
+    }
+    return false;
   }
-  if (isWSLEnv()) {
-    wslCached = true;
-    return wslCached;
+  if (isWSLEnv(environment.env ?? process.env)) {
+    if (cacheProcessEnvironment) {
+      wslCached = true;
+    }
+    return true;
   }
   try {
     const release = normalizeLowercaseStringOrEmpty(
       await fs.readFile("/proc/sys/kernel/osrelease", "utf8"),
     );
-    wslCached = release.includes("microsoft") || release.includes("wsl");
+    const detected = release.includes("microsoft") || release.includes("wsl");
+    if (cacheProcessEnvironment) {
+      wslCached = detected;
+    }
+    return detected;
   } catch {
-    wslCached = false;
+    if (cacheProcessEnvironment) {
+      wslCached = false;
+    }
+    return false;
   }
-  return wslCached;
 }

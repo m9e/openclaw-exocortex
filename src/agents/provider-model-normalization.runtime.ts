@@ -4,6 +4,7 @@
  * once and caches the result.
  */
 import { createRequire } from "node:module";
+import type { ManifestModelIdNormalizationSource } from "../plugins/manifest-model-id-normalization.js";
 
 type ProviderRuntimeModule = Pick<
   typeof import("../plugins/provider-runtime.js"),
@@ -43,6 +44,7 @@ function loadProviderRuntime(): ProviderRuntimeModule | null {
 /** Normalizes provider model ids through plugin runtime hooks when available. */
 export function normalizeProviderModelIdWithRuntime(params: {
   provider: string;
+  plugins?: ManifestModelIdNormalizationSource;
   context: {
     provider: string;
     modelId: string;

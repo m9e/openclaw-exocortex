@@ -1,4 +1,5 @@
-import type { OpenClawConfig } from "openclaw/plugin-sdk/config-runtime";
+import type { OpenClawConfig } from "openclaw/plugin-sdk/config-contracts";
+import { isRecord, normalizeOptionalString } from "openclaw/plugin-sdk/string-coerce-runtime";
 import { callLocksmith, type LocksmithCallResult } from "./client.js";
 
 type CommitFile = {
@@ -55,15 +56,6 @@ type GithubCommitFilesResult = {
 
 const OWNER_REPO_RE = /^[A-Za-z0-9_.-]+$/u;
 const BASE64_RE = /^(?:[A-Za-z0-9+/]+={0,2}|\s*)$/u;
-
-function isRecord(value: unknown): value is Record<string, unknown> {
-  return Boolean(value) && typeof value === "object" && !Array.isArray(value);
-}
-
-function readStringField(record: Record<string, unknown>, key: string): string | undefined {
-  const value = record[key];
-  return typeof value === "string" && value.trim() ? value.trim() : undefined;
-}
 
 function readStringArray(record: Record<string, unknown>, key: string): string[] {
   const value = record[key];
@@ -127,10 +119,10 @@ function normalizeCommitFile(value: unknown, index: number): CommitFile {
 }
 
 function normalizeCommitFilesInput(rawParams: Record<string, unknown>): CommitFilesInput {
-  const owner = normalizeOwnerOrRepo(readStringField(rawParams, "owner"), "owner");
-  const repo = normalizeOwnerOrRepo(readStringField(rawParams, "repo"), "repo");
-  const branch = normalizeBranch(readStringField(rawParams, "branch"));
-  const message = readStringField(rawParams, "message");
+  const owner = normalizeOwnerOrRepo(normalizeOptionalString(rawParams.owner), "owner");
+  const repo = normalizeOwnerOrRepo(normalizeOptionalString(rawParams.repo), "repo");
+  const branch = normalizeBranch(normalizeOptionalString(rawParams.branch));
+  const message = normalizeOptionalString(rawParams.message);
   if (!message) {
     throw new Error("locksmith_github commit_files requires a commit message.");
   }
@@ -187,10 +179,10 @@ function readNestedString(
   keys: string[],
 ): string | undefined {
   let current = record;
-  for (let index = 0; index < keys.length; index += 1) {
-    const key = keys[index];
+  for (const [index, key] of keys.entries()) {
     if (index === keys.length - 1) {
-      return typeof current?.[key] === "string" ? (current[key] as string) : undefined;
+      const value = current?.[key];
+      return typeof value === "string" ? value : undefined;
     }
     current = nestedRecord(current, key);
   }

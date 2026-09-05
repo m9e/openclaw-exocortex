@@ -16,6 +16,7 @@ export default definePluginEntry({
   description: "Optional tool bridge for Agent Locksmith credential-proxy deployments.",
   register(api) {
     if (resolveLocksmithGenericToolEnabled(api.config)) {
+      // SAFETY: The factory supplies the SDK tool name, schema, and JSON-result execute contract.
       api.registerTool(createLocksmithCallTool(api) as AnyAgentTool, { optional: true });
     }
 

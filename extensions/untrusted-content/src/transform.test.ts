@@ -1,4 +1,4 @@
-import type { OpenClawConfig } from "openclaw/plugin-sdk/config-runtime";
+import type { OpenClawConfig } from "openclaw/plugin-sdk/config-contracts";
 import type { OpenClawPluginApi } from "openclaw/plugin-sdk/plugin-entry";
 import type { PluginStateEntry } from "openclaw/plugin-sdk/plugin-state-runtime";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
@@ -16,6 +16,7 @@ function buildConfig(params: {
   baseUrl: string;
   apiKey?: unknown;
   toolNames?: string[];
+  excludedToolNames?: string[];
   onError?: "pass" | "quarantine";
 }): OpenClawConfig {
   return {
@@ -27,6 +28,7 @@ function buildConfig(params: {
             baseUrl: params.baseUrl,
             ...(params.apiKey ? { apiKey: params.apiKey } : {}),
             toolNames: params.toolNames ?? ["web_fetch", "browser"],
+            ...(params.excludedToolNames ? { excludedToolNames: params.excludedToolNames } : {}),
             ...(params.onError ? { onError: params.onError } : {}),
           },
         },
@@ -414,18 +416,19 @@ describe("untrusted-content tool result transform", () => {
     })) as Record<string, unknown>;
 
     expect(result.text).toContain("output was quarantined before agent ingest");
-    expect(result.text).toContain("Reason: service offline");
+    expect(result.text).toContain("Reason: Scanner unavailable or returned an invalid response.");
+    expect(JSON.stringify(result)).not.toContain("service offline");
     expect(result.untrustedContentGuard).toMatchObject({
       guard: "untrusted-content",
       toolName: "web_fetch",
       quarantined: true,
-      error: "service offline",
+      error: "Scanner unavailable or returned an invalid response.",
     });
     expect((result.details as Record<string, unknown>).untrustedContentGuard).toMatchObject({
       guard: "untrusted-content",
       toolName: "web_fetch",
       quarantined: true,
-      error: "service offline",
+      error: "Scanner unavailable or returned an invalid response.",
     });
   });
 
@@ -540,6 +543,29 @@ describe("untrusted-content tool result transform", () => {
         content_id: "call-locksmith-1:0",
       },
     });
+  });
+
+  it("does not guard a tool with an explicit scan bypass", async () => {
+    const fetchMock = vi.spyOn(globalThis, "fetch").mockResolvedValue(new Response("{}"));
+    const originalResult = {
+      text: '{"choices":[{"message":{"content":"model advice"}}]}',
+      details: { ok: true, status: 200, path: "chat/completions" },
+    };
+
+    const result = await maybeTransformToolResult({
+      cfg: buildConfig({
+        baseUrl: "http://127.0.0.1:8787",
+        toolNames: ["remote_*"],
+        excludedToolNames: ["remote_model_proxy"],
+      }),
+      toolName: "remote_model_proxy",
+      params: { path: "chat/completions" },
+      toolCallId: "call-kzproxy-1",
+      result: originalResult,
+    });
+
+    expect(result).toBe(originalResult);
+    expect(fetchMock).not.toHaveBeenCalled();
   });
 
   it("summarizes medium-risk content and records a summarize incident with a code", async () => {
@@ -877,6 +903,57 @@ describe("untrusted-content tool result transform", () => {
       },
     ]);
     expect(result.untrustedContentGuard).toMatchObject({ quarantined: true });
+  });
+
+  it.each([
+    "text failure",
+    "content failure",
+    "text quarantine",
+    "content quarantine",
+    "service error",
+  ])("withholds every payload field after %s", async (scenario) => {
+    let calls = 0;
+    vi.spyOn(globalThis, "fetch").mockImplementation(async () => {
+      calls += 1;
+      const clean = scenario.startsWith("content") && calls === 1;
+      if (scenario === "service error") {
+        return new Response("RAW_SERVICE_ERROR_CANARY", { status: 422 });
+      }
+      if (!clean && scenario.endsWith("failure")) {
+        throw new Error("scanner unavailable");
+      }
+      return new Response(
+        JSON.stringify(
+          buildPipelineResponse({
+            id: "terminal-quarantine",
+            clean,
+            quarantined: !clean,
+            content: clean ? "sanitized text" : null,
+          }),
+        ),
+        { status: 200, headers: { "content-type": "application/json" } },
+      );
+    });
+    const result = await maybeTransformToolResult({
+      cfg: buildConfig({
+        baseUrl: `http://127.0.0.1:8787/${scenario.replaceAll(" ", "-")}`,
+        onError: "quarantine",
+      }),
+      toolName: "web_fetch",
+      params: {},
+      result: {
+        text: "RAW_TEXT_CANARY",
+        content: [{ type: "text", text: "RAW_BLOCK_CANARY" }],
+        details: { body: "RAW_DETAIL_CANARY" },
+        extra: "RAW_EXTRA_CANARY",
+      },
+    });
+    expect(JSON.stringify(result)).not.toContain("RAW_");
+    expect(result).toMatchObject({
+      text: expect.stringContaining("quarantined"),
+      content: [{ type: "text", text: expect.stringContaining("quarantined") }],
+      details: { untrustedContentGuard: { quarantined: true } },
+    });
   });
 
   it("withholds content and still returns a code when the incident store write fails", async () => {

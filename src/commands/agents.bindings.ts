@@ -1,3 +1,4 @@
+import { expectDefined } from "@openclaw/normalization-core";
 // Pure helpers for parsing, adding, removing, and generating agent route bindings.
 import { normalizeOptionalString } from "@openclaw/normalization-core/string-coerce";
 import { normalizeSortedUniqueStringEntries } from "@openclaw/normalization-core/string-normalization";
@@ -5,7 +6,7 @@ import { getBundledChannelSetupPlugin } from "../channels/plugins/bundled.js";
 import { resolveChannelDefaultAccountId } from "../channels/plugins/helpers.js";
 import { getLoadedChannelPlugin } from "../channels/plugins/index.js";
 import type { ChannelId } from "../channels/plugins/types.public.js";
-import { normalizeChannelId as normalizeBundledChannelId } from "../channels/registry.js";
+import { normalizeChatChannelId as normalizeBundledChannelId } from "../channels/registry.js";
 import { formatUnknownChannelMessage } from "../cli/error-format.js";
 import { isRouteBinding, listRouteBindings } from "../config/bindings.js";
 import type { AgentRouteBinding } from "../config/types.js";
@@ -259,7 +260,9 @@ function resolveBindingAccountId(params: {
   }
 
   const plugin = getBindingChannelPlugin(params.channel);
-  const pluginAccountId = plugin?.setup?.resolveBindingAccountId?.({
+  const resolvePluginAccountId =
+    plugin?.setupContract?.resolveBindingAccountId ?? plugin?.setup?.resolveBindingAccountId;
+  const pluginAccountId = resolvePluginAccountId?.({
     cfg: params.config,
     agentId: params.agentId,
   });
@@ -316,10 +319,22 @@ export function parseBindingSpecs(params: {
     if (!trimmed) {
       continue;
     }
-    const [channelRaw, accountRaw] = trimmed.split(":", 2);
+    // Bind specs are exactly <channel> or <channel>:<account>; extra colon
+    // segments would silently change the requested account if truncated.
+    const [channelRaw, accountRaw, ...extraSegments] = trimmed.split(":");
+    if (extraSegments.length > 0) {
+      errors.push(
+        `Invalid binding "${trimmed}". Account id cannot contain ":". Use <channel>:<account>, for example telegram:default.`,
+      );
+      continue;
+    }
     const channel = normalizeBindingChannelId(channelRaw, params.config);
     if (!channel) {
-      errors.push(formatUnknownChannelMessage({ channel: channelRaw }));
+      errors.push(
+        formatUnknownChannelMessage({
+          channel: expectDefined(channelRaw, "agents.bindings channel raw"),
+        }),
+      );
       continue;
     }
     let accountId: string | undefined = accountRaw?.trim();

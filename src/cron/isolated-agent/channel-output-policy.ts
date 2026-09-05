@@ -8,10 +8,6 @@ const channelPluginRuntimeLoader = createLazyImportLoader<ChannelPluginRuntime>(
   () => import("../../channels/plugins/index.js"),
 );
 
-async function loadChannelPluginRuntime() {
-  return await channelPluginRuntimeLoader.load();
-}
-
 /** Resolves channel-specific cron output preferences from loaded channel plugins. */
 export async function resolveCronChannelOutputPolicy(
   channel: string | undefined,
@@ -21,9 +17,9 @@ export async function resolveCronChannelOutputPolicy(
 }> {
   const channelId = normalizeOptionalLowercaseString(channel);
   if (!channelId) {
-    return { preferFinalAssistantVisibleText: opts?.deliveryRequested === false };
+    return { preferFinalAssistantVisibleText: opts?.deliveryRequested !== true };
   }
-  const { getChannelPlugin } = await loadChannelPluginRuntime();
+  const { getChannelPlugin } = await channelPluginRuntimeLoader.load();
   return {
     preferFinalAssistantVisibleText:
       getChannelPlugin(channelId)?.outbound?.preferFinalAssistantVisibleText === true,
@@ -43,7 +39,7 @@ export async function resolveCurrentChannelTarget(params: {
   if (!channelId) {
     return params.to;
   }
-  const { getChannelPlugin } = await loadChannelPluginRuntime();
+  const { getChannelPlugin } = await channelPluginRuntimeLoader.load();
   return (
     getChannelPlugin(channelId)?.threading?.resolveCurrentChannelId?.({
       to: params.to,

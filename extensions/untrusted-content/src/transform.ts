@@ -1,10 +1,11 @@
-import type { OpenClawConfig } from "openclaw/plugin-sdk/config-runtime";
+import type { OpenClawConfig } from "openclaw/plugin-sdk/config-contracts";
 import type { OpenClawPluginApi } from "openclaw/plugin-sdk/plugin-entry";
 import { wrapExternalContent, wrapWebContent } from "openclaw/plugin-sdk/security-runtime";
 import {
+  isRecord,
   normalizeOptionalLowercaseString,
   normalizeOptionalString,
-} from "openclaw/plugin-sdk/text-runtime";
+} from "openclaw/plugin-sdk/string-coerce-runtime";
 import { notifyBreaker } from "./breaker-notify.js";
 import { runUntrustedContentPipeline, type UntrustedContentPipelineResponse } from "./client.js";
 import {
@@ -13,6 +14,11 @@ import {
   shouldGuardToolResult,
 } from "./config.js";
 import { generateIncidentCode, recordIncident } from "./incidents.js";
+import {
+  buildFallbackQuarantineResult,
+  buildQuarantineSummary,
+  withholdToolResult,
+} from "./quarantine-result.js";
 import {
   classifyRisk,
   deriveMessageClass,
@@ -55,10 +61,6 @@ type UnwrappedExternalContent = {
 
 const WRAPPED_EXTERNAL_CONTENT_RE =
   /^(?<prefix>[\s\S]*?)<<<EXTERNAL_UNTRUSTED_CONTENT id="[^"]+">>>\n(?<meta>[\s\S]*?)\n---\n(?<content>[\s\S]*?)\n<<<END_EXTERNAL_UNTRUSTED_CONTENT id="[^"]+">>>$/;
-
-function isRecord(value: unknown): value is Record<string, unknown> {
-  return Boolean(value) && typeof value === "object" && !Array.isArray(value);
-}
 
 // Best-effort display name for the breaker advisory; omitted when unknown.
 function resolveAgentName(cfg?: OpenClawConfig, agentId?: string): string | undefined {
@@ -160,42 +162,6 @@ function wrapLikeOriginal(params: {
 // Model-visible threat summary. Only enum/numeric fields are echoed; the raw
 // service `message`/`pattern`/`details` strings are attacker-influenced and must
 // never reach model context (operator CLI `show` retains full detail).
-function summarizeThreats(response: UntrustedContentPipelineResponse): string {
-  if (!Array.isArray(response.threats) || response.threats.length === 0) {
-    return "No specific threat details were returned.";
-  }
-  return response.threats
-    .slice(0, 3)
-    .map((threat) => {
-      const confidence =
-        typeof threat.confidence === "number" && Number.isFinite(threat.confidence)
-          ? ` (${Math.round(threat.confidence * 100)}%)`
-          : "";
-      return `${threat.stage}/${threat.severity}${confidence}`;
-    })
-    .join("\n");
-}
-
-function buildQuarantineSummary(params: {
-  toolName: string;
-  response?: UntrustedContentPipelineResponse;
-  error?: string;
-}): string {
-  const lines = [
-    `[untrusted-content] ${params.toolName} output was quarantined before agent ingest.`,
-  ];
-  if (params.response) {
-    // Only enum/numeric threat fields; raw service strings and storage paths are
-    // withheld from model context.
-    lines.push(`Threats:\n${summarizeThreats(params.response)}`);
-  }
-  if (params.error) {
-    lines.push(`Reason: ${params.error}`);
-  }
-  lines.push("Original untrusted content was omitted.");
-  return lines.join("\n\n");
-}
-
 // Result-attached metadata is model-visible, so it carries only enum/numeric
 // threat fields (stage/severity/confidence) plus structural flags. Raw service
 // strings (threat.message/pattern/details) and the raw service metadata blob are
@@ -584,19 +550,26 @@ async function guardRecordWithTextField(params: {
     blockSessionId: params.blockSessionId,
     agentId: params.agentId,
   });
-  const nextResult = cloneRecord(params.result);
-  nextResult.text = renderGuardedToolText({
-    toolName: params.toolName,
-    result: params.result,
-    guardedText: block.rewrittenText,
-  });
-  nextResult.untrustedContentGuard = buildGuardMetadata({
+  const guard = buildGuardMetadata({
     toolName: params.toolName,
     response: block.response,
     tier: block.tier,
     score: block.score,
     ...(block.code !== undefined ? { code: block.code } : {}),
   });
+  if (block.quarantined) {
+    return {
+      result: withholdToolResult(params.result, block.rewrittenText, guard),
+      quarantined: true,
+    };
+  }
+  const nextResult = cloneRecord(params.result);
+  nextResult.text = renderGuardedToolText({
+    toolName: params.toolName,
+    result: params.result,
+    guardedText: block.rewrittenText,
+  });
+  nextResult.untrustedContentGuard = guard;
   if (isRecord(nextResult.details)) {
     nextResult.details = {
       ...nextResult.details,
@@ -652,21 +625,15 @@ async function guardRecordWithContentBlocks(params: {
       }),
     );
     if (guarded.quarantined) {
-      const nextResult = cloneRecord(params.result);
-      nextResult.content = [{ type: "text", text: guarded.rewrittenText }];
-      nextResult.untrustedContentGuard = {
-        guard: "untrusted-content",
-        toolName: params.toolName,
+      return {
+        result: withholdToolResult(params.result, guarded.rewrittenText, {
+          guard: "untrusted-content",
+          toolName: params.toolName,
+          quarantined: true,
+          blocks: guardMetadata,
+        }),
         quarantined: true,
-        blocks: guardMetadata,
       };
-      if (isRecord(nextResult.details)) {
-        nextResult.details = {
-          ...nextResult.details,
-          untrustedContentGuard: nextResult.untrustedContentGuard,
-        };
-      }
-      return { result: nextResult, quarantined: true };
     }
     nextContent[textBlock.index] = {
       ...(isRecord(nextContent[textBlock.index]) ? nextContent[textBlock.index] : {}),
@@ -694,58 +661,6 @@ async function guardRecordWithContentBlocks(params: {
     };
   }
   return { result: nextResult, quarantined: false };
-}
-
-function buildFallbackQuarantineResult(params: {
-  result: unknown;
-  toolName: string;
-  error: string;
-}): unknown {
-  if (!isRecord(params.result)) {
-    return params.result;
-  }
-  if (Array.isArray(params.result.content)) {
-    const details = isRecord(params.result.details) ? params.result.details : undefined;
-    const untrustedContentGuard = {
-      guard: "untrusted-content",
-      toolName: params.toolName,
-      quarantined: true,
-      error: params.error,
-    };
-    return {
-      ...params.result,
-      content: [
-        {
-          type: "text",
-          text: buildQuarantineSummary({
-            toolName: params.toolName,
-            error: params.error,
-          }),
-        },
-      ],
-      ...(details ? { details: { ...details, untrustedContentGuard } } : {}),
-      untrustedContentGuard,
-    };
-  }
-  if (typeof params.result.text === "string") {
-    const details = isRecord(params.result.details) ? params.result.details : undefined;
-    const untrustedContentGuard = {
-      guard: "untrusted-content",
-      toolName: params.toolName,
-      quarantined: true,
-      error: params.error,
-    };
-    return {
-      ...params.result,
-      text: buildQuarantineSummary({
-        toolName: params.toolName,
-        error: params.error,
-      }),
-      ...(details ? { details: { ...details, untrustedContentGuard } } : {}),
-      untrustedContentGuard,
-    };
-  }
-  return params.result;
 }
 
 export async function maybeTransformToolResult(params: TransformParams): Promise<unknown> {
@@ -800,14 +715,13 @@ export async function maybeTransformToolResult(params: TransformParams): Promise
     }
 
     return working;
-  } catch (error) {
+  } catch {
     if (resolveUntrustedContentOnErrorMode(params.cfg) !== "quarantine") {
       return params.result;
     }
     return buildFallbackQuarantineResult({
       result: params.result,
       toolName: params.toolName,
-      error: error instanceof Error ? error.message : String(error),
     });
   }
 }

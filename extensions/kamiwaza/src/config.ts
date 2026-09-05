@@ -1,14 +1,14 @@
 import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
-import type { OpenClawConfig } from "openclaw/plugin-sdk/config-runtime";
+import type { OpenClawConfig } from "openclaw/plugin-sdk/config-contracts";
 import {
   normalizeResolvedSecretInputString,
   normalizeSecretInput,
 } from "openclaw/plugin-sdk/secret-input";
-import { normalizeOptionalString } from "openclaw/plugin-sdk/text-runtime";
+import { normalizeOptionalString } from "openclaw/plugin-sdk/string-coerce-runtime";
 
-export const DEFAULT_KAMIWAZA_API_URL_CANDIDATES = [
+const DEFAULT_KAMIWAZA_API_URL_CANDIDATES = [
   "https://host.lima.internal/api",
   "http://host.lima.internal:4000/api",
   "http://127.0.0.1:4000/api",
@@ -16,15 +16,14 @@ export const DEFAULT_KAMIWAZA_API_URL_CANDIDATES = [
   "https://host.docker.internal/api",
   "https://traefik/api",
 ] as const;
-export const DEFAULT_KAMIWAZA_TOOL_PREFIX = "kamiwaza";
-export const DEFAULT_KAMIWAZA_CATALOG_TTL_SECONDS = 30;
-export const DEFAULT_KAMIWAZA_TIMEOUT_SECONDS = 30;
-export const DEFAULT_KAMIWAZA_CREDENTIAL_STORE_PATH =
-  "~/.openclaw/credentials/kamiwaza-pat-store.json";
-export const DEFAULT_KAMIWAZA_DELEGATION_HEADER = "x-kamiwaza-agent-delegation";
-export const DEFAULT_KAMIWAZA_DELEGATION_ISSUER = "openclaw";
-export const DEFAULT_KAMIWAZA_DELEGATION_AUDIENCE = "kamiwaza-tools";
-export const DEFAULT_KAMIWAZA_DELEGATION_TTL_SECONDS = 60;
+const DEFAULT_KAMIWAZA_TOOL_PREFIX = "kamiwaza";
+const DEFAULT_KAMIWAZA_CATALOG_TTL_SECONDS = 30;
+const DEFAULT_KAMIWAZA_TIMEOUT_SECONDS = 30;
+const DEFAULT_KAMIWAZA_CREDENTIAL_STORE_PATH = "~/.openclaw/credentials/kamiwaza-pat-store.json";
+const DEFAULT_KAMIWAZA_DELEGATION_HEADER = "x-kamiwaza-agent-delegation";
+const DEFAULT_KAMIWAZA_DELEGATION_ISSUER = "openclaw";
+const DEFAULT_KAMIWAZA_DELEGATION_AUDIENCE = "kamiwaza-tools";
+const DEFAULT_KAMIWAZA_DELEGATION_TTL_SECONDS = 60;
 
 type KamiwazaDelegationConfig = {
   enabled?: boolean;
@@ -80,6 +79,7 @@ function pluginConfig(cfg?: OpenClawConfig): KamiwazaPluginConfig | undefined {
   if (!value || typeof value !== "object" || Array.isArray(value)) {
     return undefined;
   }
+  // SAFETY: Plugin config is manifest-validated; resolvers normalize optional values before use.
   return value as KamiwazaPluginConfig;
 }
 
@@ -109,7 +109,7 @@ function normalizeConfiguredSecret(value: unknown, configPath: string): string |
   );
 }
 
-export function expandHomePath(input: string): string {
+function expandHomePath(input: string): string {
   if (input === "~") {
     return os.homedir();
   }
@@ -224,8 +224,9 @@ function readCredentialStore(filePath: string): KamiwazaPatCredential[] {
   if (credentialStoreCache?.path === filePath) {
     return credentialStoreCache.credentials;
   }
-  let credentials: KamiwazaPatCredential[] = [];
+  let credentials: KamiwazaPatCredential[];
   try {
+    // SAFETY: Store fields stay unknown and are checked before use; malformed JSON is caught.
     const parsed = JSON.parse(fs.readFileSync(filePath, "utf8")) as KamiwazaPatStore;
     const rawCredentials = Array.isArray(parsed.credentials)
       ? parsed.credentials
@@ -234,7 +235,7 @@ function readCredentialStore(filePath: string): KamiwazaPatCredential[] {
         : [];
     credentials = rawCredentials.filter(
       (entry): entry is KamiwazaPatCredential =>
-        !!entry && typeof entry === "object" && !Array.isArray(entry),
+        Boolean(entry) && typeof entry === "object" && !Array.isArray(entry),
     );
   } catch {
     credentials = [];
@@ -289,9 +290,11 @@ function credentialHosts(credential: KamiwazaPatCredential): string[] {
 
 function sourceHostFromCredentialStore(filePath: string): string | undefined {
   try {
+    // SAFETY: Store fields stay unknown and are checked before use; malformed JSON is caught.
     const parsed = JSON.parse(fs.readFileSync(filePath, "utf8")) as KamiwazaPatStore;
     const source = parsed.source;
     if (source && typeof source === "object" && !Array.isArray(source)) {
+      // SAFETY: The preceding object check permits lookup; source_host remains unknown.
       const sourceHost = (source as { source_host?: unknown }).source_host;
       if (typeof sourceHost === "string") {
         return sourceHost;
@@ -322,13 +325,13 @@ function tokenFromCredentialStore(cfg?: OpenClawConfig): string | undefined {
     const desiredHosts = new Set(desiredHostGroup);
     for (const credential of credentials) {
       if (credentialHosts(credential).some((host) => desiredHosts.has(host))) {
-        return normalizeSecretInput(typeof credential.token === "string" ? credential.token : "");
+        return normalizeSecretInput(typeof credential?.token === "string" ? credential.token : "");
       }
     }
   }
   if (credentials.length === 1) {
     const [credential] = credentials;
-    return normalizeSecretInput(typeof credential.token === "string" ? credential.token : "");
+    return normalizeSecretInput(typeof credential?.token === "string" ? credential.token : "");
   }
   return undefined;
 }

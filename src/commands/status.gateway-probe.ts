@@ -6,10 +6,12 @@ import {
   resolveGatewayProbeAuthSafeWithSecretInputs,
   resolveGatewayProbeTarget,
 } from "../gateway/probe-auth.js";
-export { pickGatewaySelfPresence } from "./gateway-presence.js";
 
 /** Resolves gateway probe auth plus any non-secret warning about credential lookup. */
-export async function resolveGatewayProbeAuthResolution(cfg: OpenClawConfig): Promise<{
+export async function resolveGatewayProbeAuthResolution(
+  cfg: OpenClawConfig,
+  env: NodeJS.ProcessEnv = process.env,
+): Promise<{
   auth: {
     token?: string;
     password?: string;
@@ -21,14 +23,6 @@ export async function resolveGatewayProbeAuthResolution(cfg: OpenClawConfig): Pr
   return resolveGatewayProbeAuthSafeWithSecretInputs({
     cfg,
     mode: target.mode,
-    env: process.env,
+    env,
   });
-}
-
-/** Resolves only gateway probe auth material for callers that do not display warnings. */
-export async function resolveGatewayProbeAuth(cfg: OpenClawConfig): Promise<{
-  token?: string;
-  password?: string;
-}> {
-  return (await resolveGatewayProbeAuthResolution(cfg)).auth;
 }

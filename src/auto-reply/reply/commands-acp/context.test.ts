@@ -13,11 +13,7 @@ import {
   createTestRegistry,
 } from "../../../test-utils/channel-plugins.js";
 import { buildCommandTestParams } from "../commands-spawn.test-harness.js";
-import {
-  resolveAcpCommandBindingContext,
-  resolveAcpCommandConversationId,
-  resolveAcpCommandParentConversationId,
-} from "./context.js";
+import { resolveAcpCommandBindingContext } from "./context.js";
 
 const baseCfg = {
   session: { mainKey: "main", scope: "per-sender" },
@@ -502,7 +498,6 @@ describe("commands-acp context", () => {
       threadId: undefined,
       conversationId: "123456789",
     });
-    expect(resolveAcpCommandConversationId(params)).toBe("123456789");
   });
 
   it("uses the plugin default account when ACP context omits AccountId", () => {
@@ -573,7 +568,6 @@ describe("commands-acp context", () => {
       conversationId: "-1001234567890:topic:42",
       parentConversationId: "-1001234567890",
     });
-    expect(resolveAcpCommandConversationId(params)).toBe("-1001234567890:topic:42");
   });
 
   it("resolves Telegram DM conversation ids from telegram targets", () => {
@@ -590,7 +584,6 @@ describe("commands-acp context", () => {
       threadId: undefined,
       conversationId: "123456789",
     });
-    expect(resolveAcpCommandConversationId(params)).toBe("123456789");
   });
 
   it("resolves LINE DM conversation ids from raw LINE targets", () => {
@@ -607,7 +600,6 @@ describe("commands-acp context", () => {
       threadId: undefined,
       conversationId: "U1234567890abcdef1234567890abcdef",
     });
-    expect(resolveAcpCommandConversationId(params)).toBe("U1234567890abcdef1234567890abcdef");
   });
 
   it("resolves LINE conversation ids from prefixed LINE targets", () => {
@@ -642,7 +634,6 @@ describe("commands-acp context", () => {
       threadId: undefined,
       conversationId: "U1234567890abcdef1234567890abcdef",
     });
-    expect(resolveAcpCommandConversationId(params)).toBe("U1234567890abcdef1234567890abcdef");
   });
 
   it("resolves Matrix thread context from the current room and thread root", () => {
@@ -662,8 +653,6 @@ describe("commands-acp context", () => {
       conversationId: "$thread-root",
       parentConversationId: "!room:example.org",
     });
-    expect(resolveAcpCommandConversationId(params)).toBe("$thread-root");
-    expect(resolveAcpCommandParentConversationId(params)).toBe("!room:example.org");
   });
 
   it("resolves iMessage DM conversation ids from current targets", () => {
@@ -681,7 +670,6 @@ describe("commands-acp context", () => {
       conversationId: "+15555550123",
       parentConversationId: undefined,
     });
-    expect(resolveAcpCommandConversationId(params)).toBe("+15555550123");
   });
 
   it("resolves iMessage group conversation ids from explicit chat targets", () => {
@@ -700,7 +688,6 @@ describe("commands-acp context", () => {
       conversationId: "iMessage;+;chat123",
       parentConversationId: undefined,
     });
-    expect(resolveAcpCommandConversationId(params)).toBe("iMessage;+;chat123");
   });
 
   it("resolves iMessage group conversation ids from chat_id targets", () => {
@@ -719,7 +706,6 @@ describe("commands-acp context", () => {
       conversationId: "12345",
       parentConversationId: undefined,
     });
-    expect(resolveAcpCommandConversationId(params)).toBe("12345");
   });
 
   it("builds Feishu topic conversation ids from chat target + root message id", () => {
@@ -740,7 +726,6 @@ describe("commands-acp context", () => {
       conversationId: "oc_group_chat:topic:om_topic_root",
       parentConversationId: "oc_group_chat",
     });
-    expect(resolveAcpCommandConversationId(params)).toBe("oc_group_chat:topic:om_topic_root");
   });
 
   it("builds sender-scoped Feishu topic conversation ids when current session is sender-scoped", () => {
@@ -764,9 +749,6 @@ describe("commands-acp context", () => {
       conversationId: "oc_group_chat:topic:om_topic_root:sender:ou_topic_user",
       parentConversationId: "oc_group_chat",
     });
-    expect(resolveAcpCommandConversationId(params)).toBe(
-      "oc_group_chat:topic:om_topic_root:sender:ou_topic_user",
-    );
   });
 
   it("preserves sender-scoped Feishu topic ids after ACP route takeover via ParentSessionKey", () => {
@@ -844,7 +826,6 @@ describe("commands-acp context", () => {
       conversationId: "ou_sender_1",
       parentConversationId: undefined,
     });
-    expect(resolveAcpCommandConversationId(params)).toBe("ou_sender_1");
   });
 
   it("resolves Feishu DM conversation ids from user_id fallback targets", () => {
@@ -862,7 +843,6 @@ describe("commands-acp context", () => {
       conversationId: "user_123",
       parentConversationId: undefined,
     });
-    expect(resolveAcpCommandConversationId(params)).toBe("user_123");
   });
 
   it("does not infer a Feishu DM parent conversation id during fallback binding lookup", () => {
@@ -874,7 +854,6 @@ describe("commands-acp context", () => {
       AccountId: "work",
     });
 
-    expect(resolveAcpCommandParentConversationId(params)).toBeUndefined();
     expect(resolveAcpCommandBindingContext(params)).toEqual({
       channel: "feishu",
       accountId: "work",

@@ -1,13 +1,13 @@
-/** Policy gates for ACP availability, dispatch, and allowed agent ids. */
-import { AcpRuntimeError } from "@openclaw/acp-core/runtime/errors";
 import type { OpenClawConfig } from "../config/types.openclaw.js";
 import { normalizeAgentId } from "../routing/session-key.js";
+/** Policy gates for ACP availability, dispatch, and allowed agent ids. */
+import { AcpRuntimeError } from "./runtime/errors.js";
 
 const ACP_DISABLED_MESSAGE = "ACP is disabled by policy (`acp.enabled=false`).";
 const ACP_DISPATCH_DISABLED_MESSAGE =
   "ACP dispatch is disabled by policy (`acp.dispatch.enabled=false`).";
 
-export type AcpDispatchPolicyState = "enabled" | "acp_disabled" | "dispatch_disabled";
+type AcpDispatchPolicyState = "enabled" | "acp_disabled" | "dispatch_disabled";
 
 /** Returns whether ACP is globally enabled by config policy. */
 export function isAcpEnabledByPolicy(cfg: OpenClawConfig): boolean {
@@ -15,7 +15,7 @@ export function isAcpEnabledByPolicy(cfg: OpenClawConfig): boolean {
 }
 
 /** Resolves the effective dispatch policy state for inbound ACP routing. */
-export function resolveAcpDispatchPolicyState(cfg: OpenClawConfig): AcpDispatchPolicyState {
+function resolveAcpDispatchPolicyState(cfg: OpenClawConfig): AcpDispatchPolicyState {
   if (!isAcpEnabledByPolicy(cfg)) {
     return "acp_disabled";
   }
@@ -24,11 +24,6 @@ export function resolveAcpDispatchPolicyState(cfg: OpenClawConfig): AcpDispatchP
     return "dispatch_disabled";
   }
   return "enabled";
-}
-
-/** Returns whether inbound ACP dispatch is currently allowed. */
-export function isAcpDispatchEnabledByPolicy(cfg: OpenClawConfig): boolean {
-  return resolveAcpDispatchPolicyState(cfg) === "enabled";
 }
 
 /** Returns the operator-facing dispatch block message, if any. */
@@ -61,7 +56,7 @@ export function resolveAcpExplicitTurnPolicyError(cfg: OpenClawConfig): AcpRunti
 }
 
 /** Returns whether an agent id passes the optional ACP allowed-agent list. */
-export function isAcpAgentAllowedByPolicy(cfg: OpenClawConfig, agentId: string): boolean {
+function isAcpAgentAllowedByPolicy(cfg: OpenClawConfig, agentId: string): boolean {
   const allowed = (cfg.acp?.allowedAgents ?? [])
     .map((entry) => normalizeAgentId(entry))
     .filter(Boolean);

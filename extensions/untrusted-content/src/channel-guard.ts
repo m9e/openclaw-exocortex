@@ -16,7 +16,7 @@
  * inbound delivery — an intentional availability-for-safety tradeoff that only
  * applies when an operator has opted into channel guarding.
  */
-import type { OpenClawConfig } from "openclaw/plugin-sdk/config-runtime";
+import type { OpenClawConfig } from "openclaw/plugin-sdk/config-contracts";
 import type { OpenClawPluginApi } from "openclaw/plugin-sdk/plugin-entry";
 import { runUntrustedContentPipeline } from "./client.js";
 import { recordIncident } from "./incidents.js";

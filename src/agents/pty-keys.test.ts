@@ -4,12 +4,7 @@
  */
 import { expect, test } from "vitest";
 import { buildCursorPositionResponse, stripDsrRequests } from "./pty-dsr.js";
-import {
-  BRACKETED_PASTE_END,
-  BRACKETED_PASTE_START,
-  encodeKeySequence,
-  encodePaste,
-} from "./pty-keys.js";
+import { encodeKeySequence, encodePaste } from "./pty-keys.js";
 
 const ESC = "\x1b";
 
@@ -95,17 +90,19 @@ test("encodeKeySequence uses SS3 sequences in application cursor key mode", () =
   expect(end.data).toBe(`${ESC}OF`);
 });
 
-test("encodeKeySequence applies xterm modifiers to arrows in application mode", () => {
-  // Modified arrow keys use xterm modifier scheme even in application mode.
-  // DECCKM only affects unmodified cursor keys.
-  const altUp = encodeKeySequence({ keys: ["M-up"] }, "application");
-  expect(altUp.data).toBe(`${ESC}[1;3A`);
-
-  const ctrlRight = encodeKeySequence({ keys: ["C-right"] }, "application");
-  expect(ctrlRight.data).toBe(`${ESC}[1;5C`);
-
-  const shiftDown = encodeKeySequence({ keys: ["S-down"] }, "application");
-  expect(shiftDown.data).toBe(`${ESC}[1;2B`);
+test.each([
+  ["M-up", `${ESC}[1;3A`],
+  ["C-right", `${ESC}[1;5C`],
+  ["S-down", `${ESC}[1;2B`],
+  ["C-home", `${ESC}[1;5~`],
+  ["M-C-End", `${ESC}[4;7~`],
+  ["S-M-C-PgDn", `${ESC}[6;8~`],
+  ["S-insert", `${ESC}[2;2~`],
+  ["S-M-del", `${ESC}[3;4~`],
+])("encodeKeySequence applies xterm modifiers to %s in every cursor mode", (key, data) => {
+  for (const mode of [undefined, "normal", "application"] as const) {
+    expect(encodeKeySequence({ keys: [key] }, mode)).toEqual({ data, warnings: [] });
+  }
 });
 
 test("encodeKeySequence supports hex + literal with warnings", () => {
@@ -120,8 +117,8 @@ test("encodeKeySequence supports hex + literal with warnings", () => {
 
 test("encodePaste wraps bracketed sequences by default", () => {
   const payload = encodePaste("line1\nline2\n");
-  expect(payload.startsWith(BRACKETED_PASTE_START)).toBe(true);
-  expect(payload.endsWith(BRACKETED_PASTE_END)).toBe(true);
+  expect(payload.startsWith(`${ESC}[200~`)).toBe(true);
+  expect(payload.endsWith(`${ESC}[201~`)).toBe(true);
 });
 
 test("stripDsrRequests removes cursor queries and counts them", () => {

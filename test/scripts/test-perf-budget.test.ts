@@ -3,7 +3,7 @@ import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
 import { describe, expect, it } from "vitest";
-import { testing } from "../../scripts/test-perf-budget.mjs";
+import { testing } from "../../scripts/test-perf-budget.mts";
 
 function withReport(payload: unknown, run: (reportPath: string) => void) {
   const reportPath = path.join(os.tmpdir(), `openclaw-test-perf-budget-${Date.now()}.json`);
@@ -78,6 +78,15 @@ describe("test perf budget script", () => {
     );
     expect(() => testing.parseArgs(["--max-wall-ms", "--baseline-wall-ms", "1000"], {})).toThrow(
       "--max-wall-ms requires a value",
+    );
+    expect(() => testing.parseArgs(["--max-wall-ms", "-h"], {})).toThrow(
+      "--max-wall-ms requires a value",
+    );
+    expect(() => testing.parseArgs(["--max-regression-pct", "-h"], {})).toThrow(
+      "--max-regression-pct requires a value",
+    );
+    expect(() => testing.parseArgs(["--max-wall-ms", "1000", "--max-wall-ms", "2000"], {})).toThrow(
+      "--max-wall-ms was provided more than once",
     );
   });
 

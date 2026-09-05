@@ -1,16 +1,24 @@
 {
   "id": "discord",
+  "doctorContract": {
+    "configRepair": true,
+    "stateMigrations": true
+  },
   "name": "Discord",
   "description": "OpenClaw Discord channel plugin for channels, DMs, commands, and app events.",
+  "skills": [
+    "./skills"
+  ],
   "activation": {
     "onStartup": false
   },
-  "channels": ["discord"],
+  "channels": [
+    "discord"
+  ],
   "contracts": {
-    "transcriptSourceProviders": ["discord-voice"]
-  },
-  "channelEnvVars": {
-    "discord": ["DISCORD_BOT_TOKEN"]
+    "transcriptSourceProviders": [
+      "discord-voice"
+    ]
   },
   "configSchema": {
     "type": "object",

@@ -1,4 +1,5 @@
-import type { OpenClawConfig } from "openclaw/plugin-sdk/config-runtime";
+import type { OpenClawConfig } from "openclaw/plugin-sdk/config-contracts";
+import { isRecord } from "openclaw/plugin-sdk/string-coerce-runtime";
 
 export type SourceTrust = "user" | "low" | "med" | "high";
 export type MessageClass = "low" | "med" | "high";
@@ -115,14 +116,14 @@ function isFiniteNumber(value: unknown): value is number {
 
 function resolveRiskConfig(cfg?: OpenClawConfig): Record<string, unknown> | undefined {
   const pluginConfig = cfg?.plugins?.entries?.["untrusted-content"]?.config;
-  if (!pluginConfig || typeof pluginConfig !== "object" || Array.isArray(pluginConfig)) {
+  if (!isRecord(pluginConfig)) {
     return undefined;
   }
-  const risk = (pluginConfig as { risk?: unknown }).risk;
-  if (!risk || typeof risk !== "object" || Array.isArray(risk)) {
+  const risk = pluginConfig.risk;
+  if (!isRecord(risk)) {
     return undefined;
   }
-  return risk as Record<string, unknown>;
+  return risk;
 }
 
 function mergeNumberMap<K extends string>(
@@ -130,12 +131,14 @@ function mergeNumberMap<K extends string>(
   override: unknown,
 ): Record<K, number> {
   const merged = { ...defaults };
-  if (!override || typeof override !== "object" || Array.isArray(override)) {
+  if (!isRecord(override)) {
     return merged;
   }
-  const overrideMap = override as Record<string, unknown>;
-  for (const key of Object.keys(defaults) as K[]) {
-    const value = overrideMap[key];
+  for (const key in defaults) {
+    if (!Object.hasOwn(defaults, key)) {
+      continue;
+    }
+    const value = override[key];
     if (isFiniteNumber(value)) {
       merged[key] = value;
     }
@@ -190,8 +193,8 @@ export function sourceTrustForTool(toolName: string, cfg?: OpenClawConfig): Sour
   const normalized = toolName.trim().toLowerCase();
   const risk = resolveRiskConfig(cfg);
   const overrides = risk?.toolSourceTrust;
-  if (overrides && typeof overrides === "object" && !Array.isArray(overrides)) {
-    for (const [entry, level] of Object.entries(overrides as Record<string, unknown>)) {
+  if (isRecord(overrides)) {
+    for (const [entry, level] of Object.entries(overrides)) {
       if (!isSourceTrust(level)) {
         continue;
       }
@@ -221,7 +224,7 @@ function isSourceTrust(value: unknown): value is SourceTrust {
  * calling one is treated as lured by injection. Default empty: no tool is a trap
  * until an operator opts in.
  */
-export function resolveHoneypotTools(cfg?: OpenClawConfig): string[] {
+function resolveHoneypotTools(cfg?: OpenClawConfig): string[] {
   return normalizeGlobList(resolveRiskConfig(cfg)?.honeypotTools) ?? [];
 }
 
@@ -255,9 +258,9 @@ export function resolveChannelSourceTrust(
     return "med";
   }
   const map = resolveRiskConfig(cfg)?.channelSourceTrust;
-  if (!map || typeof map !== "object" || Array.isArray(map)) {
+  if (!isRecord(map)) {
     return "med";
   }
-  const level = (map as Record<string, unknown>)[normalized];
+  const level = map[normalized];
   return isSourceTrust(level) ? level : "med";
 }

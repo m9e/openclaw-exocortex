@@ -10,7 +10,7 @@ import type { OpenClawPluginApi } from "openclaw/plugin-sdk/plugin-entry";
 import type { PluginStateKeyedStore } from "openclaw/plugin-sdk/plugin-state-runtime";
 import type { RiskTier } from "./risk.js";
 
-export type IncidentTier = Extract<RiskTier, "summarize" | "quarantine" | "breaker">;
+type IncidentTier = Extract<RiskTier, "summarize" | "quarantine" | "breaker">;
 
 export type Incident = {
   code: string; // short, e.g. "FQ35PZ"
@@ -45,7 +45,7 @@ const CODE_ALPHABET = "ABCDEFGHJKMNPQRSTUVWXYZ23456789";
 const CODE_LENGTH = 6;
 const CODE_COLLISION_RETRIES = 5;
 
-export function openIncidentStore(api: OpenClawPluginApi): PluginStateKeyedStore<Incident> {
+function openIncidentStore(api: OpenClawPluginApi): PluginStateKeyedStore<Incident> {
   return api.runtime.state.openKeyedStore<Incident>({
     namespace: INCIDENTS_NAMESPACE,
     maxEntries: INCIDENTS_MAX_ENTRIES,

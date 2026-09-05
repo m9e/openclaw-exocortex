@@ -1,5 +1,5 @@
 import type { Command } from "commander";
-import type { OpenClawConfig } from "openclaw/plugin-sdk/config-runtime";
+import type { OpenClawConfig } from "openclaw/plugin-sdk/config-contracts";
 import { KamiwazaError, callKamiwazaTool, discoverKamiwazaTools } from "./client.js";
 import {
   resolveKamiwazaApiToken,
@@ -95,6 +95,7 @@ export function registerKamiwazaCli(program: Command, cfg?: OpenClawConfig): voi
           if (!parsed || typeof parsed !== "object" || Array.isArray(parsed)) {
             throw new Error("JSON value must be an object");
           }
+          // SAFETY: The preceding check rejects null, arrays, and non-object JSON values.
           args = parsed as Record<string, unknown>;
         } catch (error) {
           writeError(

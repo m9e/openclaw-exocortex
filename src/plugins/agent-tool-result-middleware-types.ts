@@ -1,13 +1,10 @@
 // Defines plugin middleware contracts for agent tool results.
 import type { AgentToolResult } from "../agents/runtime/index.js";
+import type { PluginToolMatcher } from "./hook-types.js";
 
 export type OpenClawAgentToolResult<TResult = unknown> = AgentToolResult<TResult>;
 
 export type AgentToolResultMiddlewareRuntime = "openclaw" | "codex";
-/** @deprecated Use AgentToolResultMiddlewareRuntime. */
-export type AgentToolResultMiddlewareHarness =
-  | AgentToolResultMiddlewareRuntime
-  | "codex-app-server";
 
 export type AgentToolResultMiddlewareEvent = {
   threadId?: string;
@@ -22,8 +19,6 @@ export type AgentToolResultMiddlewareEvent = {
 
 export type AgentToolResultMiddlewareContext = {
   runtime: AgentToolResultMiddlewareRuntime;
-  /** @deprecated Use runtime. */
-  harness?: AgentToolResultMiddlewareRuntime;
   agentId?: string;
   sessionId?: string;
   sessionKey?: string;
@@ -40,7 +35,17 @@ export type AgentToolResultMiddleware = (
 ) => Promise<AgentToolResultMiddlewareResult | void> | AgentToolResultMiddlewareResult | void;
 
 export type AgentToolResultMiddlewareOptions = {
+  matcher?: PluginToolMatcher;
   runtimes?: AgentToolResultMiddlewareRuntime[];
-  /** @deprecated Use runtimes. */
-  harnesses?: AgentToolResultMiddlewareHarness[];
+  /** Tools whose results must pass through replacement before reaching the model.
+   * Native surfaces without that delivery boundary must use managed tools or deny execution.
+   * Receives a canonical tool id; predicates must be synchronous and side-effect free.
+   */
+  requiresResultReplacement?: (toolName: string) => boolean;
+};
+
+export type AgentToolResultMiddlewareScope = {
+  matcher?: PluginToolMatcher;
+  runtimes: AgentToolResultMiddlewareRuntime[];
+  requiresResultReplacement?: AgentToolResultMiddlewareOptions["requiresResultReplacement"];
 };

@@ -9,10 +9,11 @@ import type {
   ChannelStatusIssue,
 } from "./channel-contract.js";
 import type { ChannelPlugin } from "./channel-core.js";
-import type { OpenClawConfig } from "./config-types.js";
+import type { MessageReceipt } from "./channel-outbound.js";
+import type { OpenClawConfig } from "./config-contracts.js";
 import {
   createLazyFacadeObjectValue,
-  loadBundledPluginPublicSurfaceModuleSync,
+  loadBundledPluginPublicSurfaceModuleSyncCore,
 } from "./facade-loader.js";
 import { getRuntimeConfig, getRuntimeConfigSnapshot } from "./runtime-config-snapshot.js";
 
@@ -22,7 +23,7 @@ import { getRuntimeConfig, getRuntimeConfigSnapshot } from "./runtime-config-sna
  */
 export type { ChannelMessageActionAdapter, ChannelMessageActionName } from "./channel-contract.js";
 export type { ChannelPlugin } from "./channel-core.js";
-export type { OpenClawConfig } from "./config-types.js";
+export type { OpenClawConfig } from "./config-contracts.js";
 export type { OpenClawPluginApi, PluginRuntime } from "./channel-plugin-common.js";
 
 export {
@@ -41,7 +42,6 @@ export {
   projectCredentialSnapshotFields,
   resolveConfiguredFromCredentialStatuses,
 } from "./channel-status.js";
-export { DiscordConfigSchema } from "./bundled-channel-config-schema.js";
 
 /** Discord channel config shape for one account in OpenClaw config. */
 export type DiscordAccountConfig = NonNullable<NonNullable<OpenClawConfig["channels"]>["discord"]>;
@@ -67,7 +67,7 @@ export type DiscordComponentBuildResult = {
 
 /** Send/edit options for Discord component messages. */
 export type DiscordComponentSendOpts = {
-  cfg?: OpenClawConfig;
+  cfg: OpenClawConfig;
   accountId?: string;
   replyTo?: string;
   files?: unknown;
@@ -80,11 +80,11 @@ export type DiscordComponentSendOpts = {
   [key: string]: unknown;
 };
 
-/** Minimal Discord API message result returned by component send/edit helpers. */
+/** Normalized Discord message result returned by component send/edit helpers. */
 export type DiscordComponentSendResult = {
-  id?: string;
-  channel_id?: string;
-  [key: string]: unknown;
+  messageId: string;
+  channelId: string;
+  receipt: MessageReceipt;
 };
 
 /** Resolved Discord account with token source metadata for status and runtime checks. */
@@ -198,14 +198,14 @@ type DiscordRuntimeFacadeModule = {
 };
 
 function loadDiscordApiFacadeModule(): DiscordApiFacadeModule {
-  return loadBundledPluginPublicSurfaceModuleSync<DiscordApiFacadeModule>({
+  return loadBundledPluginPublicSurfaceModuleSyncCore<DiscordApiFacadeModule>({
     dirName: "discord",
     artifactBasename: "api.js",
   });
 }
 
 function loadDiscordRuntimeFacadeModule(): DiscordRuntimeFacadeModule {
-  return loadBundledPluginPublicSurfaceModuleSync<DiscordRuntimeFacadeModule>({
+  return loadBundledPluginPublicSurfaceModuleSyncCore<DiscordRuntimeFacadeModule>({
     dirName: "discord",
     artifactBasename: "runtime-api.js",
   });

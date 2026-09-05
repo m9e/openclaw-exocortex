@@ -4,17 +4,6 @@ import type { OpenClawConfig } from "../../config/types.openclaw.js";
 import { defaultRuntime } from "../../runtime.js";
 import type { FollowupRun } from "./queue.js";
 
-/** Creates an externally resolved promise for queue-order tests. */
-export function createDeferred<T>() {
-  let resolve!: (value: T) => void;
-  let reject!: (reason?: unknown) => void;
-  const promise = new Promise<T>((res, rej) => {
-    resolve = res;
-    reject = rej;
-  });
-  return { promise, resolve, reject };
-}
-
 /** Builds a minimal queued follow-up run fixture. */
 export function createQueueTestRun(params: {
   prompt: string;
@@ -23,6 +12,9 @@ export function createQueueTestRun(params: {
   originatingTo?: string;
   originatingAccountId?: string;
   originatingThreadId?: string | number;
+  originatingReplyToId?: string;
+  originatingReplyToMode?: FollowupRun["originatingReplyToMode"];
+  originatingChatType?: string;
   currentInboundEventKind?: FollowupRun["currentInboundEventKind"];
 }): FollowupRun {
   return {
@@ -33,6 +25,9 @@ export function createQueueTestRun(params: {
     originatingTo: params.originatingTo,
     originatingAccountId: params.originatingAccountId,
     originatingThreadId: params.originatingThreadId,
+    originatingReplyToId: params.originatingReplyToId,
+    originatingReplyToMode: params.originatingReplyToMode,
+    originatingChatType: params.originatingChatType,
     currentInboundEventKind: params.currentInboundEventKind,
     run: {
       agentId: "agent",

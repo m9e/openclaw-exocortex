@@ -7,7 +7,7 @@ agent context. That dep is intended to track upstream
 
 This keeps the integration additive and upstream-merge-friendly:
 
-- core only gains a generic `tool_result_transform` hook
+- the plugin uses the standard agent tool result middleware API
 - the untrusted-content policy stays plugin-owned
 - the dep-owned Python service remains easy to iterate on without forking core
 
@@ -66,6 +66,10 @@ Environment fallback:
   result untouched.
 - When `onError` is `quarantine`, guard service failures replace exposed
   content with a quarantine summary.
+- `excludedToolNames` does not disable tools. It bypasses this plugin's result
+  scan after a tool matches `toolNames`, and defaults to no bypasses. Entries
+  match exact tool names unless they end in `*`, which bypasses the whole
+  matching prefix.
 
 ## Local dev with the dep repo
 

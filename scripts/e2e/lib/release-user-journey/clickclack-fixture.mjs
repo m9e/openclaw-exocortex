@@ -2,9 +2,9 @@
 import crypto from "node:crypto";
 import fs from "node:fs";
 import http from "node:http";
-import { readPositiveIntEnv } from "../env-limits.mjs";
+import { readPositiveIntEnv, readTcpPortEnv } from "../env-limits.mjs";
 
-const port = readPositiveIntEnv("CLICKCLACK_FIXTURE_PORT", 44181);
+const port = readTcpPortEnv("CLICKCLACK_FIXTURE_PORT", 44181);
 const requestMaxBytes = readPositiveIntEnv("CLICKCLACK_FIXTURE_REQUEST_MAX_BYTES", 4 * 1024 * 1024);
 const token = process.env.CLICKCLACK_FIXTURE_TOKEN ?? "clickclack-release-token";
 const statePath = process.env.CLICKCLACK_FIXTURE_STATE ?? "/tmp/openclaw-clickclack-fixture.json";
@@ -44,6 +44,7 @@ const messages = [];
 const threadReplies = [];
 const outboundMessages = [];
 const sockets = new Set();
+let socketGeneration = 0;
 
 function persist() {
   fs.writeFileSync(
@@ -54,6 +55,7 @@ function persist() {
         threadReplies,
         outboundMessages,
         socketCount: sockets.size,
+        socketGeneration,
       },
       null,
       2,
@@ -289,7 +291,13 @@ async function handleRequest(req, res) {
       return;
     }
     if (req.method === "GET" && url.pathname === "/fixture/state") {
-      json(res, 200, { messages, threadReplies, outboundMessages, socketCount: sockets.size });
+      json(res, 200, {
+        messages,
+        threadReplies,
+        outboundMessages,
+        socketCount: sockets.size,
+        socketGeneration,
+      });
       return;
     }
     json(res, 404, { error: `unhandled ${req.method} ${url.pathname}` });
@@ -328,15 +336,20 @@ server.on("upgrade", (req, socket) => {
     ].join("\r\n"),
   );
   sockets.add(socket);
+  socketGeneration += 1;
   persist();
-  socket.on("close", () => {
-    sockets.delete(socket);
-    persist();
+  const cleanupSocket = () => {
+    if (sockets.delete(socket)) {
+      persist();
+    }
+  };
+  socket.on("close", cleanupSocket);
+  socket.on("end", () => {
+    cleanupSocket();
+    socket.end();
   });
-  socket.on("error", () => {
-    sockets.delete(socket);
-    persist();
-  });
+  socket.on("error", cleanupSocket);
+  socket.resume();
 });
 
 persist();

@@ -1,14 +1,12 @@
+import { readNumberParam, readStringParam } from "openclaw/plugin-sdk/param-readers";
 import type {
   AnyAgentTool,
+  OpenClawPluginApi,
   OpenClawPluginToolContext,
   OpenClawPluginToolFactory,
 } from "openclaw/plugin-sdk/plugin-entry";
-import type { OpenClawPluginApi } from "openclaw/plugin-sdk/plugin-runtime";
-import {
-  jsonResult,
-  readNumberParam,
-  readStringParam,
-} from "openclaw/plugin-sdk/provider-web-search";
+import { isRecord } from "openclaw/plugin-sdk/string-coerce-runtime";
+import { jsonResult } from "openclaw/plugin-sdk/tool-results";
 import { Type, type TSchema } from "typebox";
 import { callLocksmith, listLocksmithTools, LocksmithError } from "./client.js";
 import { type LocksmithProjectedTool, resolveLocksmithProjectedTools } from "./config.js";
@@ -217,6 +215,7 @@ function resolveProjectedParameters(projected: LocksmithProjectedTool): TSchema 
     typeof projected.parameters === "object" &&
     !Array.isArray(projected.parameters)
   ) {
+    // SAFETY: The operator supplies a JSON Schema object; TypeBox consumes that same schema shape.
     return projected.parameters as TSchema;
   }
   return DirectJsonToolSchema;
@@ -236,6 +235,7 @@ function isGithubCommitFilesOperation(
     rawParams !== null &&
     typeof rawParams === "object" &&
     !Array.isArray(rawParams) &&
+    // SAFETY: The preceding guard excludes null, arrays, and non-object parameters.
     (rawParams as Record<string, unknown>).operation === "commit_files"
   );
 }
@@ -263,18 +263,8 @@ export function createLocksmithCallTool(api: OpenClawPluginApi) {
           tool,
           method: readStringParam(rawParams, "method") || "GET",
           path: readStringParam(rawParams, "path") || undefined,
-          query:
-            rawParams.query &&
-            typeof rawParams.query === "object" &&
-            !Array.isArray(rawParams.query)
-              ? (rawParams.query as Record<string, unknown>)
-              : undefined,
-          headers:
-            rawParams.headers &&
-            typeof rawParams.headers === "object" &&
-            !Array.isArray(rawParams.headers)
-              ? (rawParams.headers as Record<string, unknown>)
-              : undefined,
+          query: isRecord(rawParams.query) ? rawParams.query : undefined,
+          headers: isRecord(rawParams.headers) ? rawParams.headers : undefined,
           json: rawParams.json,
           body: readStringParam(rawParams, "body") || undefined,
           timeoutSeconds: readNumberParam(rawParams, "timeoutSeconds", { integer: true }),
@@ -347,6 +337,7 @@ function buildProjectedAgentTool(
           throw new Error(describeLocksmithError(error), { cause: error });
         }
       },
+      // SAFETY: This object supplies the SDK name, JSON schema, and JSON-result execute contract.
     } as AnyAgentTool;
   }
 
@@ -373,18 +364,8 @@ function buildProjectedAgentTool(
             user: ctx.agentId,
             method: readStringParam(rawParams, "method") || "GET",
             path: readStringParam(rawParams, "path") || undefined,
-            query:
-              rawParams.query &&
-              typeof rawParams.query === "object" &&
-              !Array.isArray(rawParams.query)
-                ? (rawParams.query as Record<string, unknown>)
-                : undefined,
-            headers:
-              rawParams.headers &&
-              typeof rawParams.headers === "object" &&
-              !Array.isArray(rawParams.headers)
-                ? (rawParams.headers as Record<string, unknown>)
-                : undefined,
+            query: isRecord(rawParams.query) ? rawParams.query : undefined,
+            headers: isRecord(rawParams.headers) ? rawParams.headers : undefined,
             json: rawParams.json,
             body: readStringParam(rawParams, "body") || undefined,
             timeoutSeconds: readNumberParam(rawParams, "timeoutSeconds", { integer: true }),
@@ -395,6 +376,7 @@ function buildProjectedAgentTool(
         throw new Error(describeLocksmithError(error), { cause: error });
       }
     },
+    // SAFETY: This object supplies the SDK name, JSON schema, and JSON-result execute contract.
   } as AnyAgentTool;
 }
 

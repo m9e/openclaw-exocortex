@@ -17,19 +17,25 @@ type FsBridgeHoisted = {
 
 let actualOpenRootFile: OpenRootFileFn | undefined;
 
-const hoisted = vi.hoisted(
-  (): FsBridgeHoisted => ({
-    execDockerRaw: vi.fn(),
-    openRootFile: vi.fn(),
-  }),
-);
-
-vi.mock("./docker.js", () => ({
-  execDockerRaw: (args: ExecDockerArgs, opts?: Parameters<ExecDockerRawFn>[1]) =>
-    hoisted.execDockerRaw(args, opts),
+const hoisted = vi.hoisted((): FsBridgeHoisted => ({
+  execDockerRaw: vi.fn(),
+  openRootFile: vi.fn(),
 }));
 
-vi.mock("./fs-bridge-path-safety.runtime.js", async () => {
+vi.mock("./docker.js", () => ({
+  DOCKER_SANDBOX_ENGINE: { id: "docker", command: "docker", displayName: "Docker" },
+  PODMAN_SANDBOX_ENGINE: { id: "podman", command: "podman", displayName: "Podman" },
+  execContainerRaw: (
+    _engine: unknown,
+    args: ExecDockerArgs,
+    opts?: Parameters<ExecDockerRawFn>[1],
+  ) => hoisted.execDockerRaw(args, opts),
+  execDockerRaw: (args: ExecDockerArgs, opts?: Parameters<ExecDockerRawFn>[1]) =>
+    hoisted.execDockerRaw(args, opts),
+  validateSandboxContainerEngineTarget: vi.fn(),
+}));
+
+async function createPathSafetyRuntimeMock() {
   const actual = await vi.importActual<typeof import("./fs-bridge-path-safety.runtime.js")>(
     "./fs-bridge-path-safety.runtime.js",
   );
@@ -38,7 +44,9 @@ vi.mock("./fs-bridge-path-safety.runtime.js", async () => {
     ...actual,
     openRootFile: (params: Parameters<OpenRootFileFn>[0]) => hoisted.openRootFile(params),
   };
-});
+}
+
+vi.mock("./fs-bridge-path-safety.runtime.js", createPathSafetyRuntimeMock);
 
 import { createSandboxTestContext } from "./test-fixtures.js";
 import type { SandboxContext } from "./types.js";
@@ -48,19 +56,18 @@ let createSandboxFsBridgeImpl: typeof import("./fs-bridge.js").createSandboxFsBr
 async function loadFreshFsBridgeModuleForTest() {
   vi.resetModules();
   vi.doMock("./docker.js", () => ({
+    DOCKER_SANDBOX_ENGINE: { id: "docker", command: "docker", displayName: "Docker" },
+    PODMAN_SANDBOX_ENGINE: { id: "podman", command: "podman", displayName: "Podman" },
+    execContainerRaw: (
+      _engine: unknown,
+      args: ExecDockerArgs,
+      opts?: Parameters<ExecDockerRawFn>[1],
+    ) => hoisted.execDockerRaw(args, opts),
     execDockerRaw: (args: ExecDockerArgs, opts?: Parameters<ExecDockerRawFn>[1]) =>
       hoisted.execDockerRaw(args, opts),
+    validateSandboxContainerEngineTarget: vi.fn(),
   }));
-  vi.doMock("./fs-bridge-path-safety.runtime.js", async () => {
-    const actual = await vi.importActual<typeof import("./fs-bridge-path-safety.runtime.js")>(
-      "./fs-bridge-path-safety.runtime.js",
-    );
-    actualOpenRootFile = actual.openRootFile;
-    return {
-      ...actual,
-      openRootFile: (params: Parameters<OpenRootFileFn>[0]) => hoisted.openRootFile(params),
-    };
-  });
+  vi.doMock("./fs-bridge-path-safety.runtime.js", createPathSafetyRuntimeMock);
   ({ createSandboxFsBridge: createSandboxFsBridgeImpl } = await import("./fs-bridge.js"));
 }
 
@@ -161,7 +168,7 @@ export async function withTempDir<T>(
   prefix: string,
   run: (stateDir: string) => Promise<T>,
 ): Promise<T> {
-  const stateDir = await fs.mkdtemp(path.join(os.tmpdir(), prefix));
+  const stateDir = await fs.realpath(await fs.mkdtemp(path.join(os.tmpdir(), prefix)));
   try {
     return await run(stateDir);
   } finally {

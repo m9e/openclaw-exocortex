@@ -1,3 +1,4 @@
+import assert from "node:assert/strict";
 import { describe, expect, it, vi } from "vitest";
 import type { OpenClawConfig } from "../config/types.openclaw.js";
 import {
@@ -41,7 +42,9 @@ describe("required Locksmith startup config", () => {
 
   it("requires the plugin to be enabled", () => {
     const cfg = requiredConfig();
-    cfg.plugins!.entries!.locksmith.enabled = false;
+    const locksmith = cfg.plugins?.entries?.locksmith;
+    assert(locksmith);
+    locksmith.enabled = false;
 
     expect(() => resolveRequiredLocksmithStartupConfig(cfg, {})).toThrow(
       "locksmith plugin is not enabled",

@@ -1,5 +1,5 @@
 import type { Command } from "commander";
-import type { OpenClawConfig } from "openclaw/plugin-sdk/config-runtime";
+import type { OpenClawConfig } from "openclaw/plugin-sdk/config-contracts";
 import {
   callLocksmith,
   fetchLocksmithAdmin,
@@ -96,6 +96,7 @@ function writeError(message: string): void {
 type ExistingToolsMap = Record<string, Record<string, unknown>>;
 
 function readCurrentToolsBlock(cfg?: OpenClawConfig): ExistingToolsMap {
+  // SAFETY: The config loader validates the plugin manifest and tools entries before CLI use.
   const pluginConfig = cfg?.plugins?.entries?.locksmith?.config as
     | { tools?: ExistingToolsMap }
     | undefined;

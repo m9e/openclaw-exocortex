@@ -3,26 +3,26 @@ import { normalizeOptionalString } from "@openclaw/normalization-core/string-coe
 
 export type CommandTurnKind = "native" | "text-slash" | "normal";
 /** Transport-level source labels carried through auto-reply dispatch. */
-export type CommandTurnSource = "native" | "text" | "message";
+type CommandTurnSource = "native" | "text" | "message";
 
 type BaseCommandTurnContext = {
   commandName?: string;
   body?: string;
 };
 
-export type NativeCommandTurnContext = BaseCommandTurnContext & {
+type NativeCommandTurnContext = BaseCommandTurnContext & {
   kind: "native";
   source: "native";
   authorized: boolean;
 };
 
-export type TextSlashCommandTurnContext = BaseCommandTurnContext & {
+type TextSlashCommandTurnContext = BaseCommandTurnContext & {
   kind: "text-slash";
   source: "text";
   authorized: boolean;
 };
 
-export type NormalCommandTurnContext = BaseCommandTurnContext & {
+type NormalCommandTurnContext = BaseCommandTurnContext & {
   kind: "normal";
   source: "message";
   authorized: false;
@@ -42,10 +42,15 @@ export type CommandTurnContextInput = {
   BodyForCommands?: unknown;
   RawBody?: unknown;
   Body?: unknown;
+  commandText?: unknown;
+  rawText?: unknown;
   BotUsername?: unknown;
 };
 
-function resolveCommandBody(input: CommandTurnContextInput): string | undefined {
+export function resolveCommandBody(input: CommandTurnContextInput): string | undefined {
+  if (typeof input.commandText === "string") {
+    return input.commandText;
+  }
   return (
     normalizeOptionalString(input.CommandBody) ??
     normalizeOptionalString(input.BodyForCommands) ??
@@ -82,7 +87,7 @@ function normalizeCommandTurnSource(value: unknown): CommandTurnSource | undefin
 }
 
 /** Maps source metadata back to the closed turn kind used by command checks. */
-export function commandTurnSourceToKind(source: CommandTurnSource): CommandTurnKind {
+function commandTurnSourceToKind(source: CommandTurnSource): CommandTurnKind {
   if (source === "native") {
     return "native";
   }
@@ -204,7 +209,7 @@ export function isExplicitCommandTurn(commandTurn: CommandTurnContext | undefine
   );
 }
 
-/** Resolves the target session override allowed only for native command invocations. */
+/** Resolves the target session override for trusted native or explicit steer command turns. */
 export function resolveCommandTurnTargetSessionKey(input: {
   CommandTurn?: CommandTurnContext;
   CommandSource?: unknown;
@@ -213,10 +218,16 @@ export function resolveCommandTurnTargetSessionKey(input: {
   BodyForCommands?: unknown;
   RawBody?: unknown;
   Body?: unknown;
+  commandText?: unknown;
   CommandTargetSessionKey?: unknown;
 }): string | undefined {
+  const commandTurn = resolveCommandTurnContext(input);
+  const isExplicitTextSteer =
+    isAuthorizedTextSlashCommandTurn(commandTurn) &&
+    (commandTurn.commandName?.toLowerCase() === "steer" ||
+      commandTurn.commandName?.toLowerCase() === "tell");
   if (
-    !isNativeCommandTurn(resolveCommandTurnContext(input)) ||
+    (!isNativeCommandTurn(commandTurn) && !isExplicitTextSteer) ||
     typeof input.CommandTargetSessionKey !== "string"
   ) {
     return undefined;

@@ -1,4 +1,4 @@
-import type { OpenClawConfig } from "openclaw/plugin-sdk/config-runtime";
+import type { OpenClawConfig } from "openclaw/plugin-sdk/config-contracts";
 import { KamiwazaError, discoverKamiwazaTools } from "./client.js";
 import { resolveKamiwazaPromptCatalogEnabled } from "./config.js";
 

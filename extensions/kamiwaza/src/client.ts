@@ -1,6 +1,7 @@
 import crypto from "node:crypto";
-import type { OpenClawConfig } from "openclaw/plugin-sdk/config-runtime";
+import type { OpenClawConfig } from "openclaw/plugin-sdk/config-contracts";
 import { fetchWithSsrFGuard } from "openclaw/plugin-sdk/ssrf-runtime";
+import { isRecord } from "openclaw/plugin-sdk/string-coerce-runtime";
 import {
   kamiwazaExtensionNameMatches,
   resolveKamiwazaApiToken,
@@ -97,7 +98,7 @@ function compareToolNames(a: string, b: string): number {
   return left < right ? -1 : left > right ? 1 : 0;
 }
 
-export function sortKamiwazaTools<T extends { name: string }>(tools: T[]): T[] {
+function sortKamiwazaTools<T extends { name: string }>(tools: T[]): T[] {
   return [...tools].toSorted((a, b) => compareToolNames(a.name, b.name));
 }
 
@@ -132,9 +133,7 @@ function extensionServices(value: unknown): ExtensionServiceStatus[] {
 }
 
 function extensionEndpoints(value: unknown): ExtensionEndpoints | undefined {
-  return value && typeof value === "object" && !Array.isArray(value)
-    ? (value as ExtensionEndpoints)
-    : undefined;
+  return isRecord(value) ? value : undefined;
 }
 
 function extensionIsAllowed(
@@ -190,6 +189,7 @@ function isUnreachableNetworkError(error: unknown): boolean {
     return true;
   }
   if (error instanceof Error) {
+    // SAFETY: Error is an object; code remains unknown until the string check below.
     const code = (error as { code?: unknown }).code;
     if (
       typeof code === "string" &&
@@ -262,6 +262,7 @@ async function fetchJson<T>(params: {
         message: `Kamiwaza request failed (${response.status} ${response.statusText}) for ${params.url}`,
       });
     }
+    // SAFETY: The generic describes the selected endpoint; discovery uses unknown and validates fields.
     return (await response.json()) as T;
   } finally {
     await guarded.release();
@@ -457,6 +458,7 @@ function readMcpResult(payload: unknown): unknown {
   if (!payload || typeof payload !== "object" || Array.isArray(payload)) {
     return undefined;
   }
+  // SAFETY: The object check above permits property lookup; the result remains unknown.
   return (payload as { result?: unknown }).result;
 }
 
@@ -465,6 +467,7 @@ function readMcpTools(payload: unknown): unknown[] {
   if (!result || typeof result !== "object" || Array.isArray(result)) {
     return [];
   }
+  // SAFETY: The object check above permits property lookup; Array.isArray validates tools below.
   const tools = (result as { tools?: unknown }).tools;
   return Array.isArray(tools) ? tools : [];
 }
@@ -526,15 +529,15 @@ async function mapWithConcurrency<T, R>(
   worker: (item: T) => Promise<R>,
 ): Promise<R[]> {
   const results = Array.from<R>({ length: items.length });
-  let next = 0;
+  const pending = items.entries();
   const runners = Array.from({ length: Math.max(1, Math.min(limit, items.length)) }, async () => {
     while (true) {
-      const index = next;
-      next += 1;
-      if (index >= items.length) {
+      const item = pending.next();
+      if (item.done) {
         return;
       }
-      results[index] = await worker(items[index]);
+      const [index, value] = item.value;
+      results[index] = await worker(value);
     }
   });
   await Promise.all(runners);
@@ -589,6 +592,7 @@ export async function discoverKamiwazaTools(
         if (!tool || typeof tool !== "object" || Array.isArray(tool)) {
           continue;
         }
+        // SAFETY: The object check above permits lookup; each optional field remains unknown.
         const toolRecord = tool as { name?: unknown; description?: unknown; inputSchema?: unknown };
         const mcpTool = normalizeNonemptyString(toolRecord.name);
         if (!mcpTool) {

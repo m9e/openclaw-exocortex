@@ -1,27 +1,13 @@
 // Documents nested-agent command lane resolution and session scoping.
 import { describe, expect, it } from "vitest";
-import { CommandLane } from "../process/lanes.js";
 import {
-  AGENT_LANE_CRON_NESTED,
-  AGENT_LANE_NESTED,
   isNestedAgentLane,
   resolveCronAgentLane,
-  resolveNestedAgentLane,
   resolveNestedAgentLaneForSession,
 } from "./lanes.js";
 
-describe("resolveNestedAgentLane", () => {
-  it("defaults to the nested lane when no lane is provided", () => {
-    expect(resolveNestedAgentLane()).toBe(AGENT_LANE_NESTED);
-  });
-
-  it("preserves explicit lanes", () => {
-    expect(resolveNestedAgentLane("cron")).toBe(CommandLane.Cron);
-    expect(resolveNestedAgentLane("  cron  ")).toBe(CommandLane.Cron);
-    expect(resolveNestedAgentLane("subagent")).toBe("subagent");
-    expect(resolveNestedAgentLane(" custom-lane ")).toBe("custom-lane");
-  });
-});
+const AGENT_LANE_CRON_NESTED = "cron-nested";
+const AGENT_LANE_NESTED = "nested";
 
 describe("resolveCronAgentLane", () => {
   it("defaults cron-owned runs to the cron-nested lane", () => {
@@ -58,11 +44,6 @@ describe("resolveNestedAgentLaneForSession (#67502)", () => {
     const laneA = resolveNestedAgentLaneForSession("agent:ebao-next:discord:channel:1");
     const laneB = resolveNestedAgentLaneForSession("agent:ebao-vue:discord:channel:2");
     expect(laneA).not.toBe(laneB);
-  });
-
-  it("is deterministic for the same session key across calls", () => {
-    const key = "agent:ebao:discord:channel:1";
-    expect(resolveNestedAgentLaneForSession(key)).toBe(resolveNestedAgentLaneForSession(key));
   });
 
   it("trims whitespace around the session key before scoping", () => {

@@ -1,5 +1,6 @@
-import type { OpenClawConfig } from "openclaw/plugin-sdk/config-runtime";
+import type { OpenClawConfig } from "openclaw/plugin-sdk/config-contracts";
 import { fetchWithSsrFGuard } from "openclaw/plugin-sdk/ssrf-runtime";
+import { isRecord } from "openclaw/plugin-sdk/string-coerce-runtime";
 import {
   resolveLocksmithAdminToken,
   resolveLocksmithBaseUrl,
@@ -92,6 +93,7 @@ function isUnreachableNetworkError(error: unknown): boolean {
     return true;
   }
   if (error instanceof Error) {
+    // SAFETY: Error is an object; code remains unknown until the string check below.
     const code = (error as { code?: unknown }).code;
     if (typeof code === "string") {
       const codes = new Set([
@@ -188,7 +190,34 @@ function normalizeRelativePath(input: string | undefined): string {
   if (!input) {
     return "";
   }
-  return input.replace(/^\/+/u, "");
+  const invalidPath = () =>
+    new Error(
+      "Invalid Locksmith tool path: use a relative API path and separate query parameters.",
+    );
+  // Validate before WHATWG URL parsing can erase dot segments or backslashes.
+  // One leading slash is accepted for existing API callers; repeated separators
+  // and nested escapes have ambiguous interpretations across proxy hops.
+  if (/[\s\\?#]/u.test(input) || input.includes("//") || /^[a-z][a-z\d+.-]*:/iu.test(input)) {
+    throw invalidPath();
+  }
+  const relativePath = input.replace(/^\//u, "");
+  for (const segment of relativePath.split("/")) {
+    let decoded: string;
+    try {
+      decoded = decodeURIComponent(segment);
+    } catch {
+      throw invalidPath();
+    }
+    if (
+      decoded === "." ||
+      decoded === ".." ||
+      /[%/\\?#]/u.test(decoded) ||
+      Array.from(decoded).some((char) => char.charCodeAt(0) < 0x20 || char.charCodeAt(0) === 0x7f)
+    ) {
+      throw invalidPath();
+    }
+  }
+  return relativePath;
 }
 
 function isJsonContentType(contentType: string): boolean {
@@ -309,6 +338,7 @@ async function fetchJson<T>(params: {
         message: `Locksmith request failed (${response.status} ${response.statusText}) for ${params.url}`,
       });
     }
+    // SAFETY: The selected Locksmith endpoint defines T; discovery validates its tools collection.
     return (await response.json()) as T;
   } finally {
     await guarded.release();
@@ -332,7 +362,8 @@ export async function listLocksmithTools(cfg?: OpenClawConfig): Promise<Locksmit
     const raw = Array.isArray(payload.tools)
       ? payload.tools
           .filter(
-            (tool): tool is LocksmithDiscoveredTool => !!tool && typeof tool.name === "string",
+            (tool): tool is LocksmithDiscoveredTool =>
+              Boolean(tool) && typeof tool.name === "string",
           )
           .map((tool) => ({
             name: tool.name,
@@ -371,10 +402,9 @@ function getErrorEnvelope(payload: unknown): Record<string, unknown> | undefined
   if (!payload || typeof payload !== "object" || Array.isArray(payload)) {
     return undefined;
   }
+  // SAFETY: The object guard above permits property lookup; error remains unknown.
   const error = (payload as { error?: unknown }).error;
-  return error && typeof error === "object" && !Array.isArray(error)
-    ? (error as Record<string, unknown>)
-    : undefined;
+  return isRecord(error) ? error : undefined;
 }
 
 function extractServiceErrorType(payload: unknown): string | undefined {
@@ -399,11 +429,18 @@ function isLocksmithToolAbsentPayload(payload: unknown): boolean {
 }
 
 export async function callLocksmith(params: LocksmithCallParams): Promise<LocksmithCallResult> {
+  if (!/^[a-z\d][a-z\d_-]*$/iu.test(params.tool)) {
+    throw new Error("Invalid Locksmith tool name: expected a tool slug.");
+  }
   const method = (params.method ?? "GET").toUpperCase();
   const relativePath = normalizeRelativePath(params.path);
   const baseUrl = normalizeBaseUrl(resolveLocksmithBaseUrl(params.cfg));
   const apiPath = relativePath ? `/api/${params.tool}/${relativePath}` : `/api/${params.tool}`;
   const url = new URL(apiPath, `${baseUrl}/`);
+  const toolPath = `/api/${params.tool}`;
+  if (url.pathname !== toolPath && !url.pathname.startsWith(`${toolPath}/`)) {
+    throw new Error("Invalid Locksmith tool path: request escaped the selected tool namespace.");
+  }
   appendQuery(url, params.query);
 
   const headers = buildAuthHeaders(params.cfg, params.user);
@@ -449,6 +486,9 @@ export async function callLocksmith(params: LocksmithCallParams): Promise<Locksm
       policy: LOCAL_SERVICE_FETCH_POLICY,
       auditContext: "locksmith-tool-call",
       capture: false,
+      // The proxy owns upstream redirects. Following one here could switch the
+      // selected Locksmith tool while retaining the proxy's inbound credentials.
+      maxRedirects: 0,
     });
   } catch (error) {
     if (isUnreachableNetworkError(error)) {
@@ -596,6 +636,7 @@ export async function fetchLocksmithAdmin<T = unknown>(
         message: `Locksmith admin request failed (${response.status} ${response.statusText}) for ${url.toString()}`,
       });
     }
+    // SAFETY: The selected Locksmith endpoint defines T; discovery validates its tools collection.
     return (await response.json()) as T;
   } finally {
     await guarded.release();

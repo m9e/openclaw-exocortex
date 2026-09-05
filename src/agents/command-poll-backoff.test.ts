@@ -2,35 +2,12 @@
 import { describe, expect, it } from "vitest";
 import type { SessionState } from "../logging/diagnostic-session-state.js";
 import {
-  calculateBackoffMs,
-  getCommandPollSuggestion,
-  pruneStaleCommandPolls,
+  pruneStaleCommandPollsCore,
   recordCommandPoll,
   resetCommandPollCount,
 } from "./command-poll-backoff.js";
 
 describe("command-poll-backoff", () => {
-  describe("calculateBackoffMs", () => {
-    it("returns 5s for first poll", () => {
-      expect(calculateBackoffMs(0)).toBe(5000);
-    });
-
-    it("returns 10s for second poll", () => {
-      expect(calculateBackoffMs(1)).toBe(10000);
-    });
-
-    it("returns 30s for third poll", () => {
-      expect(calculateBackoffMs(2)).toBe(30000);
-    });
-
-    it("returns 60s for fourth and subsequent polls (capped)", () => {
-      expect(calculateBackoffMs(3)).toBe(60000);
-      expect(calculateBackoffMs(4)).toBe(60000);
-      expect(calculateBackoffMs(10)).toBe(60000);
-      expect(calculateBackoffMs(100)).toBe(60000);
-    });
-  });
-
   describe("recordCommandPoll", () => {
     it("returns 5s on first no-output poll", () => {
       const state: SessionState = {
@@ -94,30 +71,6 @@ describe("command-poll-backoff", () => {
     });
   });
 
-  describe("getCommandPollSuggestion", () => {
-    it("returns undefined for untracked command", () => {
-      const state: SessionState = {
-        lastActivity: Date.now(),
-        state: "processing",
-        queueDepth: 0,
-      };
-      expect(getCommandPollSuggestion(state, "unknown")).toBeUndefined();
-    });
-
-    it("returns current backoff for tracked command", () => {
-      const state: SessionState = {
-        lastActivity: Date.now(),
-        state: "processing",
-        queueDepth: 0,
-      };
-
-      recordCommandPoll(state, "cmd-123", false);
-      recordCommandPoll(state, "cmd-123", false);
-
-      expect(getCommandPollSuggestion(state, "cmd-123")).toBe(10000);
-    });
-  });
-
   describe("resetCommandPollCount", () => {
     it("removes command from tracking", () => {
       const state: SessionState = {
@@ -157,7 +110,7 @@ describe("command-poll-backoff", () => {
         ]),
       };
 
-      pruneStaleCommandPolls(state, 3600000);
+      pruneStaleCommandPollsCore(state, 3600000);
 
       expect(state.commandPollCounts?.has("cmd-old")).toBe(false);
       expect(state.commandPollCounts?.has("cmd-new")).toBe(true);
@@ -170,7 +123,7 @@ describe("command-poll-backoff", () => {
         queueDepth: 0,
       };
 
-      pruneStaleCommandPolls(state);
+      pruneStaleCommandPollsCore(state);
       expect(state.commandPollCounts).toBeUndefined();
     });
   });

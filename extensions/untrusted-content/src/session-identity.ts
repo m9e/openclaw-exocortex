@@ -1,7 +1,7 @@
 /**
  * Canonical session identity for breaker record + lookup.
  *
- * Tool hooks (tool_result_transform, before_tool_call) receive a sandbox
+ * Tool result middleware and before_tool_call hooks receive a sandbox
  * session key in `ctx.sessionKey`, while before_agent_run receives the plain
  * session key — so an incident recorded under one would never be found under
  * the other with a raw-string match. `sessionId` is present and stable across

@@ -8,6 +8,7 @@
 import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
+import { isRecord } from "../../lib/record-shared.mjs";
 
 const configPath =
   process.env.LOCALCLAW_CONFIG_PATH || path.join(os.homedir(), ".openclaw", "openclaw.json");
@@ -24,17 +25,18 @@ const modelId = process.env.LOCALCLAW_MODEL_ID || "";
 const modelApiKeyEnv = process.env.LOCALCLAW_MODEL_API_KEY_ENV || "";
 const envNameOk = (v) => /^[A-Z][A-Z0-9_]{0,127}$/.test(v);
 
-function isRecord(value) {
-  return value !== null && typeof value === "object" && !Array.isArray(value);
-}
 function ensureRecord(parent, key) {
-  if (!isRecord(parent[key])) parent[key] = {};
+  if (!isRecord(parent[key])) {
+    parent[key] = {};
+  }
   return parent[key];
 }
 function mergeList(existing, additions) {
   const list = Array.isArray(existing) ? existing.filter((e) => typeof e === "string") : [];
   for (const entry of additions) {
-    if (entry && !list.includes(entry)) list.push(entry);
+    if (entry && !list.includes(entry)) {
+      list.push(entry);
+    }
   }
   return list;
 }
@@ -42,19 +44,23 @@ function upsertAgent(agents, id) {
   const list = Array.isArray(agents.list) ? agents.list : [];
   agents.list = list;
   const found = list.find((entry) => isRecord(entry) && entry.id === id);
-  if (found) return found;
+  if (found) {
+    return found;
+  }
   const created = { id };
   list.push(created);
   return created;
 }
 
-let cfg = {};
+let cfg;
 try {
   cfg = JSON.parse(fs.readFileSync(configPath, "utf8"));
 } catch {
   cfg = {};
 }
-if (!isRecord(cfg)) cfg = {};
+if (!isRecord(cfg)) {
+  cfg = {};
+}
 
 // --- untrusted-content guard plugin: the load-bearing control -------------
 const plugins = ensureRecord(cfg, "plugins");
@@ -83,7 +89,7 @@ delete guardConfig.tlsRejectUnauthorized;
 if (modelBaseUrl && modelId) {
   const providerId = "localclaw-model";
   const modelRef = `${providerId}/${modelId}`;
-  const modelLeaf = modelId.split("/").filter(Boolean).pop() || modelId;
+  const modelLeaf = modelId.split("/").findLast(Boolean) || modelId;
   const contextWindow = Number.parseInt(process.env.LOCALCLAW_MODEL_CONTEXT_WINDOW || "", 10);
   const maxTokens = Number.parseInt(process.env.LOCALCLAW_MODEL_MAX_TOKENS || "", 10);
   const apiKey = envNameOk(modelApiKeyEnv)
@@ -136,7 +142,9 @@ const agents = ensureRecord(cfg, "agents");
 const defaults = ensureRecord(agents, "defaults");
 defaults.workspace = workspace;
 const main = upsertAgent(agents, "main");
-if (main.default === undefined) main.default = true;
+if (main.default === undefined) {
+  main.default = true;
+}
 main.name = agentName;
 main.workspace = workspace;
 // Intentionally NO tools.allow/deny, NO fs.workspaceOnly, NO exec lockdown:

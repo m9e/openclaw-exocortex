@@ -1,3 +1,4 @@
+import { isRecord } from "@openclaw/normalization-core/record-coerce";
 import { normalizeOptionalString } from "@openclaw/normalization-core/string-coerce";
 import type { OpenClawConfig } from "../config/types.openclaw.js";
 import { normalizeResolvedSecretInputString } from "../config/types.secrets.js";
@@ -9,20 +10,9 @@ const LOCKSMITH_PLUGIN_ID = "locksmith";
 const DEFAULT_LOCKSMITH_BASE_URL = "http://127.0.0.1:9200";
 const DEFAULT_LOCKSMITH_STARTUP_TIMEOUT_MS = 5000;
 
-type LocksmithToolConfig = {
-  enabled?: boolean;
-};
+type LocksmithPluginConfig = Record<string, unknown>;
 
-type LocksmithPluginConfig = {
-  baseUrl?: string;
-  inboundToken?: unknown;
-  required?: boolean;
-  genericTool?: boolean;
-  startupTimeoutMs?: unknown;
-  tools?: Record<string, LocksmithToolConfig>;
-};
-
-export type RequiredLocksmithStartupConfig = {
+type RequiredLocksmithStartupConfig = {
   baseUrl: string;
   inboundToken: string;
   projectedTools: string[];
@@ -36,7 +26,7 @@ export type RequiredLocksmithStartupStatus = {
 
 type FetchLike = (input: string | URL, init?: RequestInit) => Promise<Response>;
 
-export class RequiredLocksmithError extends Error {
+class RequiredLocksmithError extends Error {
   constructor(message: string, options?: { cause?: unknown }) {
     super(message, options);
     this.name = "RequiredLocksmithError";
@@ -50,10 +40,10 @@ function resolveLocksmithEntry(cfg?: OpenClawConfig): { enabled?: boolean; confi
 
 function resolveLocksmithPluginConfig(cfg?: OpenClawConfig): LocksmithPluginConfig | undefined {
   const pluginConfig = resolveLocksmithEntry(cfg).config;
-  if (!pluginConfig || typeof pluginConfig !== "object" || Array.isArray(pluginConfig)) {
+  if (!isRecord(pluginConfig)) {
     return undefined;
   }
-  return pluginConfig as LocksmithPluginConfig;
+  return pluginConfig;
 }
 
 function normalizeConfiguredSecret(value: unknown, path: string): string | undefined {
@@ -104,12 +94,12 @@ function normalizeStartupTimeoutMs(value: unknown): number | undefined {
 
 function resolveProjectedToolSlugs(pluginConfig?: LocksmithPluginConfig): string[] {
   const raw = pluginConfig?.tools;
-  if (!raw || typeof raw !== "object" || Array.isArray(raw)) {
+  if (!isRecord(raw)) {
     return [];
   }
   const projected: string[] = [];
   for (const [slug, value] of Object.entries(raw)) {
-    if (!value || typeof value !== "object" || Array.isArray(value)) {
+    if (!isRecord(value)) {
       continue;
     }
     if (value.enabled === true) {
@@ -241,19 +231,15 @@ async function fetchRequiredJson(params: {
 }
 
 function extractActiveToolNames(payload: unknown): string[] {
-  if (!payload || typeof payload !== "object" || Array.isArray(payload)) {
+  if (!isRecord(payload)) {
     return [];
   }
-  const tools = (payload as { tools?: unknown }).tools;
+  const tools = payload.tools;
   if (!Array.isArray(tools)) {
     return [];
   }
   return tools
-    .map((tool) =>
-      tool && typeof tool === "object" && !Array.isArray(tool)
-        ? (tool as { name?: unknown }).name
-        : undefined,
-    )
+    .map((tool) => (isRecord(tool) ? tool.name : undefined))
     .filter((name): name is string => typeof name === "string" && name.trim().length > 0)
     .map((name) => name.trim().toLowerCase())
     .toSorted();

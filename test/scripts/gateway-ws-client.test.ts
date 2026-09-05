@@ -1,5 +1,5 @@
-// Gateway Ws Client tests cover gateway ws client script behavior.
 import { createServer, type Server } from "node:http";
+import type { Duplex } from "node:stream";
 import { afterEach, describe, expect, it } from "vitest";
 import { WebSocket, WebSocketServer } from "ws";
 import { createGatewayWsClient } from "../../scripts/dev/gateway-ws-client.js";
@@ -8,6 +8,10 @@ let server: Server | undefined;
 let wss: WebSocketServer | undefined;
 
 afterEach(async () => {
+  // A failed assertion can skip client.close(); wss.close() waits for those peers.
+  for (const client of wss?.clients ?? []) {
+    client.terminate();
+  }
   await new Promise<void>((resolve) => {
     wss?.close(() => resolve());
     if (!wss) {
@@ -47,13 +51,23 @@ async function listen(handler: (ws: WebSocket) => void): Promise<string> {
 
 async function listenStalledUpgrade(): Promise<{ close: () => Promise<void>; url: string }> {
   const stalledServer = createServer();
-  const sockets = new Set<import("node:net").Socket>();
-  stalledServer.on("upgrade", (_req, socket) => {
-    // Keep the socket open without completing the websocket handshake.
+  const sockets = new Set<Duplex>();
+  let closing = false;
+  stalledServer.on("connection", (socket) => {
     sockets.add(socket);
     socket.once("close", () => {
       sockets.delete(socket);
     });
+    if (closing) {
+      socket.destroy();
+    }
+  });
+  stalledServer.on("upgrade", (_req, socket) => {
+    // Keep the socket open without completing the websocket handshake.
+    sockets.add(socket);
+    if (closing) {
+      socket.destroy();
+    }
   });
   await new Promise<void>((resolve) => {
     stalledServer.listen(0, "127.0.0.1", resolve);
@@ -64,6 +78,7 @@ async function listenStalledUpgrade(): Promise<{ close: () => Promise<void>; url
   }
   return {
     close: async () => {
+      closing = true;
       for (const socket of sockets) {
         socket.destroy();
       }

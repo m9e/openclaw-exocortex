@@ -8,7 +8,7 @@ import {
 } from "./models-config.providers.secret-helpers.js";
 
 vi.mock("../plugins/setup-registry.js", () => ({
-  resolvePluginSetupProvider: () => undefined,
+  resolvePluginSetupProviderCore: () => undefined,
 }));
 
 vi.mock("../infra/shell-env.js", () => ({
@@ -30,8 +30,6 @@ vi.mock("./model-auth-env-vars.js", () => {
   } as const;
   return {
     listKnownProviderEnvApiKeyNames: () => [...new Set(Object.values(candidates).flat())],
-    resolveProviderEnvApiKeyCandidates: () => candidates,
-    resolveProviderEnvAuthEvidence: () => ({}),
     resolveProviderEnvAuthLookupMaps: () => ({
       aliasMap: {},
       envCandidateMap: candidates,

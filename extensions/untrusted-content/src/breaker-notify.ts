@@ -10,8 +10,9 @@
  * It is best-effort and must never throw: a failed notification can never be
  * allowed to block or unwind the containment path that withheld the content.
  */
-import type { OpenClawConfig } from "openclaw/plugin-sdk/config-runtime";
+import type { OpenClawConfig } from "openclaw/plugin-sdk/config-contracts";
 import type { OpenClawPluginApi } from "openclaw/plugin-sdk/plugin-entry";
+import { isRecord } from "openclaw/plugin-sdk/string-coerce-runtime";
 
 // Leads every advisory so the operator and any log reader can tell this is a
 // push notification, not an agent reply, and is never visible to the model.
@@ -65,14 +66,14 @@ export function buildBreakerAdvisory(params: BreakerAdvisoryParams): string {
 
 function resolveRiskConfig(cfg?: OpenClawConfig): Record<string, unknown> | undefined {
   const pluginConfig = cfg?.plugins?.entries?.["untrusted-content"]?.config;
-  if (!pluginConfig || typeof pluginConfig !== "object" || Array.isArray(pluginConfig)) {
+  if (!isRecord(pluginConfig)) {
     return undefined;
   }
-  const risk = (pluginConfig as { risk?: unknown }).risk;
-  if (!risk || typeof risk !== "object" || Array.isArray(risk)) {
+  const risk = pluginConfig.risk;
+  if (!isRecord(risk)) {
     return undefined;
   }
-  return risk as Record<string, unknown>;
+  return risk;
 }
 
 /** Default ON: the operator asked for breaker advisories; only an explicit false disables them. */
@@ -98,10 +99,10 @@ function normalizeChannelAllowList(value: unknown): string[] | undefined {
 const NON_CHANNEL_KEYS = new Set(["defaults", "modelByChannel"]);
 
 function isChannelEnabled(entry: unknown): boolean {
-  if (!entry || typeof entry !== "object" || Array.isArray(entry)) {
+  if (!isRecord(entry)) {
     return false;
   }
-  return (entry as { enabled?: boolean }).enabled !== false;
+  return entry.enabled !== false;
 }
 
 /**
@@ -137,15 +138,12 @@ export function resolveOwnerTarget(
   channelId: string,
 ): string | undefined {
   const entry = cfg?.channels?.[channelId];
-  if (!entry || typeof entry !== "object" || Array.isArray(entry)) {
+  if (!isRecord(entry)) {
     return undefined;
   }
-  const channel = entry as {
-    defaultTo?: string | number;
-    allowFrom?: ReadonlyArray<string | number>;
-  };
-  const target = channel.defaultTo ?? channel.allowFrom?.[0];
-  return target === undefined ? undefined : String(target);
+  const target =
+    entry.defaultTo ?? (Array.isArray(entry.allowFrom) ? entry.allowFrom[0] : undefined);
+  return typeof target === "string" || typeof target === "number" ? String(target) : undefined;
 }
 
 function withTimeout(promise: Promise<unknown>, ms: number): Promise<unknown> {

@@ -2,7 +2,7 @@
 import fs from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
-import { captureEnv } from "../test-utils/env.js";
+import { captureEnv, setTestEnvValue } from "../test-utils/env.js";
 import { cleanupSessionStateForTest } from "../test-utils/session-state-cleanup.js";
 
 // OPENCLAW_STATE_DIR test helpers isolate stateful tests and restore the caller
@@ -16,7 +16,7 @@ export function restoreStateDirEnv(snapshot: ReturnType<typeof snapshotStateDirE
 }
 
 export function setStateDirEnv(stateDir: string): void {
-  process.env.OPENCLAW_STATE_DIR = stateDir;
+  setTestEnvValue("OPENCLAW_STATE_DIR", stateDir);
 }
 
 export async function withStateDirEnv<T>(
@@ -33,8 +33,8 @@ export async function withStateDirEnv<T>(
   } finally {
     // Session state cleanup may race with assertions in failing tests; never let
     // that cleanup failure hide the original test error or skip env restoration.
-    await cleanupSessionStateForTest().catch(() => undefined);
+    await cleanupSessionStateForTest({ stateDir }).catch(() => undefined);
     restoreStateDirEnv(snapshot);
-    await fs.rm(tempRoot, { recursive: true, force: true });
+    await fs.rm(tempRoot, { recursive: true, force: true, maxRetries: 5, retryDelay: 20 });
   }
 }

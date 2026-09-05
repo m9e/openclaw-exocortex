@@ -1,4 +1,5 @@
-import type { OpenClawConfig } from "openclaw/plugin-sdk/config-runtime";
+import assert from "node:assert/strict";
+import type { OpenClawConfig } from "openclaw/plugin-sdk/config-contracts";
 import type { OpenClawPluginApi } from "openclaw/plugin-sdk/plugin-entry";
 import type { PluginStateEntry } from "openclaw/plugin-sdk/plugin-state-runtime";
 import { beforeEach, describe, expect, it, vi } from "vitest";
@@ -131,6 +132,7 @@ describe("evaluateBeforeToolCall", () => {
     const incidents = [...store.map.values()];
     expect(incidents).toHaveLength(1);
     const incident = incidents[0];
+    assert(incident);
     expect(incident.tier).toBe("breaker");
     expect(incident.breakerReason).toBe("honeypot");
     expect(incident.active).toBe(true);

@@ -1,6 +1,6 @@
-import type { OpenClawConfig } from "openclaw/plugin-sdk/config-runtime";
+import type { OpenClawConfig } from "openclaw/plugin-sdk/config-contracts";
 import { fetchWithSsrFGuard } from "openclaw/plugin-sdk/ssrf-runtime";
-import { normalizeOptionalString } from "openclaw/plugin-sdk/text-runtime";
+import { isRecord, normalizeOptionalString } from "openclaw/plugin-sdk/string-coerce-runtime";
 import {
   resolveUntrustedContentApiKey,
   resolveUntrustedContentBaseUrl,
@@ -33,6 +33,49 @@ export type UntrustedContentPipelineResponse = {
   threats: ThreatSignal[];
   metadata: PipelineMetadata;
 };
+
+function isThreatSignal(value: unknown): value is ThreatSignal {
+  if (!isRecord(value)) {
+    return false;
+  }
+  return (
+    ["stage", "stage_id", "type", "message"].every(
+      (key) => value[key] === undefined || typeof value[key] === "string",
+    ) &&
+    (value.severity === undefined ||
+      value.severity === "info" ||
+      value.severity === "warn" ||
+      value.severity === "critical") &&
+    (value.verdict === undefined ||
+      value.verdict === "pass" ||
+      value.verdict === "flag" ||
+      value.verdict === "block") &&
+    (value.confidence === undefined ||
+      value.confidence === null ||
+      (typeof value.confidence === "number" && Number.isFinite(value.confidence))) &&
+    (value.details === undefined || isRecord(value.details))
+  );
+}
+
+function isPipelineResponse(value: unknown): value is UntrustedContentPipelineResponse {
+  if (!isRecord(value) || !isRecord(value.metadata)) {
+    return false;
+  }
+  const storage = value.metadata.storage;
+  return (
+    typeof value.id === "string" &&
+    typeof value.clean === "boolean" &&
+    typeof value.quarantined === "boolean" &&
+    (value.content === null || typeof value.content === "string") &&
+    Array.isArray(value.threats) &&
+    value.threats.every(isThreatSignal) &&
+    (storage === undefined ||
+      (isRecord(storage) &&
+        Object.values(storage).every(
+          (entry) => entry === null || entry === undefined || typeof entry === "string",
+        )))
+  );
+}
 
 type RunUntrustedContentPipelineParams = {
   cfg?: OpenClawConfig;
@@ -104,7 +147,7 @@ async function readErrorResponse(response: Response): Promise<string> {
   return `${response.status} ${response.statusText}: ${normalized}`.trim();
 }
 
-export type QuarantineRawRecord = {
+type QuarantineRawRecord = {
   id: string;
   raw_content: string;
   source?: string | null;
@@ -113,6 +156,17 @@ export type QuarantineRawRecord = {
   sha256?: string | null;
   timestamp?: string | null;
 };
+
+function isQuarantineRawRecord(value: unknown): value is QuarantineRawRecord {
+  return (
+    isRecord(value) &&
+    typeof value.id === "string" &&
+    typeof value.raw_content === "string" &&
+    ["source", "url", "content_type", "sha256", "timestamp"].every(
+      (key) => value[key] === undefined || value[key] === null || typeof value[key] === "string",
+    )
+  );
+}
 
 export type FetchQuarantineRawResult =
   | { ok: true; raw: QuarantineRawRecord }
@@ -164,7 +218,10 @@ export async function fetchQuarantineRaw(
     if (!response.ok) {
       return { ok: false, status: response.status, error: await readErrorResponse(response) };
     }
-    const raw = (await response.json()) as QuarantineRawRecord;
+    const raw: unknown = await response.json();
+    if (!isQuarantineRawRecord(raw)) {
+      throw new Error("quarantine response has an invalid shape");
+    }
     return { ok: true, raw };
   } catch (error) {
     const message =
@@ -287,7 +344,10 @@ export async function runUntrustedContentPipeline(
       }
       throw new UntrustedContentHttpError(response.status, errorText);
     }
-    const data = (await response.json()) as UntrustedContentPipelineResponse;
+    const data: unknown = await response.json();
+    if (!isPipelineResponse(data)) {
+      throw new Error("pipeline response has an invalid shape");
+    }
     clearServiceUnavailable(baseUrl);
     return data;
   } catch (error) {

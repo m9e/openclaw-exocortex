@@ -2,10 +2,14 @@
  * Resolves configured native harness policy for agent ids.
  */
 import type { OpenClawConfig } from "../../config/types.openclaw.js";
-import { AUTO_AGENT_RUNTIME_ID, type EmbeddedAgentRuntime } from "../agent-runtime-id.js";
-import { normalizeOptionalAgentRuntimeId } from "../agent-runtime-id.js";
+import type { ProviderRouteOverridePresence } from "../../plugin-sdk/provider-model-types.js";
+import {
+  AUTO_AGENT_RUNTIME_ID,
+  type EmbeddedAgentRuntime,
+  normalizeOptionalAgentRuntimeId,
+} from "../agent-runtime-id.js";
 import { resolveModelRuntimePolicy } from "../model-runtime-policy.js";
-import { openAIProviderUsesCodexRuntimeByDefault } from "../openai-routing.js";
+import { resolveOpenAIImplicitAgentRuntime } from "../openai-routing.js";
 
 /**
  * Effective runtime policy for selecting the agent harness that should execute a turn.
@@ -13,12 +17,16 @@ import { openAIProviderUsesCodexRuntimeByDefault } from "../openai-routing.js";
 export type AgentHarnessPolicy = {
   runtime: EmbeddedAgentRuntime;
   runtimeSource?: "model" | "provider" | "implicit";
+  forcedByEnvironment?: true;
 };
 
 /** Resolves model/provider/runtime config into the canonical harness runtime id. */
 export function resolveAgentHarnessPolicy(params: {
   provider?: string;
   modelId?: string;
+  modelApi?: string | null;
+  modelBaseUrl?: unknown;
+  requestTransportOverrides?: ProviderRouteOverridePresence;
   config?: OpenClawConfig;
   agentId?: string;
   sessionKey?: string;
@@ -32,18 +40,32 @@ export function resolveAgentHarnessPolicy(params: {
     sessionKey: params.sessionKey,
   });
   const configuredRuntime = normalizeOptionalAgentRuntimeId(configured.policy?.id);
-  const runtimeSource = configured.source ?? "implicit";
   const runtime =
     configuredRuntime && configuredRuntime !== "default"
       ? configuredRuntime
       : AUTO_AGENT_RUNTIME_ID;
-  if (
-    openAIProviderUsesCodexRuntimeByDefault({ provider: params.provider, config: params.config })
-  ) {
-    if (runtime === "auto") {
-      return { runtime: "codex", runtimeSource };
-    }
-    return { runtime, runtimeSource };
+  const runtimeSource =
+    runtime === AUTO_AGENT_RUNTIME_ID ? "implicit" : (configured.source ?? "implicit");
+  if (runtime !== "auto") {
+    return {
+      runtime,
+      runtimeSource,
+      ...(configured.forcedByEnvironment ? { forcedByEnvironment: true } : {}),
+    };
+  }
+  const openAIImplicitRuntime = resolveOpenAIImplicitAgentRuntime({
+    provider: params.provider,
+    modelId: params.modelId,
+    api: params.modelApi,
+    baseUrl: params.modelBaseUrl,
+    config: params.config,
+    agentId: params.agentId,
+    sessionKey: params.sessionKey,
+    env: params.env,
+    requestTransportOverrides: params.requestTransportOverrides,
+  });
+  if (openAIImplicitRuntime) {
+    return { runtime: openAIImplicitRuntime, runtimeSource };
   }
   return {
     runtime,

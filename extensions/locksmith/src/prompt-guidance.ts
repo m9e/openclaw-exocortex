@@ -1,4 +1,4 @@
-import type { OpenClawConfig } from "openclaw/plugin-sdk/config-runtime";
+import type { OpenClawConfig } from "openclaw/plugin-sdk/config-contracts";
 import { listLocksmithTools, sortLocksmithTools } from "./client.js";
 import {
   type LocksmithProjectedTool,

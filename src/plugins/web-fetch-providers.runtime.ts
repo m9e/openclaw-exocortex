@@ -7,15 +7,15 @@ import {
   resolveBundledWebFetchResolutionConfig,
   sortWebFetchProviders,
 } from "./web-fetch-providers.shared.js";
-import { resolveBundledWebFetchProvidersFromPublicArtifacts } from "./web-provider-public-artifacts.js";
+import {
+  resolveBundledRuntimeWebFetchProvidersFromPublicArtifacts,
+  resolveBundledWebFetchProvidersFromPublicArtifacts,
+} from "./web-provider-public-artifacts.js";
 import {
   mapRegistryProviders,
   resolveManifestDeclaredWebProviderCandidatePluginIds,
 } from "./web-provider-resolution-shared.js";
-import {
-  resolvePluginWebProviders,
-  resolveRuntimeWebProviders,
-} from "./web-provider-runtime-shared.js";
+import { resolvePluginWebProviders } from "./web-provider-runtime-shared.js";
 
 function resolveWebFetchCandidatePluginIds(params: {
   config?: PluginLoadOptions["config"];
@@ -23,6 +23,8 @@ function resolveWebFetchCandidatePluginIds(params: {
   env?: PluginLoadOptions["env"];
   onlyPluginIds?: readonly string[];
   origin?: PluginManifestRecord["origin"];
+  sandboxed?: boolean;
+  manifestRecords?: readonly PluginManifestRecord[];
 }): string[] | undefined {
   return resolveManifestDeclaredWebProviderCandidatePluginIds({
     contract: "webFetchProviders",
@@ -32,6 +34,8 @@ function resolveWebFetchCandidatePluginIds(params: {
     env: params.env,
     onlyPluginIds: params.onlyPluginIds,
     origin: params.origin,
+    sandboxed: params.sandboxed,
+    manifestRecords: params.manifestRecords,
   });
 }
 
@@ -56,12 +60,16 @@ export function resolvePluginWebFetchProviders(params: {
   cache?: boolean;
   mode?: "runtime" | "setup";
   origin?: PluginManifestRecord["origin"];
+  sandboxed?: boolean;
+  manifestRecords?: readonly PluginManifestRecord[];
 }): PluginWebFetchProviderEntry[] {
   return resolvePluginWebProviders(params, {
     resolveBundledResolutionConfig: resolveBundledWebFetchResolutionConfig,
     resolveCandidatePluginIds: resolveWebFetchCandidatePluginIds,
     mapRegistryProviders: mapRegistryWebFetchProviders,
     resolveBundledPublicArtifactProviders: resolveBundledWebFetchProvidersFromPublicArtifacts,
+    resolveBundledRuntimeArtifactProviders:
+      resolveBundledRuntimeWebFetchProvidersFromPublicArtifacts,
   });
 }
 
@@ -72,10 +80,13 @@ export function resolveRuntimeWebFetchProviders(params: {
   env?: PluginLoadOptions["env"];
   onlyPluginIds?: readonly string[];
   origin?: PluginManifestRecord["origin"];
+  manifestRecords?: readonly PluginManifestRecord[];
 }): PluginWebFetchProviderEntry[] {
-  return resolveRuntimeWebProviders(params, {
+  return resolvePluginWebProviders(params, {
     resolveBundledResolutionConfig: resolveBundledWebFetchResolutionConfig,
     resolveCandidatePluginIds: resolveWebFetchCandidatePluginIds,
     mapRegistryProviders: mapRegistryWebFetchProviders,
+    resolveBundledRuntimeArtifactProviders:
+      resolveBundledRuntimeWebFetchProvidersFromPublicArtifacts,
   });
 }

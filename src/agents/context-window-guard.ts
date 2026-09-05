@@ -9,7 +9,7 @@ import type { OpenClawConfig } from "../config/types.openclaw.js";
 import { resolveProviderEndpoint } from "./provider-attribution.js";
 
 export const CONTEXT_WINDOW_HARD_MIN_TOKENS = 4_000;
-export const CONTEXT_WINDOW_WARN_BELOW_TOKENS = 8_000;
+const CONTEXT_WINDOW_WARN_BELOW_TOKENS = 8_000;
 const CONTEXT_WINDOW_HARD_MIN_RATIO = 0.1;
 const CONTEXT_WINDOW_WARN_BELOW_RATIO = 0.2;
 
@@ -82,19 +82,11 @@ export function resolveContextWindowInfo(params: {
     normalizePositiveInt(params.modelContextWindow);
   const defaultTokens =
     normalizePositiveInt(params.defaultTokens) ?? CONTEXT_WINDOW_WARN_BELOW_TOKENS;
-  const baseInfo = fromModelsConfig
+  return fromModelsConfig
     ? { tokens: fromModelsConfig, source: "modelsConfig" as const }
     : fromModel
       ? { tokens: fromModel, source: "model" as const }
       : { tokens: defaultTokens, source: "default" as const };
-
-  const capTokens = normalizePositiveInt(params.cfg?.agents?.defaults?.contextTokens);
-  if (capTokens && capTokens < baseInfo.tokens) {
-    // Agent defaults can intentionally cap a larger model context window.
-    return { tokens: capTokens, referenceTokens: baseInfo.tokens, source: "agentContextTokens" };
-  }
-
-  return baseInfo;
 }
 
 type ContextWindowGuardResult = ContextWindowInfo & {
@@ -125,7 +117,7 @@ function resolveContextWindowGuardHint(params: {
 }
 
 /** Derive warning/block floors from the resolved model context window. */
-export function resolveContextWindowGuardThresholds(
+function resolveContextWindowGuardThresholds(
   contextWindowTokens: number,
 ): ContextWindowGuardThresholds {
   const tokens = normalizePositiveInt(contextWindowTokens) ?? 0;
@@ -153,12 +145,6 @@ export function formatContextWindowWarningMessage(params: {
   if (!hint.likelySelfHosted) {
     return base;
   }
-  if (params.guard.source === "agentContextTokens") {
-    return (
-      `${base}; OpenClaw is capped by agents.defaults.contextTokens, so raise that cap ` +
-      `if you want to use more of the model context window`
-    );
-  }
   if (params.guard.source === "modelsConfig") {
     return (
       `${base}; OpenClaw is using the configured model context limit for this model, ` +
@@ -182,9 +168,6 @@ export function formatContextWindowBlockMessage(params: {
   const hint = resolveContextWindowGuardHint({ runtimeBaseUrl: params.runtimeBaseUrl });
   if (!hint.likelySelfHosted) {
     return base;
-  }
-  if (params.guard.source === "agentContextTokens") {
-    return `${base} OpenClaw is capped by agents.defaults.contextTokens. Raise that cap.`;
   }
   if (params.guard.source === "modelsConfig") {
     return (

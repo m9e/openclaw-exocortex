@@ -1,8 +1,7 @@
 /** Channel-level policy for which inbound messages should receive an ack reaction. */
-export type AckReactionScope = "all" | "direct" | "group-all" | "group-mentions" | "off" | "none";
+import { toErrorObject } from "../infra/errors.js";
 
-/** WhatsApp group-mode policy; direct-message ack reactions are configured separately. */
-export type WhatsAppAckReactionMode = "always" | "mentions" | "never";
+export type AckReactionScope = "all" | "direct" | "group-all" | "group-mentions" | "off" | "none";
 
 /** Sent ack reaction state plus the cleanup hook callers can run after reply delivery. */
 export type AckReactionHandle = {
@@ -20,10 +19,10 @@ export type AckReactionHandle = {
  */
 export type AckReactionGateParams = {
   scope: AckReactionScope | undefined;
+  inboundEventKind?: "user_request" | "room_event";
   isDirect: boolean;
   isGroup: boolean;
   isMentionableGroup: boolean;
-  requireMention: boolean;
   canDetectMention: boolean;
   effectiveWasMentioned: boolean;
   shouldBypassMention?: boolean;
@@ -33,6 +32,11 @@ export type AckReactionGateParams = {
 export function shouldAckReaction(params: AckReactionGateParams): boolean {
   const scope = params.scope ?? "group-mentions";
   if (scope === "off" || scope === "none") {
+    return false;
+  }
+  // Ambient room events stay silent unless the operator explicitly chose the
+  // unconditional scope. This keeps every channel on the same `all` contract.
+  if (params.inboundEventKind === "room_event" && scope !== "all") {
     return false;
   }
   if (scope === "all") {
@@ -48,56 +52,16 @@ export function shouldAckReaction(params: AckReactionGateParams): boolean {
     if (!params.isMentionableGroup) {
       return false;
     }
-    if (!params.requireMention) {
-      return false;
-    }
     if (!params.canDetectMention) {
       return false;
     }
+    // Whether the group *requires* a mention is a separate policy: a group that
+    // answers everything still acks the messages that address the agent.
     // Group activation can stand in for a literal mention when another gate already established
     // that this inbound message belongs to the active conversation.
     return params.effectiveWasMentioned || params.shouldBypassMention === true;
   }
   return false;
-}
-
-/** Resolves WhatsApp ack policy while preserving the shared mention-only group gate. */
-export function shouldAckReactionForWhatsApp(params: {
-  emoji: string;
-  isDirect: boolean;
-  isGroup: boolean;
-  directEnabled: boolean;
-  groupMode: WhatsAppAckReactionMode;
-  wasMentioned: boolean;
-  groupActivated: boolean;
-}): boolean {
-  if (!params.emoji) {
-    return false;
-  }
-  if (params.isDirect) {
-    return params.directEnabled;
-  }
-  if (!params.isGroup) {
-    return false;
-  }
-  if (params.groupMode === "never") {
-    return false;
-  }
-  if (params.groupMode === "always") {
-    return true;
-  }
-  // WhatsApp "mentions" mode shares the generic group-mentions path so activation bypass and
-  // mention detection semantics stay aligned with other channels.
-  return shouldAckReaction({
-    scope: "group-mentions",
-    isDirect: false,
-    isGroup: true,
-    isMentionableGroup: true,
-    requireMention: true,
-    canDetectMention: true,
-    effectiveWasMentioned: params.wasMentioned,
-    shouldBypassMention: params.groupActivated,
-  });
 }
 
 /** Starts sending an ack reaction and returns the success-tracking cleanup handle. */
@@ -118,7 +82,7 @@ export function createAckReactionHandle(params: {
     sendPromise = params.send();
   } catch (err) {
     // Convert sync throws into the same Promise<boolean> flow used for async send failures.
-    sendPromise = Promise.reject(toLintErrorObject(err, "Non-Error rejection"));
+    sendPromise = Promise.reject(toErrorObject(err, "Non-Error rejection"));
   }
 
   return {
@@ -173,18 +137,4 @@ export function removeAckReactionHandleAfterReply(params: {
     remove: params.ackReaction?.remove ?? (async () => {}),
     onError: params.onError,
   });
-}
-
-function toLintErrorObject(value: unknown, fallbackMessage: string): Error {
-  if (value instanceof Error) {
-    return value;
-  }
-  if (typeof value === "string") {
-    return new Error(value);
-  }
-  const error = new Error(fallbackMessage, { cause: value });
-  if ((typeof value === "object" && value !== null) || typeof value === "function") {
-    Object.assign(error, value);
-  }
-  return error;
 }

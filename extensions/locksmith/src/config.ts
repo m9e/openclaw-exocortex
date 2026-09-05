@@ -1,16 +1,16 @@
-import type { OpenClawConfig } from "openclaw/plugin-sdk/config-runtime";
+import type { OpenClawConfig } from "openclaw/plugin-sdk/config-contracts";
 import {
   normalizeResolvedSecretInputString,
   normalizeSecretInput,
 } from "openclaw/plugin-sdk/secret-input";
-import { normalizeOptionalString } from "openclaw/plugin-sdk/text-runtime";
+import { normalizeOptionalString } from "openclaw/plugin-sdk/string-coerce-runtime";
 
-export const DEFAULT_LOCKSMITH_BASE_URL = "http://127.0.0.1:9200";
-export const DEFAULT_LOCKSMITH_TIMEOUT_SECONDS = 30;
-export const DEFAULT_LOCKSMITH_CATALOG_TTL_SECONDS = 30;
-export const DEFAULT_LOCKSMITH_MAX_RESPONSE_BYTES = 262_144;
+const DEFAULT_LOCKSMITH_BASE_URL = "http://127.0.0.1:9200";
+const DEFAULT_LOCKSMITH_TIMEOUT_SECONDS = 30;
+const DEFAULT_LOCKSMITH_CATALOG_TTL_SECONDS = 30;
+const DEFAULT_LOCKSMITH_MAX_RESPONSE_BYTES = 262_144;
 
-export type LocksmithToolConfig = {
+type LocksmithToolConfig = {
   enabled?: boolean;
   label?: string;
   description?: string;
@@ -56,7 +56,7 @@ function normalizeSlug(raw: string): string | undefined {
   return trimmed;
 }
 
-export function projectedToolName(slug: string): string {
+function projectedToolName(slug: string): string {
   return `${TOOL_NAME_PREFIX}${slug}`;
 }
 
@@ -65,6 +65,7 @@ function resolvePluginConfig(cfg?: OpenClawConfig): LocksmithPluginConfig | unde
   if (!pluginConfig || typeof pluginConfig !== "object" || Array.isArray(pluginConfig)) {
     return undefined;
   }
+  // SAFETY: Plugin config is manifest-validated; resolvers normalize optional values before use.
   return pluginConfig as LocksmithPluginConfig;
 }
 
@@ -84,6 +85,7 @@ function normalizeHttpMethod(value: unknown): LocksmithProjectedTool["method"] {
     return undefined;
   }
   const upper = value.trim().toUpperCase();
+  // SAFETY: METHOD_SET contains exactly the supported HTTP method union members.
   return METHOD_SET.has(upper) ? (upper as LocksmithProjectedTool["method"]) : undefined;
 }
 

@@ -1,9 +1,8 @@
 /**
  * Cap on consecutive attempts that ended in an idle timeout without completed
  * model progress, before the outer run loop refuses to start another attempt.
- * Distinct from MAX_SAME_MODEL_IDLE_TIMEOUT_RETRIES (which gates one extra
- * retry on the same model before failover) and the broad MAX_RUN_LOOP_ITERATIONS
- * backstop in run.ts.
+ * Distinct from the transient retry owner (which gates bounded retries before
+ * failover) and the broad MAX_RUN_LOOP_ITERATIONS backstop in run.ts.
  *
  * This one fires across profile/auth retries inside the same embedded run so a
  * wedged provider cannot fan out paid model calls across every fallback profile
@@ -16,7 +15,7 @@
 export const MAX_CONSECUTIVE_IDLE_TIMEOUTS_BEFORE_OUTPUT = 5;
 
 /** Mutable outer-loop state that survives across retry/profile attempts. */
-export type IdleTimeoutBreakerState = {
+type IdleTimeoutBreakerState = {
   consecutiveIdleTimeoutsBeforeOutput: number;
 };
 
@@ -30,14 +29,14 @@ export function createIdleTimeoutBreakerState(): IdleTimeoutBreakerState {
  * model progress means durable text/tool-call progress, not merely billed token
  * deltas from a partial stream.
  */
-export type IdleTimeoutBreakerInput = {
+type IdleTimeoutBreakerInput = {
   idleTimedOut: boolean;
   completedModelProgress: boolean;
   outputTokens?: number;
 };
 
 /** Result of applying one attempt outcome to the breaker state. */
-export type IdleTimeoutBreakerStep = {
+type IdleTimeoutBreakerStep = {
   consecutive: number;
   tripped: boolean;
 };

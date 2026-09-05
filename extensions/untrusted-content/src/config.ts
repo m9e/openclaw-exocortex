@@ -1,49 +1,32 @@
-import type { OpenClawConfig } from "openclaw/plugin-sdk/config-runtime";
-import { canResolveEnvSecretRefInReadOnlyPath } from "openclaw/plugin-sdk/extension-shared";
+import type { OpenClawConfig } from "openclaw/plugin-sdk/config-contracts";
 import { normalizeSecretInput, resolveSecretInputString } from "openclaw/plugin-sdk/secret-input";
+import { canResolveEnvSecretRefInReadOnlyPath } from "openclaw/plugin-sdk/secret-ref-readonly";
 import {
+  isRecord,
   normalizeOptionalLowercaseString,
   normalizeOptionalString,
-} from "openclaw/plugin-sdk/text-runtime";
+} from "openclaw/plugin-sdk/string-coerce-runtime";
 
 export type UntrustedContentTrustLevel = "untrusted" | "semi-trusted" | "trusted";
 export type UntrustedContentOnErrorMode = "pass" | "quarantine";
 
-type UntrustedContentPluginConfig = {
-  enabled?: boolean;
-  baseUrl?: string;
-  apiKey?: unknown;
-  pipelineId?: string;
-  tlsRejectUnauthorized?: boolean;
-  toolNames?: unknown;
-  trustLevel?: UntrustedContentTrustLevel;
-  timeoutSeconds?: number;
-  maxContentChars?: number;
-  onError?: UntrustedContentOnErrorMode;
-  sanitize?: boolean;
-  guardrail?: boolean;
-  scan?: boolean;
-  windowSize?: number;
-  windowOverlap?: number;
-};
-
-export const DEFAULT_UNTRUSTED_CONTENT_BASE_URL = "http://127.0.0.1:8787";
-export const DEFAULT_UNTRUSTED_CONTENT_TIMEOUT_SECONDS = 10;
-export const DEFAULT_UNTRUSTED_CONTENT_MAX_CONTENT_CHARS = 50_000;
+const DEFAULT_UNTRUSTED_CONTENT_BASE_URL = "http://127.0.0.1:8787";
+const DEFAULT_UNTRUSTED_CONTENT_TIMEOUT_SECONDS = 10;
+const DEFAULT_UNTRUSTED_CONTENT_MAX_CONTENT_CHARS = 50_000;
 // Fail closed: when the guard service errors, the tool-result path defaults to
 // quarantining the result rather than delivering unscanned content. "pass" is
 // the explicit operator opt-out for that error path.
 export const DEFAULT_UNTRUSTED_CONTENT_ON_ERROR = "quarantine" as const;
-export const DEFAULT_GUARDED_TOOL_NAMES = ["web_fetch", "browser"] as const;
-export const DEFAULT_UNTRUSTED_CONTENT_PIPELINE_ID = "default";
+const DEFAULT_GUARDED_TOOL_NAMES = ["web_fetch", "browser"] as const;
+const DEFAULT_UNTRUSTED_CONTENT_PIPELINE_ID = "default";
 const UNTRUSTED_CONTENT_API_KEY_PATH = "plugins.entries.untrusted-content.config.apiKey";
 
-function resolvePluginConfig(cfg?: OpenClawConfig): UntrustedContentPluginConfig | undefined {
+function resolvePluginConfig(cfg?: OpenClawConfig): Record<string, unknown> | undefined {
   const pluginConfig = cfg?.plugins?.entries?.["untrusted-content"]?.config;
-  if (!pluginConfig || typeof pluginConfig !== "object" || Array.isArray(pluginConfig)) {
+  if (!isRecord(pluginConfig)) {
     return undefined;
   }
-  return pluginConfig as UntrustedContentPluginConfig;
+  return pluginConfig;
 }
 
 function normalizePositiveInteger(value: unknown): number | undefined {
@@ -53,9 +36,9 @@ function normalizePositiveInteger(value: unknown): number | undefined {
   return Math.floor(value);
 }
 
-function normalizeToolNameList(value: unknown): string[] {
+function normalizeToolNameList(value: unknown, fallback: readonly string[]): string[] {
   if (!Array.isArray(value)) {
-    return [...DEFAULT_GUARDED_TOOL_NAMES];
+    return [...fallback];
   }
   const seen = new Set<string>();
   const normalized: string[] = [];
@@ -67,7 +50,13 @@ function normalizeToolNameList(value: unknown): string[] {
     seen.add(toolName);
     normalized.push(toolName);
   }
-  return normalized.length > 0 ? normalized : [...DEFAULT_GUARDED_TOOL_NAMES];
+  return normalized.length > 0 ? normalized : [...fallback];
+}
+
+function toolNameMatches(entry: string, toolName: string): boolean {
+  return entry.endsWith("*") && entry.length > 1
+    ? toolName.startsWith(entry.slice(0, -1))
+    : toolName === entry;
 }
 
 export function resolveUntrustedContentEnabled(cfg?: OpenClawConfig): boolean {
@@ -143,13 +132,6 @@ export function resolveUntrustedContentMaxContentChars(cfg?: OpenClawConfig): nu
   );
 }
 
-export function resolveUntrustedContentTrustLevel(
-  cfg?: OpenClawConfig,
-): UntrustedContentTrustLevel {
-  const configured = resolvePluginConfig(cfg)?.trustLevel;
-  return configured === "semi-trusted" || configured === "trusted" ? configured : "untrusted";
-}
-
 export function resolveUntrustedContentOnErrorMode(
   cfg?: OpenClawConfig,
 ): UntrustedContentOnErrorMode {
@@ -158,8 +140,12 @@ export function resolveUntrustedContentOnErrorMode(
   return configured === "pass" ? configured : DEFAULT_UNTRUSTED_CONTENT_ON_ERROR;
 }
 
-export function resolveUntrustedContentGuardedToolNames(cfg?: OpenClawConfig): string[] {
-  return normalizeToolNameList(resolvePluginConfig(cfg)?.toolNames);
+function resolveUntrustedContentGuardedToolNames(cfg?: OpenClawConfig): string[] {
+  return normalizeToolNameList(resolvePluginConfig(cfg)?.toolNames, DEFAULT_GUARDED_TOOL_NAMES);
+}
+
+function resolveUntrustedContentExcludedToolNames(cfg?: OpenClawConfig): string[] {
+  return normalizeToolNameList(resolvePluginConfig(cfg)?.excludedToolNames, []);
 }
 
 export function shouldGuardToolResult(cfg: OpenClawConfig | undefined, toolName: string): boolean {
@@ -167,40 +153,19 @@ export function shouldGuardToolResult(cfg: OpenClawConfig | undefined, toolName:
   if (!normalized || !resolveUntrustedContentEnabled(cfg)) {
     return false;
   }
+  if (
+    resolveUntrustedContentExcludedToolNames(cfg).some((entry) =>
+      toolNameMatches(entry, normalized),
+    )
+  ) {
+    return false;
+  }
   // Entries ending in "*" guard every tool sharing the prefix, so dynamically
   // projected tools (kamiwaza_*, locksmith_kamiwaza_*) stay guarded without
   // config edits when new upstream tools appear.
   return resolveUntrustedContentGuardedToolNames(cfg).some((entry) =>
-    entry.endsWith("*") && entry.length > 1
-      ? normalized.startsWith(entry.slice(0, -1))
-      : normalized === entry,
+    toolNameMatches(entry, normalized),
   );
-}
-
-export function resolveUntrustedContentPipelineOverrides(cfg?: OpenClawConfig): {
-  trustLevel: UntrustedContentTrustLevel;
-  sanitize?: boolean;
-  guardrail?: boolean;
-  scan?: boolean;
-  windowSize?: number;
-  windowOverlap?: number;
-} {
-  const pluginConfig = resolvePluginConfig(cfg);
-  return {
-    trustLevel: resolveUntrustedContentTrustLevel(cfg),
-    ...(typeof pluginConfig?.sanitize === "boolean" ? { sanitize: pluginConfig.sanitize } : {}),
-    ...(typeof pluginConfig?.guardrail === "boolean" ? { guardrail: pluginConfig.guardrail } : {}),
-    ...(typeof pluginConfig?.scan === "boolean" ? { scan: pluginConfig.scan } : {}),
-    ...(normalizePositiveInteger(pluginConfig?.windowSize)
-      ? { windowSize: normalizePositiveInteger(pluginConfig?.windowSize) }
-      : {}),
-    ...(pluginConfig?.windowOverlap !== undefined &&
-    typeof pluginConfig.windowOverlap === "number" &&
-    Number.isFinite(pluginConfig.windowOverlap) &&
-    pluginConfig.windowOverlap >= 0
-      ? { windowOverlap: Math.floor(pluginConfig.windowOverlap) }
-      : {}),
-  };
 }
 
 export function isUntrustedContentGuardConfigured(

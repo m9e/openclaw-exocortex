@@ -1,9 +1,13 @@
-import { definePluginEntry, type AnyAgentTool } from "openclaw/plugin-sdk/plugin-entry";
-import type { PluginHookToolResultTransformResult } from "openclaw/plugin-sdk/plugin-runtime";
+import type { AgentToolResultMiddlewareResult } from "openclaw/plugin-sdk/agent-harness-runtime";
+import { definePluginEntry } from "openclaw/plugin-sdk/plugin-entry";
 import { evaluateChannelDispatch } from "./src/channel-guard.js";
 import { CONVERSATIONAL_CLEAR_RE } from "./src/clear-pattern.js";
 import { registerUntrustedContentCli } from "./src/cli.js";
-import { isUntrustedContentGuardConfigured, resolveUntrustedContentEnabled } from "./src/config.js";
+import {
+  isUntrustedContentGuardConfigured,
+  resolveUntrustedContentEnabled,
+  shouldGuardToolResult,
+} from "./src/config.js";
 import { evaluateBeforeToolCall } from "./src/gates.js";
 import { clearIncident, findActiveBlockForSession } from "./src/incidents.js";
 import { createUntrustedContentRevealTool } from "./src/reveal-tool.js";
@@ -22,8 +26,8 @@ export default definePluginEntry({
         : null;
     });
 
-    api.registerTool(createUntrustedContentScanTool(api) as AnyAgentTool);
-    api.registerTool(createUntrustedContentRevealTool(api) as AnyAgentTool, { optional: true });
+    api.registerTool(createUntrustedContentScanTool(api));
+    api.registerTool(createUntrustedContentRevealTool(api), { optional: true });
 
     api.registerCli(({ program }) => registerUntrustedContentCli(program, api), {
       descriptors: [
@@ -85,18 +89,19 @@ export default definePluginEntry({
         return undefined;
       }
       const match = CONVERSATIONAL_CLEAR_RE.exec(event.content ?? "");
-      if (match) {
+      const clearCode = match?.[1];
+      if (clearCode) {
         // Group messages are ignored for clears (owner-only, phase 1) so a
         // non-owner participant cannot release another's block.
         if (event.isGroup) {
           return undefined;
         }
-        const cleared = await clearIncident(api, match[1], event.senderId ?? "conversation");
+        const cleared = await clearIncident(api, clearCode, event.senderId ?? "conversation");
         return {
           handled: true,
           text: cleared
             ? `Block ${cleared.code} cleared.`
-            : `No active block ${match[1].toUpperCase()}.`,
+            : `No active block ${clearCode.toUpperCase()}.`,
         };
       }
 
@@ -112,24 +117,30 @@ export default definePluginEntry({
       });
     });
 
-    api.on("tool_result_transform", async (event, ctx) => {
-      if (!resolveUntrustedContentEnabled(api.config)) {
-        return undefined;
-      }
-      const result = await maybeTransformToolResult({
-        api,
-        cfg: api.config,
-        toolName: event.toolName,
-        params: event.params,
-        toolCallId: event.toolCallId,
-        result: event.result,
-        sessionId: ctx?.sessionId,
-        sessionKey: ctx?.sessionKey,
-        agentId: ctx?.agentId,
-      });
-      return {
-        result: result as PluginHookToolResultTransformResult["result"],
-      };
-    });
+    api.registerAgentToolResultMiddleware(
+      async (event, ctx) => {
+        if (!resolveUntrustedContentEnabled(api.config)) {
+          return undefined;
+        }
+        const result = await maybeTransformToolResult({
+          api,
+          cfg: api.config,
+          toolName: event.toolName,
+          params: event.args,
+          toolCallId: event.toolCallId,
+          result: event.result,
+          sessionId: ctx?.sessionId,
+          sessionKey: ctx?.sessionKey,
+          agentId: ctx?.agentId,
+        });
+        return {
+          // SAFETY: The transformer preserves typed input blocks/details and creates only text blocks.
+          result: result as AgentToolResultMiddlewareResult["result"],
+        };
+      },
+      {
+        requiresResultReplacement: (toolName) => shouldGuardToolResult(api.config, toolName),
+      },
+    );
   },
 });

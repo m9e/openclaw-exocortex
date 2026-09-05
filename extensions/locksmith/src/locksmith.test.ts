@@ -1,7 +1,10 @@
-import type { OpenClawConfig } from "openclaw/plugin-sdk/config-runtime";
-import type { AnyAgentTool, OpenClawPluginToolContext } from "openclaw/plugin-sdk/plugin-entry";
-import type { OpenClawPluginApi } from "openclaw/plugin-sdk/plugin-runtime";
-import { beforeEach, describe, expect, it, vi } from "vitest";
+import type { OpenClawConfig } from "openclaw/plugin-sdk/config-contracts";
+import type {
+  AnyAgentTool,
+  OpenClawPluginApi,
+  OpenClawPluginToolContext,
+} from "openclaw/plugin-sdk/plugin-entry";
+import { assert, beforeEach, describe, expect, it, vi } from "vitest";
 import locksmithPlugin from "../index.js";
 import {
   callLocksmith,
@@ -11,10 +14,6 @@ import {
   resetLocksmithDiscoveryCacheForTest,
 } from "./client.js";
 import {
-  DEFAULT_LOCKSMITH_BASE_URL,
-  DEFAULT_LOCKSMITH_CATALOG_TTL_SECONDS,
-  DEFAULT_LOCKSMITH_MAX_RESPONSE_BYTES,
-  DEFAULT_LOCKSMITH_TIMEOUT_SECONDS,
   resolveLocksmithBaseUrl,
   resolveLocksmithCatalogTtlMs,
   resolveLocksmithGenericToolEnabled,
@@ -66,17 +65,11 @@ describe("locksmith config", () => {
   });
 
   it("uses sane defaults when config is absent", () => {
-    expect(resolveLocksmithBaseUrl({} as OpenClawConfig)).toBe(DEFAULT_LOCKSMITH_BASE_URL);
+    expect(resolveLocksmithBaseUrl({} as OpenClawConfig)).toBe("http://127.0.0.1:9200");
     expect(resolveLocksmithInboundToken({} as OpenClawConfig)).toBeUndefined();
-    expect(resolveLocksmithCatalogTtlMs({} as OpenClawConfig)).toBe(
-      DEFAULT_LOCKSMITH_CATALOG_TTL_SECONDS * 1000,
-    );
-    expect(resolveLocksmithTimeoutMs({} as OpenClawConfig)).toBe(
-      DEFAULT_LOCKSMITH_TIMEOUT_SECONDS * 1000,
-    );
-    expect(resolveLocksmithMaxResponseBytes({} as OpenClawConfig)).toBe(
-      DEFAULT_LOCKSMITH_MAX_RESPONSE_BYTES,
-    );
+    expect(resolveLocksmithCatalogTtlMs({} as OpenClawConfig)).toBe(30_000);
+    expect(resolveLocksmithTimeoutMs({} as OpenClawConfig)).toBe(30_000);
+    expect(resolveLocksmithMaxResponseBytes({} as OpenClawConfig)).toBe(262_144);
     expect(resolveLocksmithPromptCatalogEnabled({} as OpenClawConfig)).toBe(true);
     expect(resolveLocksmithGenericToolEnabled({} as OpenClawConfig)).toBe(true);
   });
@@ -367,6 +360,7 @@ describe("locksmith projection / prompt-cache stability", () => {
     });
     const factory = createLocksmithProjectedToolFactory(fakeApi(cfg));
     const [tool] = factory(fakeCtx()) as AnyAgentTool[];
+    assert(tool);
 
     expect(tool.name).toBe("locksmith_github");
     expect(tool.description).toContain("GitHub REST API");
@@ -386,6 +380,7 @@ describe("locksmith projection / prompt-cache stability", () => {
     });
     const factory = createLocksmithProjectedToolFactory(fakeApi(cfg));
     const [tool] = factory(fakeCtx()) as AnyAgentTool[];
+    assert(tool);
 
     expect(JSON.stringify(tool.parameters)).toContain("commit_files");
     expect(JSON.stringify(tool.parameters)).toContain("deletePaths");
@@ -448,6 +443,7 @@ describe("locksmith projection / prompt-cache stability", () => {
     });
     const factory = createLocksmithProjectedToolFactory(fakeApi(cfg));
     const [tool] = factory(fakeCtx()) as AnyAgentTool[];
+    assert(tool);
 
     await tool.execute("call-1", {
       query: "latest openclaw news",
@@ -483,6 +479,7 @@ describe("locksmith projection / prompt-cache stability", () => {
     });
     const factory = createLocksmithProjectedToolFactory(fakeApi(cfg));
     const [tool] = factory(fakeCtx("agent-github")) as AnyAgentTool[];
+    assert(tool);
 
     const result = (await tool.execute("call-commit", {
       operation: "commit_files",
@@ -562,6 +559,7 @@ describe("locksmith projection / prompt-cache stability", () => {
     });
     const factory = createLocksmithProjectedToolFactory(fakeApi(cfg));
     const [tool] = factory(fakeCtx("agent-github")) as AnyAgentTool[];
+    assert(tool);
 
     const result = (await tool.execute("call-empty", {
       operation: "commit_files",
@@ -801,6 +799,55 @@ describe("locksmith client error mapping", () => {
     },
   } as OpenClawConfig;
 
+  it.each([
+    "../tavily/search",
+    "%2e%2e/tavily/search",
+    ".%2e/tavily/search",
+    "%2E./tavily/search",
+    "%252e%252e/tavily/search",
+    "..%2ftavily/search",
+    "..%5ctavily/search",
+    "repos/../../tavily/search",
+    "repos/./owner",
+    "..\\tavily/search",
+    "//tavily/search",
+    "repos//owner",
+    "repos?redirect=../tavily",
+    "repos#fragment",
+    "repos/%3fredirect",
+    "repos/%23fragment",
+    "repos/\n../tavily",
+    "repos/%00owner",
+    "repos/%invalid",
+    "https://other.example/search",
+  ])("rejects ambiguous or escaping tool paths before fetching: %j", async (path) => {
+    const fetchMock = vi.spyOn(globalThis, "fetch").mockResolvedValue(jsonResponse({ ok: true }));
+    await expect(callLocksmith({ cfg, tool: "github", path })).rejects.toThrow(
+      "Invalid Locksmith tool path",
+    );
+    expect(fetchMock).not.toHaveBeenCalled();
+  });
+
+  it.each(["../tavily", "github/../tavily", "%2e%2e", "github?tool=tavily"])(
+    "rejects tool names containing URL syntax before fetching: %j",
+    async (tool) => {
+      const fetchMock = vi.spyOn(globalThis, "fetch").mockResolvedValue(jsonResponse({ ok: true }));
+      await expect(callLocksmith({ cfg, tool })).rejects.toThrow("Invalid Locksmith tool name");
+      expect(fetchMock).not.toHaveBeenCalled();
+    },
+  );
+
+  it.each(["repos/owner/repo", "/repos/owner/repo", "repos/owner/my%20repo"])(
+    "keeps normal paths and query parameters in the selected tool namespace: %j",
+    async (path) => {
+      const fetchMock = vi.spyOn(globalThis, "fetch").mockResolvedValue(jsonResponse({ ok: true }));
+      await callLocksmith({ cfg, tool: "github", path, query: { page: 2 } });
+      expect(fetchMock.mock.calls[0]?.[0]).toBe(
+        `http://127.0.0.1:9200/api/github/${path.replace(/^\//u, "")}?page=2`,
+      );
+    },
+  );
+
   it("sends X-Locksmith-User on call when provided", async () => {
     vi.spyOn(globalThis, "fetch").mockResolvedValue(
       new Response(JSON.stringify({ ok: true }), {
@@ -815,6 +862,19 @@ describe("locksmith client error mapping", () => {
     });
     const headers = vi.mocked(globalThis.fetch).mock.calls[0]?.[1]?.headers as Headers;
     expect(headers.get("X-Locksmith-User")).toBe("agent-7");
+  });
+
+  it("does not follow proxy redirects into another tool namespace", async () => {
+    const fetchMock = vi
+      .spyOn(globalThis, "fetch")
+      .mockResolvedValueOnce(
+        new Response(null, { status: 302, headers: { location: "/api/tavily/search" } }),
+      );
+    await expect(callLocksmith({ cfg, tool: "github", path: "repos" })).rejects.toThrow(
+      "Too many redirects",
+    );
+    expect(fetchMock).toHaveBeenCalledTimes(1);
+    expect(fetchMock.mock.calls[0]?.[0]).toBe("http://127.0.0.1:9200/api/github/repos");
   });
 
   it("ignores caller-provided X-Locksmith-User overrides in headers map", async () => {
